@@ -284,9 +284,9 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
         sections[a["grade"]].append(a)
 
     GRADE_STYLE = {
-        "긴급": {"header_bg":"#fff0f0","border_left":"#f87171","label_color":"#dc2626","card_bg":"#fff8f8","card_border":"#fecaca"},
-        "주의": {"header_bg":"#fffbeb","border_left":"#fbbf24","label_color":"#d97706","card_bg":"#fffdf0","card_border":"#fde68a"},
-        "참고": {"header_bg":"#f0fdf4","border_left":"#4ade80","label_color":"#16a34a","card_bg":"#f8fff9","card_border":"#bbf7d0"},
+        "긴급": {"header_bg":"#fff","border_left":"#f87171","label_color":"#dc2626","card_bg":"#fff8f8","card_border":"#fecaca"},
+        "주의": {"header_bg":"#fff","border_left":"#fbbf24","label_color":"#d97706","card_bg":"#fffdf0","card_border":"#fde68a"},
+        "참고": {"header_bg":"#fff","border_left":"#4ade80","label_color":"#16a34a","card_bg":"#f8fff9","card_border":"#bbf7d0"},
     }
     rows = ""
     for grade in ["긴급", "주의", "참고"]:
@@ -297,16 +297,16 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
         gs = GRADE_STYLE[grade]
         rows += f'''
         <div style="padding:8px 22px 4px;background:{gs["header_bg"]};border-left:3px solid {gs["border_left"]};margin:14px 18px 0;border-radius:0 8px 0 0;">
-          <span style="font-size:13px;font-weight:500;color:{gs["label_color"]};">{m["emoji"]} {grade} · {len(items)}건</span>
+          <span style="font-size:15px;font-weight:500;color:{gs["label_color"]};">{m["emoji"]} {grade} · {len(items)}건</span>
         </div>'''
         for a in items:
             rows += f'''
         <div style="margin:0 18px 14px;border:0.5px solid {gs["card_border"]};border-radius:0 0 8px 8px;background:{gs["card_bg"]};padding:14px 16px;">
-          <a href="{a['url']}" style="color:#1e3a6e;font-weight:500;font-size:15px;text-decoration:none;display:block;margin-bottom:6px;line-height:1.6;">{a['title']}</a>
-          <div style="font-size:12px;color:#64748b;margin-bottom:4px;">🤖 {a.get('reason','')}</div>
-          {f'<div style="font-size:12px;color:#2563eb;background:#eff6ff;border-left:2px solid #93c5fd;padding:5px 10px;border-radius:0 6px 6px 0;margin-bottom:6px;">💡 {a["action"]}</div>' if grade == "긴급" and a.get("action") else ""}
-          <div style="font-size:12px;color:#64748b;margin-bottom:5px;">{a['url']}</div>
-          <span style="font-size:11px;color:#3b5491;background:#eef2ff;padding:2px 9px;border-radius:20px;">키워드: {a['keyword']}</span>
+          <a href="{a['url']}" style="color:#1e3a6e;font-weight:500;font-size:17px;text-decoration:none;display:block;margin-bottom:6px;line-height:1.6;">{a['title']}</a>
+          <div style="font-size:14px;color:#64748b;margin-bottom:4px;">🤖 {a.get('reason','')}</div>
+          {f'<div style="font-size:14px;color:#2563eb;background:#eff6ff;border-left:2px solid #93c5fd;padding:5px 10px;border-radius:0 6px 6px 0;margin-bottom:6px;">💡 {a["action"]}</div>' if grade == "긴급" and a.get("action") else ""}
+          <div style="font-size:14px;color:#64748b;margin-bottom:5px;">{a['url']}</div>
+          <span style="font-size:13px;color:#3b5491;background:#eef2ff;padding:2px 9px;border-radius:20px;">키워드: {a['keyword']}</span>
         </div>'''  
 
     urgent_count = len(sections["긴급"])
@@ -315,11 +315,11 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
     html = f"""<html><body style="font-family:'맑은 고딕',Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px;">
       <div style="max-width:680px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:0.5px solid #e2e8f0;">
         <div style="background:linear-gradient(135deg,#4f6fad 0%,#3b5491 100%);padding:22px 26px;">
-          <div style="color:#fff;font-size:18px;font-weight:500;margin-bottom:8px;">
+          <div style="color:#fff;font-size:20px;font-weight:500;margin-bottom:8px;">
             🤖 eBiz본부 리스크 탐지봇
-            <span style="font-size:11px;background:rgba(255,255,255,0.2);padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
+            <span style="font-size:13px;background:rgba(255,255,255,0.2);padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
           </div>
-          <div style="color:rgba(255,255,255,0.8);font-size:13px;line-height:1.7;">
+          <div style="color:rgba(255,255,255,0.8);font-size:15px;line-height:1.7;">
             {now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)<br>
             수집 {total_count}건 → AI 필터링 후 {len(articles)}건 선별
             ({round((1 - len(articles)/total_count)*100) if total_count else 0}% 제거) &nbsp;·&nbsp;
@@ -327,17 +327,17 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
           </div>
         </div>
         <div style="padding:16px 22px;background:#fff;border-bottom:0.5px solid #e2e8f0;">
-          <div style="font-size:13px;font-weight:500;color:#3b5491;margin-bottom:6px;">🤖 AI 분석 요약</div>
-          <div style="font-size:13px;color:#475569;line-height:1.8;">{ai_summary}</div>
+          <div style="font-size:15px;font-weight:500;color:#3b5491;margin-bottom:6px;">🤖 AI 분석 요약</div>
+          <div style="font-size:15px;color:#475569;line-height:1.8;">{ai_summary}</div>
         </div>
         {rows}
-        <div style="padding:12px 22px;background:#fff;border-top:0.5px solid #e2e8f0;border-bottom:0.5px solid #e2e8f0;font-size:12px;color:#64748b;line-height:2.0;">
+        <div style="padding:12px 22px;background:#fff;border-top:0.5px solid #e2e8f0;border-bottom:0.5px solid #e2e8f0;font-size:14px;color:#64748b;line-height:2.0;">
           <strong style="color:#334155;">📌 등급 기준</strong><br>
           🔴 <strong style="color:#334155;">긴급</strong> · 부도·파산·회생·상폐 확정 또는 신청 / 리츠·펀드 기초자산 부실 / 금융당국 조사·제재 / 100억↑ 채무불이행<br>
           🟡 <strong style="color:#334155;">주의</strong> · 징후·가능성 단계 / 모니터링 필요 잠재 리스크<br>
           🟢 <strong style="color:#334155;">참고</strong> · 업황 파악 목적 / 직접 위험 낮음
         </div>
-        <div style="padding:14px 22px;background:#fff;color:#94a3b8;font-size:12px;line-height:2.0;">
+        <div style="padding:14px 22px;background:#fff;color:#94a3b8;font-size:14px;line-height:2.0;">
           AI 필터링 적용 · 키워드: {', '.join(KEYWORDS)}<br>
           ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
           ※ 담당자 (정) 최진후 차장 / (부) 이원세 대리 · 장인호 대리
@@ -394,16 +394,16 @@ def main():
         empty_html = f"""<html><body style="font-family:'맑은 고딕',Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px;">
       <div style="max-width:680px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:0.5px solid #e2e8f0;">
         <div style="background:linear-gradient(135deg,#4f6fad 0%,#3b5491 100%);padding:22px 26px;">
-          <div style="color:#fff;font-size:18px;font-weight:500;margin-bottom:6px;">
+          <div style="color:#fff;font-size:20px;font-weight:500;margin-bottom:6px;">
             🤖 eBiz본부 리스크 탐지봇
-            <span style="font-size:11px;background:rgba(255,255,255,0.2);padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
+            <span style="font-size:13px;background:rgba(255,255,255,0.2);padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
           </div>
-          <div style="color:rgba(255,255,255,0.8);font-size:13px;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</div>
+          <div style="color:rgba(255,255,255,0.8);font-size:15px;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</div>
         </div>
-        <div style="padding:36px 24px;text-align:center;color:#64748b;font-size:15px;line-height:1.8;">
+        <div style="padding:36px 24px;text-align:center;color:#64748b;font-size:17px;line-height:1.8;">
           AI 뉴스기사 모니터링 결과<br>리스크에 해당하는 기사가 없습니다.
         </div>
-        <div style="padding:14px 22px;background:#fff;border-top:0.5px solid #e2e8f0;color:#94a3b8;font-size:12px;line-height:2.0;">
+        <div style="padding:14px 22px;background:#fff;border-top:0.5px solid #e2e8f0;color:#94a3b8;font-size:14px;line-height:2.0;">
           AI 필터링 적용 · 키워드: {', '.join(KEYWORDS)}<br>
           ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
           ※ 담당자 (정) 최진후 차장 / (부) 이원세 대리 · 장인호 대리
@@ -418,14 +418,39 @@ def main():
         grade_summary.append(f"긴급 {len([a for a in filtered if a['grade']=='긴급'])}건")
     if len([a for a in filtered if a["grade"]=="주의"]) > 0:
         grade_summary.append(f"주의 {len([a for a in filtered if a['grade']=='주의'])}건")
-    kw_top = {}
-    for a in filtered:
-        kw_top[a["keyword"]] = kw_top.get(a["keyword"], 0) + 1
-    top_kw = sorted(kw_top, key=kw_top.get, reverse=True)[:3]
+    # 긴급 기사의 제목에서 주요 단어 추출 (기업명·사건명 위주)
+    urgent_articles = [a for a in filtered if a["grade"] == "긴급"]
+    if urgent_articles:
+        # 긴급 기사 제목을 Claude에게 보내 핵심 단어 추출
+        urgent_titles = "\n".join([f"- {a['title']}" for a in urgent_articles])
+        try:
+            kw_res = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 100,
+                    "messages": [{"role": "user", "content": f"아래 긴급 뉴스 제목들에서 가장 중요한 기업명·사건명 키워드 3개를 쉼표로만 구분해서 반환하세요. 다른 말 없이 키워드만.\n\n{urgent_titles}"}],
+                },
+                timeout=15,
+            )
+            top_kw_str = kw_res.json()["content"][0]["text"].strip()
+        except Exception:
+            top_kw_str = ", ".join([a["keyword"] for a in urgent_articles[:3]])
+    else:
+        kw_top = {}
+        for a in filtered:
+            kw_top[a["keyword"]] = kw_top.get(a["keyword"], 0) + 1
+        top_kw_str = ", ".join(sorted(kw_top, key=kw_top.get, reverse=True)[:3])
+
     ai_summary = f"총 {total_count}건 수집 중 {len(filtered)}건을 리스크 기사로 선별했습니다. "
     if grade_summary:
         ai_summary += f"{', '.join(grade_summary)}이 감지되었으며, "
-    ai_summary += f"주요 키워드는 {', '.join(top_kw)}입니다."
+    ai_summary += f"주요 키워드는 {top_kw_str}입니다."
 
     html, flag = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary)
     send_email(subject, html)
