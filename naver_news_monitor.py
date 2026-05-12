@@ -20,6 +20,8 @@ ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
 NAVER_CLIENT_ID = os.environ["NAVER_CLIENT_ID"]
 NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
+CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+
 KEYWORDS = [
     "리스크", "회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지",
     "자본잠식", "배임", "반대매매", "신용등급 강등", "PF 부실", "미매각",
@@ -49,7 +51,6 @@ def save_seen_urls(seen: set):
 
 
 def crawl_naver_news(keyword: str) -> list:
-    """네이버 검색 API로 뉴스 수집 — 당일(KST) 기사만"""
     kst = timezone(timedelta(hours=9))
     today_kst = datetime.now(kst).date()
 
@@ -125,8 +126,27 @@ def crawl_naver_news(keyword: str) -> list:
     return articles
 
 
+def call_claude(prompt: str, max_tokens: int = 1000, timeout: int = 30) -> str:
+    res = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": ANTHROPIC_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": CLAUDE_MODEL,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        timeout=timeout,
+    )
+
+    res.raise_for_status()
+    return res.json()["content"][0]["text"].strip()
+
+
 def ai_filter_batch(batch: list, offset: int = 0) -> list:
-    """30건씩 배치로 AI 필터링"""
     if not batch:
         return []
 
@@ -186,24 +206,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 """
 
     try:
-        res = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": "claude-3-5-haiku-latest",
-                "max_tokens": 2000,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=30,
-        )
-
-        res.raise_for_status()
-
-        raw = res.json()["content"][0]["text"].strip()
+        raw = call_claude(prompt, max_tokens=2000, timeout=30)
         raw = raw.replace("```json", "").replace("```", "").strip()
 
         start_idx = raw.find("[")
@@ -232,18 +235,10 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 
     except Exception as e:
         print(f"AI 필터링 오류: {e}")
-
-        try:
-            print(f"API 응답 상태코드: {res.status_code}")
-            print(f"API 응답 원문: {res.text[:500]}")
-        except Exception:
-            pass
-
         return []
 
 
 def dedup_by_title(articles: list) -> list:
-    """배치 경계 걸친 중복 기사 제거 — Claude API로 최종 중복 제거"""
     if not articles:
         return []
 
@@ -263,30 +258,16 @@ def dedup_by_title(articles: list) -> list:
 """
 
     try:
-        res = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": "claude-3-5-haiku-latest",
-                "max_tokens": 500,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=30,
-        )
-
-        res.raise_for_status()
-
-        raw = res.json()["content"][0]["text"].strip()
+        raw = call_claude(prompt, max_tokens=500, timeout=30)
         raw = raw.replace("```json", "").replace("```", "").strip()
 
         start_idx = raw.find("[")
         end_idx = raw.rfind("]") + 1
-        raw = raw[start_idx:end_idx]
 
+        if start_idx == -1 or end_idx == 0:
+            raise ValueError("JSON 배열을 찾을 수 없음")
+
+        raw = raw[start_idx:end_idx]
         keep_ids = {item["id"] for item in json.loads(raw)}
 
         return [
@@ -300,7 +281,6 @@ def dedup_by_title(articles: list) -> list:
 
 
 def ai_filter_and_grade(articles: list) -> list:
-    """전체 기사를 30건씩 배치로 나눠 AI 필터링 후 중복 제거"""
     if not articles:
         return []
 
@@ -565,30 +545,12 @@ def main():
         ])
 
         try:
-            kw_res = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": "claude-3-5-haiku-latest",
-                    "max_tokens": 100,
-                    "messages": [{
-                        "role": "user",
-                        "content": f"""아래 긴급 뉴스 제목들에서 가장 중요한 기업명·사건명 키워드 3개를 쉼표로만 구분해서 반환하세요.
+            kw_prompt = f"""아래 긴급 뉴스 제목들에서 가장 중요한 기업명·사건명 키워드 3개를 쉼표로만 구분해서 반환하세요.
 다른 말 없이 키워드만 반환하세요.
 
 {urgent_titles}
 """
-                    }],
-                },
-                timeout=15,
-            )
-
-            kw_res.raise_for_status()
-            top_kw_str = kw_res.json()["content"][0]["text"].strip()
+            top_kw_str = call_claude(kw_prompt, max_tokens=100, timeout=15)
 
         except Exception as e:
             print(f"긴급 키워드 추출 오류: {e}")
@@ -620,27 +582,7 @@ def main():
 
 {filtered_titles}
 """
-
-        sum_res = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": "claude-3-5-haiku-latest",
-                "max_tokens": 150,
-                "messages": [{
-                    "role": "user",
-                    "content": summary_prompt,
-                }],
-            },
-            timeout=15,
-        )
-
-        sum_res.raise_for_status()
-        ai_summary = sum_res.json()["content"][0]["text"].strip()
+        ai_summary = call_claude(summary_prompt, max_tokens=150, timeout=15)
 
     except Exception as e:
         print(f"AI 요약 생성 오류: {e}")
