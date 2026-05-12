@@ -32,8 +32,10 @@ jobs:
 
       - name: 뉴스 크롤링 & AI 필터링 & 이메일 발송
         env:
-          EMAIL_SENDER:      ${{ secrets.EMAIL_SENDER }}
-          EMAIL_PASSWORD:    ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_RECEIVER:    ${{ secrets.EMAIL_RECEIVER }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EMAIL_SENDER:         ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:       ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVER:       ${{ secrets.EMAIL_RECEIVER }}
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          NAVER_CLIENT_ID:      ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET:  ${{ secrets.NAVER_CLIENT_SECRET }}
         run: python naver_news_monitor.py
