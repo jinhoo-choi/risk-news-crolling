@@ -157,7 +157,12 @@ def ai_filter_and_grade(articles: list) -> list:
         return result
 
     except Exception as e:
-        print(f"AI 필터링 오류: {e} — 필터 없이 전체 반환")
+        print(f"AI 필터링 오류: {e}")
+        try:
+            print(f"API 응답 상태코드: {res.status_code}")
+            print(f"API 응답 원문: {res.text[:500]}")
+        except:
+            pass
         for a in articles:
             a["grade"] = "참고"
         return articles
