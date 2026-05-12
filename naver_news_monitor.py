@@ -338,12 +338,12 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
         m = GRADE_META[grade]
         gs = GRADE_STYLE[grade]
         rows += f'''
-        <div style="padding:8px 22px 4px;background:{gs["header_bg"]};border-left:3px solid {gs["border_left"]};margin:14px 18px 0;border-radius:0 8px 0 0;">
-          <span style="font-size:15px;font-weight:500;color:{gs["label_color"]};">{grade} · {len(items)}건</span>
+        <div style="padding:10px 18px 8px;background:{gs["header_bg"]};border-left:4px solid {gs["border_left"]};margin:16px 18px 0;border-radius:6px 6px 0 0;">
+          <span style="font-size:15px;font-weight:600;color:{gs["label_color"]};">{grade} · {len(items)}건</span>
         </div>'''
         for a in items:
             rows += f'''
-        <div class="card-wrap" style="border:0.5px solid {gs["card_border"]};background:{gs["card_bg"]};">
+        <div class="card-wrap" style="border:0.5px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin:0 18px 0;border-radius:0;border-bottom:0.5px solid {gs["card_border"]};">
           <a href="{a['url']}" class="article-title">{a['title']} <span style="font-size:12px;color:#3b5491;font-weight:400;">↗ 기사 보기</span> {f'<span style="font-size:13px;color:#94a3b8;font-weight:400;">{a["pub_str"]}</span>' if a.get("pub_str") else ""} <span style="font-size:12px;color:#16a34a;font-weight:500;">● 신규</span></a>
           {f'<div class="article-desc" style="white-space:normal;word-break:keep-all;">{a["desc"]}</div>' if a.get("desc") else ""}
           {f'<div class="action-box">대응방안 : {a["action"]}</div>' if a.get("action") else ""}
@@ -364,7 +364,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
   .summary-box {{ padding:16px 22px; background:#fff; border-bottom:0.5px solid #e2e8f0; }}
   .summary-title {{ font-size:15px; font-weight:500; color:#3b5491; margin-bottom:6px; }}
   .summary-body {{ font-size:14px; color:#475569; line-height:1.9; white-space:pre-line; }}
-  .card-wrap {{ margin:0 18px 14px; border-radius:0 0 8px 8px; padding:14px 16px; }}
+  .card-wrap {{ margin:0 18px 0; border-radius:0; padding:14px 16px; }}
   .article-title {{ font-weight:500; font-size:17px; text-decoration:none; display:block; margin-bottom:6px; line-height:1.6; color:#1e3a6e; white-space:normal; word-break:keep-all; overflow-wrap:break-word; }}
   .article-desc {{ font-size:13px; color:#64748b; margin-bottom:6px; white-space:normal; word-break:keep-all; overflow-wrap:break-word; }}
   .action-box {{ font-size:14px; color:#2563eb; background:#eff6ff; border-left:2px solid #93c5fd; padding:5px 10px; border-radius:0 6px 6px 0; margin-bottom:6px; }}
@@ -545,7 +545,7 @@ def main():
             json={
                 "model": "claude-haiku-4-5-20251001",
                 "max_tokens": 150,
-                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.\n\n✓ 오늘의 리스크 성격: (한 문장으로 오늘 전반적인 리스크 흐름)\n✓ 핵심 이슈: (가장 중요한 이슈 1~2개를 간결하게)\n✓ 주목 포인트: (담당자가 특히 주의할 사항 한 줄)\n\n숫자 통계 없이 내용 중심으로, 각 항목은 반드시 줄바꿈으로 구분하세요.\n\n{filtered_titles}"}],
+                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.\n\n✓ 오늘의 리스크 성격: (한 문장으로 오늘 전반적인 리스크 흐름)\n\n✓ 핵심 이슈: (가장 중요한 이슈를 · 으로 구분해 각각 줄바꿈)\n\n✓ 주목 포인트: (담당자가 특히 주의할 사항 한 줄)\n\n숫자 통계 없이 내용 중심으로, 각 항목은 반드시 줄바꿈으로 구분하세요.\n\n{filtered_titles}"}],
             },
             timeout=15,
         )
