@@ -11,6 +11,7 @@ from email.mime.text import MIMEText
 import json
 import os
 from datetime import datetime, timezone, timedelta
+from email.utils import parsedate_to_datetime as _pdt
 
 # ─────────────────────────────────────────────
 # 설정 — GitHub Secrets에서 자동으로 읽어옴
@@ -22,7 +23,7 @@ ANTHROPIC_KEY     = os.environ["ANTHROPIC_API_KEY"]
 NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
 NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
-KEYWORDS = ["리스크", "회생", "기업회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "자본잠식", "횡령", "배임", "반대매매", "주가조작", "신용등급 강등", "PF 부실", "미매각", "영업정지", "자산유동화"]
+KEYWORDS = ["리스크", "회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "자본잠식", "배임", "반대매매", "신용등급 강등", "PF 부실", "미매각", "영업정지", "신용융자", "증거금", "발행어음", "서킷브레이커"]
 MAX_NEWS_PER_KEYWORD = 1000  # 당일 기사 전체 수집 (pubDate 필터로 제한됨)
 SEEN_FILE = "seen_news.json"
 
@@ -132,19 +133,25 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 - 기업 부도·파산·회생·워크아웃·상장폐지가 확정되었거나 신청·징후 단계인 기사
 - 금융당국(금감원·금융위)의 증권사 대상 조사·검사·제재·규제 강화 기사
 - 부동산PF, 브릿지론, 미매각채권 관련 손실·부실 기사
-- 반대매매 급증, 마진콜, 유동성 위기 등 시장 충격 기사
-- 증권업 전반 수익성·건전성에 직접 영향을 주는 거시 리스크 기사
+- 반대매매 급증, 마진콜, 신용융자 한도 소진·중단, 증거금 부족 관련 시장 충격 기사
+- 서킷브레이커 발동, 종목 증거금률 대폭 상향 등 시장 거래 제한 기사
+- 발행어음·IMA 관련 증권사 유동성 위기·만기 불일치 기사
+- 신용융자 잔고 급증으로 인한 반대매매 우려·증권사 리스크 관리 강화 기사
+- 특정 기업·업종의 신용등급 강등·부실로 증권사 익스포저 손실 우려 기사
+- 증권사가 직접 당사자인 제재·손실·건전성 악화 기사
 
 [관련 없음 — relevant: false 조건]
 다음 중 하나라도 해당하면 반드시 제외:
-- 단순히 "리스크", "파산", "위기" 등 용어만 언급하는 분석·전망·칼럼 기사
-- 학술·연구·교육·세미나·보고서 관련 기사
+- 단순히 "리스크", "파산", "위기" 등 용어만 언급하는 분석·전망·칼럼·오피니언 기사
+- 학술·연구·교육·세미나·보고서·강의 관련 기사
 - 해외 사례 기사 (국내 증권사에 직접 영향 없는 것)
 - 일반 기업 경영 이슈로 금융권 익스포저가 없는 기사
 - 제목에 구체적 기업명·사건 없이 일반론만 언급하는 기사
-- 수출 확대·실적 개선·신사업 진출·수상·협약 등 긍정적 내용의 기사
-- 기업 성장·투자 유치·흑자 전환 등 호재성 기사
-- 제품 출시·마케팅·홍보성 기사
+- 수출 확대·실적 개선·신사업 진출·수상·협약·MOU 등 긍정적 기사
+- 기업 성장·투자 유치·흑자 전환·신규 상장 등 호재성 기사
+- 제품 출시·마케팅·홍보·이벤트 관련 기사
+- 증거금·신용융자 관련 투자 교육·이용 방법·금리 비교 안내 기사
+- 단순 시황·지수 등락 보도 (구체적 리스크 사건 없는 것)
 
 [등급 기준] — relevant: true인 경우만 적용
 - 긴급: 아래 중 하나 해당
@@ -152,22 +159,24 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
   · 리츠·펀드·ETF 등 증권사 판매 금융상품의 기초자산 부실·회생·상폐 신청
   · 금융당국 조사·제재 착수
   · 증권사 직접 손실 발생 또는 임박
-  · 시장 전반 충격 현실화 (반대매매 급증, 뱅크런 등)
+  · 서킷브레이커 발동 또는 시장 전반 충격 현실화
+  · 반대매매 급증·신용융자 한도 전면 중단 등 시장 충격 현실화
   · 특정 기업이 100억원 이상 채무 미상환·디폴트 선언
+  · 종목 증거금률 100% 상향 등 극단적 거래 제한 조치
 - 주의: 징후·가능성 단계, 모니터링 필요한 잠재 리스크
 - 참고: 업황 파악에 유용하나 직접 위험은 낮은 것
 
 [중복 기사 처리]
-- 동일한 사건·이슈를 다른 언론사가 보도한 경우, 가장 먼저 나온 기사(id 숫자 작은 것) 1건만 relevant:true로 처리
+- 동일한 사건·이슈를 다른 언론사가 보도한 경우, id 숫자 작은 것 1건만 relevant:true로 처리
 - 나머지 동일 사건 기사는 relevant:false로 처리
 - 제목이 다르더라도 핵심 사건(기업명+사건유형)이 동일하면 중복으로 판단
 
 반드시 JSON 배열만 반환하세요. 마크다운 코드블록(\`\`\`) 없이 순수 JSON만.
 - reason: 선별 이유를 증권사 실무 관점에서 20자 이내로 (relevant=false면 null)
-- action: relevant:true인 모든 기사에 대해 실무 담당자 관점의 대응방안을 30자 이내 한 문장으로 (relevant=false면 null)
+- action: relevant:true인 모든 기사에 대해 실무 담당자가 즉시 취해야 할 구체적 조치를 50자 이내로 작성하세요. "보고", "공유", "전달" 등 보고 행위는 제외하고 실제 확인·점검·산출 등 실무 행동만 기재 (relevant=false면 null)
 - entity: 기사의 핵심 기업명 또는 주체 1개 (예: 태영건설, 금감원, 홈플러스) (relevant=false면 null)
 반환 형식 예시:
-[{{"id":1,"relevant":true,"grade":"긴급","reason":"400억 채무불이행·회생신청","action":"해당 리츠 보유 고객 익스포저 파악 및 손실 시나리오 검토","entity":"제이알글로벌리츠"}},{{"id":2,"relevant":false,"grade":null,"reason":null,"action":null,"entity":null}}]
+[{{"id":1,"relevant":true,"grade":"긴급","reason":"400억 채무불이행·회생신청","action":"해당 리츠 보유 고객 전수 파악 및 손실 시나리오 작성","entity":"제이알글로벌리츠"}},{{"id":2,"relevant":false,"grade":null,"reason":null,"action":null,"entity":null}}]
 
 뉴스 목록:
 {numbered}"""
@@ -321,7 +330,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
         </div>'''  
 
     urgent_count = len(sections["긴급"])
-    subject_flag = "[긴급 포함] " if urgent_count else ""
+    subject_flag = ""
 
     html = f"""<html><body style="font-family:'맑은 고딕',Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px;">
       <div style="max-width:680px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:0.5px solid #e2e8f0;">
@@ -380,7 +389,6 @@ def main():
 
     for keyword in KEYWORDS:
         articles = crawl_naver_news(keyword)
-        from email.utils import parsedate_to_datetime as _pdt
         kst_tz = timezone(timedelta(hours=9))
         new = []
         for article in articles:
@@ -406,8 +414,8 @@ def main():
     print(f"필터링 후 {len(filtered)}건 선별")
 
     now = datetime.now(timezone(timedelta(hours=9)))  # 한국시간 KST
-    now_str = now.strftime("%m월%d일 %H시 %M분")
-    subject = f"(eBiz본부) AI 뉴스기사 모니터링 결과_{now_str} 기준"
+    now_str = now.strftime("%m월%d일 %H시")
+    subject = f"(eBiz본부) 리스크 탐지 결과_{now_str} 기준"
     total_count = len(raw_articles)
 
     if not filtered:
