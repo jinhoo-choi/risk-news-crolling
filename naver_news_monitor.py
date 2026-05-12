@@ -145,6 +145,7 @@ def ai_filter_and_grade(articles: list) -> list:
         )
         res.raise_for_status()
         raw = res.json()["content"][0]["text"].strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
         grades = json.loads(raw)
         grade_map = {g["id"]: g for g in grades}
 
