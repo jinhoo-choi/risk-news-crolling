@@ -47,7 +47,11 @@ def save_seen_urls(seen: set):
 
 
 def crawl_naver_news(keyword: str) -> list:
-    """네이버 검색 API로 뉴스 수집"""
+    """네이버 검색 API로 뉴스 수집 — 당일(KST) 기사만"""
+    from email.utils import parsedate_to_datetime
+    kst = timezone(timedelta(hours=9))
+    today_kst = datetime.now(kst).date()
+
     headers = {
         "X-Naver-Client-Id": NAVER_CLIENT_ID,
         "X-Naver-Client-Secret": NAVER_CLIENT_SECRET,
@@ -55,7 +59,7 @@ def crawl_naver_news(keyword: str) -> list:
     articles = []
     start = 1
 
-    while len(articles) < MAX_NEWS_PER_KEYWORD:
+    while True:
         params = {
             "query": keyword,
             "display": 100,
@@ -79,28 +83,22 @@ def crawl_naver_news(keyword: str) -> list:
         if not items:
             break
 
-        kst = timezone(timedelta(hours=9))
-        today_kst = datetime.now(kst).date()
-
-        is_old = False
+        stop = False
         for item in items:
-            # pubDate 파싱 (예: Mon, 12 May 2026 10:00:00 +0900)
             pub_date_str = item.get("pubDate", "")
             try:
-                from email.utils import parsedate_to_datetime
                 pub_dt = parsedate_to_datetime(pub_date_str).astimezone(kst)
                 pub_date = pub_dt.date()
             except Exception:
-                pub_date = today_kst  # 파싱 실패 시 당일로 간주
+                pub_date = today_kst
 
-            # 당일 기사가 아니면 스킵 (최신순 정렬이므로 과거 기사 나오면 중단)
             if pub_date < today_kst:
-                is_old = True
+                stop = True
                 break
 
             title = BeautifulSoup(item.get("title", ""), "html.parser").get_text()
             link  = item.get("originallink") or item.get("link", "")
-            if link:
+            if title and link:
                 articles.append({
                     "title"  : title,
                     "url"    : link,
@@ -109,17 +107,18 @@ def crawl_naver_news(keyword: str) -> list:
 
         total = data.get("total", 0)
         start += 100
-        if is_old or start > min(total, 1000):
+        if stop or start > min(total, 1000):
             break
 
     return articles
 
 
-def ai_filter_and_grade(articles: list) -> list:
-    if not articles:
+def ai_filter_batch(batch: list, offset: int = 0) -> list:
+    """30건씩 배치로 AI 필터링"""
+    if not batch:
         return []
 
-    numbered = "\n".join([f"{i+1}. {a['title']}" for i, a in enumerate(articles)])
+    numbered = "\n".join([f"{i+offset+1}. {a['title']}" for i, a in enumerate(batch)])
 
     prompt = f"""당신은 한국투자증권 리스크 관리 전문가입니다.
 아래 뉴스 제목들을 보고 증권사 실무 관점에서 엄격하게 판단하세요.
@@ -183,8 +182,8 @@ def ai_filter_and_grade(articles: list) -> list:
         grade_map = {g["id"]: g for g in grades}
 
         result = []
-        for i, article in enumerate(articles):
-            info = grade_map.get(i + 1, {})
+        for i, article in enumerate(batch):
+            info = grade_map.get(i + offset + 1, {})
             if info.get("relevant") and info.get("grade"):
                 article["grade"] = info["grade"]
                 article["reason"] = info.get("reason", "")
@@ -195,12 +194,23 @@ def ai_filter_and_grade(articles: list) -> list:
         print(f"AI 필터링 오류: {e}")
         try:
             print(f"API 응답 상태코드: {res.status_code}")
-            print(f"API 응답 원문: {res.text[:500]}")
+            print(f"API 응답 원문: {res.text[:300]}")
         except:
             pass
-        for a in articles:
-            a["grade"] = "참고"
-        return articles
+        return []
+
+
+def ai_filter_and_grade(articles: list) -> list:
+    """전체 기사를 30건씩 배치로 나눠 AI 필터링"""
+    if not articles:
+        return []
+    result = []
+    batch_size = 30
+    for i in range(0, len(articles), batch_size):
+        batch = articles[i:i+batch_size]
+        print(f"  배치 {i//batch_size+1}/{-(-len(articles)//batch_size)} 처리 중... ({len(batch)}건)")
+        result.extend(ai_filter_batch(batch, offset=i))
+    return result
 
 
 def build_email_html(articles: list, total_count: int = 0, ai_summary: str = ''):
