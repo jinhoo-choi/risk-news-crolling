@@ -10,7 +10,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 # ─────────────────────────────────────────────
 # 설정 — GitHub Secrets에서 자동으로 읽어옴
@@ -184,7 +184,7 @@ def ai_filter_and_grade(articles: list) -> list:
 
 
 def build_email_html(articles: list):
-    now = datetime.now().strftime("%Y년 %m월 %d일 %H:%M")
+    now = datetime.now(timezone(timedelta(hours=9)))  # 한국시간 KST
     sections = {"긴급": [], "주의": [], "참고": []}
     for a in articles:
         sections[a["grade"]].append(a)
@@ -263,7 +263,7 @@ def main():
     filtered = ai_filter_and_grade(raw_articles)
     print(f"필터링 후 {len(filtered)}건 선별")
 
-    now = datetime.now()
+    now = datetime.now(timezone(timedelta(hours=9)))  # 한국시간 KST
     now_str = now.strftime("%m월%d일 %H시 %M분")
     subject = f"(eBiz본부) AI 뉴스기사 모니터링 결과_{now_str} 기준"
 
