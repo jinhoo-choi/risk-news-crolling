@@ -417,9 +417,10 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
           <strong style="color:#276749;">참고</strong> · 업황 파악 목적 / 직접 위험 낮음
         </div>
         <div class="footer-info">
-          AI 필터링 적용 · 키워드: {', '.join(KEYWORDS)}<br>
           ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
-          ※ 담당자 (정) 최진후 차장 / (부) 이원세 대리 · 장인호 대리
+          ※ 담당자<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
         </div>
       </div></div></body></html>"""
 
@@ -489,9 +490,10 @@ def main():
           AI 뉴스기사 모니터링 결과<br>리스크에 해당하는 기사가 없습니다.
         </div>
         <div style="padding:14px 22px;background:#fff;border-top:0.5px solid #e2e8f0;color:#94a3b8;font-size:14px;line-height:2.0;">
-          AI 필터링 적용 · 키워드: {', '.join(KEYWORDS)}<br>
           ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
-          ※ 담당자 (정) 최진후 차장 / (부) 이원세 대리 · 장인호 대리
+          ※ 담당자<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
         </div>
       </div></body></html>"""
         send_email(subject, empty_html)
