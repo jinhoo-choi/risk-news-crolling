@@ -314,12 +314,12 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
 
     html = f"""<html><body style="font-family:'맑은 고딕',Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px;">
       <div style="max-width:680px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:0.5px solid #e2e8f0;">
-        <div style="background:linear-gradient(135deg,#4f6fad 0%,#3b5491 100%);padding:22px 26px;">
-          <div style="color:#fff;font-size:20px;font-weight:500;margin-bottom:8px;">
+        <div style="background:#fff;padding:22px 26px;border-bottom:0.5px solid #e2e8f0;">
+          <div style="color:#1e293b;font-size:20px;font-weight:500;margin-bottom:8px;">
             🤖 eBiz본부 리스크 탐지봇
-            <span style="font-size:13px;background:rgba(255,255,255,0.2);padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
+            <span style="font-size:13px;background:#eef2ff;color:#3b5491;padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
           </div>
-          <div style="color:rgba(255,255,255,0.8);font-size:15px;line-height:1.7;">
+          <div style="color:#475569;font-size:15px;line-height:1.7;">
             {now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)<br>
             수집 {total_count}건 → AI 필터링 후 {len(articles)}건 선별
             ({round((1 - len(articles)/total_count)*100) if total_count else 0}% 제거) &nbsp;·&nbsp;
@@ -393,12 +393,12 @@ def main():
         print("증권사 리스크 관련 뉴스 없음 — 결과 없음 메일 발송")
         empty_html = f"""<html><body style="font-family:'맑은 고딕',Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px;">
       <div style="max-width:680px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:0.5px solid #e2e8f0;">
-        <div style="background:linear-gradient(135deg,#4f6fad 0%,#3b5491 100%);padding:22px 26px;">
-          <div style="color:#fff;font-size:20px;font-weight:500;margin-bottom:6px;">
+        <div style="background:#fff;padding:22px 26px;border-bottom:0.5px solid #e2e8f0;">
+          <div style="color:#1e293b;font-size:20px;font-weight:500;margin-bottom:6px;">
             🤖 eBiz본부 리스크 탐지봇
-            <span style="font-size:13px;background:rgba(255,255,255,0.2);padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
+            <span style="font-size:13px;background:#eef2ff;color:#3b5491;padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
           </div>
-          <div style="color:rgba(255,255,255,0.8);font-size:15px;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</div>
+          <div style="color:#475569;font-size:15px;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</div>
         </div>
         <div style="padding:36px 24px;text-align:center;color:#64748b;font-size:17px;line-height:1.8;">
           AI 뉴스기사 모니터링 결과<br>리스크에 해당하는 기사가 없습니다.
