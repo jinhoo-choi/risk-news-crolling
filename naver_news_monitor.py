@@ -150,6 +150,8 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 - 기업 성장·투자 유치·흑자 전환·신규 상장 등 호재성 기사
 - 제품 출시·마케팅·홍보·이벤트 관련 기사
 - 증거금·신용융자 관련 투자 교육·이용 방법·금리 비교 안내 기사
+- 공모주·IPO 청약 증거금 관련 기사
+- 증거금이 신용·담보 증거금률 변경이 아닌 청약·납입 맥락으로 사용된 기사
 - 단순 시황·지수 등락 보도 (구체적 리스크 사건 없는 것)
 
 [등급 기준] — relevant: true인 경우만 적용
@@ -340,7 +342,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
         </div>
         <div style="padding:16px 22px;background:#fff;border-bottom:0.5px solid #e2e8f0;">
           <div style="font-size:15px;font-weight:500;color:#3b5491;margin-bottom:6px;">AI 분석 요약</div>
-          <div style="font-size:15px;color:#475569;line-height:1.8;">{ai_summary}</div>
+          <div style="font-size:14px;color:#475569;line-height:1.9;white-space:pre-line;">{ai_summary}</div>
         </div>
         {rows}
         <div style="padding:10px 22px;background:#fff;border-top:0.5px solid #e2e8f0;border-bottom:0.5px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.9;">
@@ -478,7 +480,13 @@ def main():
             json={
                 "model": "claude-haiku-4-5-20251001",
                 "max_tokens": 150,
-                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자에게 오늘의 리스크 성격과 핵심 이슈를 2문장 이내로 요약하세요. 숫자 통계 없이 내용 중심으로 작성하세요.\n\n{filtered_titles}"}],
+                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.
+
+✓ 오늘의 리스크 성격: (한 문장으로 오늘 전반적인 리스크 흐름)
+✓ 핵심 이슈: (가장 중요한 이슈 1~2개를 간결하게)
+✓ 주목 포인트: (담당자가 특히 주의할 사항 한 줄)
+
+숫자 통계 없이 내용 중심으로, 각 항목은 반드시 줄바꿈으로 구분하세요.\n\n{filtered_titles}"}],
             },
             timeout=15,
         )
