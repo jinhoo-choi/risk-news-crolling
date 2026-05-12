@@ -160,8 +160,9 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 
 반드시 JSON 배열만 반환하세요. 마크다운 코드블록(\`\`\`) 없이 순수 JSON만.
 - reason: 선별 이유를 증권사 실무 관점에서 20자 이내로 (relevant=false면 null)
+- action: 긴급 등급인 경우에만 실무 담당자 관점의 즉각 대응방안을 30자 이내 한 문장으로 (긴급이 아니면 null)
 반환 형식 예시:
-[{{"id":1,"relevant":true,"grade":"긴급","reason":"400억 채무불이행·회생신청"}},{{"id":2,"relevant":false,"grade":null,"reason":null}}]
+[{{"id":1,"relevant":true,"grade":"긴급","reason":"400억 채무불이행·회생신청","action":"해당 리츠 보유 고객 익스포저 파악 및 손실 시나리오 검토"}},{{"id":2,"relevant":false,"grade":null,"reason":null,"action":null}}]
 
 뉴스 목록:
 {numbered}"""
@@ -200,6 +201,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             if info.get("relevant") and info.get("grade"):
                 article["grade"] = info["grade"]
                 article["reason"] = info.get("reason", "")
+                article["action"] = info.get("action", "")
                 result.append(article)
         return result
 
@@ -302,6 +304,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
         <div style="margin:0 18px 14px;border:0.5px solid {gs["card_border"]};border-radius:0 0 8px 8px;background:{gs["card_bg"]};padding:14px 16px;">
           <a href="{a['url']}" style="color:#1e3a6e;font-weight:500;font-size:15px;text-decoration:none;display:block;margin-bottom:6px;line-height:1.6;">{a['title']}</a>
           <div style="font-size:12px;color:#64748b;margin-bottom:4px;">🤖 {a.get('reason','')}</div>
+          {f'<div style="font-size:12px;color:#2563eb;background:#eff6ff;border-left:2px solid #93c5fd;padding:5px 10px;border-radius:0 6px 6px 0;margin-bottom:6px;">💡 {a["action"]}</div>' if grade == "긴급" and a.get("action") else ""}
           <div style="font-size:12px;color:#64748b;margin-bottom:5px;">{a['url']}</div>
           <span style="font-size:11px;color:#3b5491;background:#eef2ff;padding:2px 9px;border-radius:20px;">키워드: {a['keyword']}</span>
         </div>'''  
@@ -323,18 +326,18 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
             🔴 긴급 {len(sections['긴급'])} / 🟡 주의 {len(sections['주의'])} / 🟢 참고 {len(sections['참고'])}
           </div>
         </div>
-        <div style="padding:16px 22px;background:#f0f5ff;border-bottom:0.5px solid #dce8ff;">
+        <div style="padding:16px 22px;background:#fff;border-bottom:0.5px solid #e2e8f0;">
           <div style="font-size:13px;font-weight:500;color:#3b5491;margin-bottom:6px;">🤖 AI 분석 요약</div>
           <div style="font-size:13px;color:#475569;line-height:1.8;">{ai_summary}</div>
         </div>
         {rows}
-        <div style="padding:12px 22px;background:#f8fafc;border-top:0.5px solid #e8edf5;border-bottom:0.5px solid #e8edf5;font-size:12px;color:#64748b;line-height:2.0;">
+        <div style="padding:12px 22px;background:#fff;border-top:0.5px solid #e2e8f0;border-bottom:0.5px solid #e2e8f0;font-size:12px;color:#64748b;line-height:2.0;">
           <strong style="color:#334155;">📌 등급 기준</strong><br>
           🔴 <strong style="color:#334155;">긴급</strong> · 부도·파산·회생·상폐 확정 또는 신청 / 리츠·펀드 기초자산 부실 / 금융당국 조사·제재 / 100억↑ 채무불이행<br>
           🟡 <strong style="color:#334155;">주의</strong> · 징후·가능성 단계 / 모니터링 필요 잠재 리스크<br>
           🟢 <strong style="color:#334155;">참고</strong> · 업황 파악 목적 / 직접 위험 낮음
         </div>
-        <div style="padding:14px 22px;background:#f8fafc;color:#94a3b8;font-size:12px;line-height:2.0;">
+        <div style="padding:14px 22px;background:#fff;color:#94a3b8;font-size:12px;line-height:2.0;">
           AI 필터링 적용 · 키워드: {', '.join(KEYWORDS)}<br>
           ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
           ※ 담당자 (정) 최진후 차장 / (부) 이원세 대리 · 장인호 대리
@@ -400,7 +403,7 @@ def main():
         <div style="padding:36px 24px;text-align:center;color:#64748b;font-size:15px;line-height:1.8;">
           AI 뉴스기사 모니터링 결과<br>리스크에 해당하는 기사가 없습니다.
         </div>
-        <div style="padding:14px 22px;background:#f8fafc;border-top:0.5px solid #e2e8f0;color:#94a3b8;font-size:12px;line-height:2.0;">
+        <div style="padding:14px 22px;background:#fff;border-top:0.5px solid #e2e8f0;color:#94a3b8;font-size:12px;line-height:2.0;">
           AI 필터링 적용 · 키워드: {', '.join(KEYWORDS)}<br>
           ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
           ※ 담당자 (정) 최진후 차장 / (부) 이원세 대리 · 장인호 대리
