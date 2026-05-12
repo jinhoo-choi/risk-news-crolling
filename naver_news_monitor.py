@@ -105,28 +105,42 @@ def ai_filter_and_grade(articles: list) -> list:
 
     numbered = "\n".join([f"{i+1}. {a['title']}" for i, a in enumerate(articles)])
 
-    prompt = f"""당신은 증권사 리스크 관리 전문가입니다.
-아래 뉴스 제목들을 보고, 한국 증권사(특히 한국투자증권)의 영업·신용·시장·규제 리스크 관점에서 판단해 주세요.
+    prompt = f"""당신은 한국투자증권 리스크 관리 전문가입니다.
+아래 뉴스 제목들을 보고 증권사 실무 관점에서 엄격하게 판단하세요.
 
-판단 기준:
-- 증권사 고객사·투자처의 부실, 파산, 워크아웃, 상장폐지
-- 금융당국 제재, 검사, 규제 강화
-- 시장 충격 (유동성 위기, 마진콜, 반대매매 급증)
-- 부동산PF, 브릿지론, 미매각 관련
-- 증권업 전반에 영향을 줄 수 있는 거시 리스크
+[관련 있음 — relevant: true 조건]
+다음 중 하나라도 해당하면 관련 있음:
+- 기업 부도·파산·회생·워크아웃·상장폐지가 확정되었거나 신청·징후 단계인 기사
+- 금융당국(금감원·금융위)의 증권사 대상 조사·검사·제재·규제 강화 기사
+- 부동산PF, 브릿지론, 미매각채권 관련 손실·부실 기사
+- 반대매매 급증, 마진콜, 유동성 위기 등 시장 충격 기사
+- 증권업 전반 수익성·건전성에 직접 영향을 주는 거시 리스크 기사
 
-각 뉴스에 대해 아래 JSON 배열만 반환하세요. 다른 말은 절대 하지 마세요.
-- relevant: true/false (증권사 리스크와 무관하면 false)
-- grade: "긴급" | "주의" | "참고" (relevant=false면 null)
-  - 긴급: 즉각적인 손실·규제 위험 가능성
-  - 주의: 모니터링 필요한 잠재 리스크
-  - 참고: 업황 파악에 유용하나 직접 위험은 낮음
+[관련 없음 — relevant: false 조건]
+다음 중 하나라도 해당하면 반드시 제외:
+- 단순히 "리스크", "파산", "위기" 등 용어만 언급하는 분석·전망·칼럼 기사
+- 학술·연구·교육·세미나·보고서 관련 기사
+- 해외 사례 기사 (국내 증권사에 직접 영향 없는 것)
+- 일반 기업 경영 이슈로 금융권 익스포저가 없는 기사
+- 제목에 구체적 기업명·사건 없이 일반론만 언급하는 기사
+
+[등급 기준] — relevant: true인 경우만 적용
+- 긴급: 아래 중 하나 해당
+  · 부도·파산·회생·상폐 확정 또는 신청 (신청 단계도 긴급)
+  · 리츠·펀드·ETF 등 증권사 판매 금융상품의 기초자산 부실·회생·상폐 신청
+  · 금융당국 조사·제재 착수
+  · 증권사 직접 손실 발생 또는 임박
+  · 시장 전반 충격 현실화 (반대매매 급증, 뱅크런 등)
+  · 특정 기업이 100억원 이상 채무 미상환·디폴트 선언
+- 주의: 징후·가능성 단계, 모니터링 필요한 잠재 리스크
+- 참고: 업황 파악에 유용하나 직접 위험은 낮은 것
+
+반드시 JSON 배열만 반환하세요. 마크다운 코드블록(\`\`\`) 없이 순수 JSON만.
+반환 형식 예시:
+[{{"id":1,"relevant":true,"grade":"긴급"}},{{"id":2,"relevant":false,"grade":null}}]
 
 뉴스 목록:
-{numbered}
-
-반환 형식 예시:
-[{{"id":1,"relevant":true,"grade":"긴급"}},{{"id":2,"relevant":false,"grade":null}}]"""
+{numbered}"""
 
     try:
         res = requests.post(
@@ -249,13 +263,32 @@ def main():
     filtered = ai_filter_and_grade(raw_articles)
     print(f"필터링 후 {len(filtered)}건 선별")
 
+    now = datetime.now()
+    now_str = now.strftime("%m월%d일 %H시 %M분")
+    subject = f"(eBiz본부) AI 뉴스기사 모니터링 결과_{now_str} 기준"
+
     if not filtered:
-        print("증권사 리스크 관련 뉴스 없음 — 이메일 미발송")
+        print("증권사 리스크 관련 뉴스 없음 — 결과 없음 메일 발송")
+        empty_html = f"""<html><body style="font-family:'맑은 고딕',Arial,sans-serif;background:#f5f5f5;margin:0;padding:20px;">
+      <div style="max-width:680px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
+        <div style="background:#1a3c6e;padding:18px 24px;">
+          <h2 style="color:#fff;margin:0;font-size:17px;">📰 뉴스 리스크 모니터링</h2>
+          <p style="color:#aac4e8;margin:4px 0 0;font-size:12px;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준</p>
+        </div>
+        <div style="padding:30px 24px;text-align:center;color:#666;font-size:15px;">
+          AI 뉴스기사 모니터링 결과 리스크에 해당하는 기사가 없습니다.
+        </div>
+        <div style="padding:14px 24px;background:#f9f9f9;color:#bbb;font-size:11px;text-align:center;line-height:1.8;">
+          AI 필터링 적용 · 키워드: {', '.join(KEYWORDS)}<br>
+          ※ 본 이메일은 Claude API를 통해 발송되었습니다.<br>
+          ※ 담당자 : 최진후 차장 / 이원세 대리 / 장인호 대리
+        </div>
+      </div></body></html>"""
+        send_email(subject, empty_html)
         return
 
-    now_str = datetime.now().strftime("%m/%d %H:%M")
     html, flag = build_email_html(filtered)
-    send_email(f"[뉴스 리스크] {flag}{now_str} · {len(filtered)}건", html)
+    send_email(subject, html)
 
 
 if __name__ == "__main__":
