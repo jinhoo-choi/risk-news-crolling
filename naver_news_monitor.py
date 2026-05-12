@@ -23,7 +23,7 @@ NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
 NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
 KEYWORDS = ["리스크", "회생", "기업회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "자본잠식", "횡령", "배임", "반대매매", "주가조작", "신용등급 강등", "PF 부실", "미매각", "영업정지", "자산유동화"]
-MAX_NEWS_PER_KEYWORD = 30
+MAX_NEWS_PER_KEYWORD = 1000  # 당일 기사 전체 수집 (pubDate 필터로 제한됨)
 SEEN_FILE = "seen_news.json"
 
 GRADE_META = {
@@ -79,7 +79,25 @@ def crawl_naver_news(keyword: str) -> list:
         if not items:
             break
 
+        kst = timezone(timedelta(hours=9))
+        today_kst = datetime.now(kst).date()
+
+        is_old = False
         for item in items:
+            # pubDate 파싱 (예: Mon, 12 May 2026 10:00:00 +0900)
+            pub_date_str = item.get("pubDate", "")
+            try:
+                from email.utils import parsedate_to_datetime
+                pub_dt = parsedate_to_datetime(pub_date_str).astimezone(kst)
+                pub_date = pub_dt.date()
+            except Exception:
+                pub_date = today_kst  # 파싱 실패 시 당일로 간주
+
+            # 당일 기사가 아니면 스킵 (최신순 정렬이므로 과거 기사 나오면 중단)
+            if pub_date < today_kst:
+                is_old = True
+                break
+
             title = BeautifulSoup(item.get("title", ""), "html.parser").get_text()
             link  = item.get("originallink") or item.get("link", "")
             if link:
@@ -88,12 +106,10 @@ def crawl_naver_news(keyword: str) -> list:
                     "url"    : link,
                     "keyword": keyword,
                 })
-            if len(articles) >= MAX_NEWS_PER_KEYWORD:
-                break
 
         total = data.get("total", 0)
         start += 100
-        if start > min(total, 1000):
+        if is_old or start > min(total, 1000):
             break
 
     return articles
@@ -123,6 +139,9 @@ def ai_filter_and_grade(articles: list) -> list:
 - 해외 사례 기사 (국내 증권사에 직접 영향 없는 것)
 - 일반 기업 경영 이슈로 금융권 익스포저가 없는 기사
 - 제목에 구체적 기업명·사건 없이 일반론만 언급하는 기사
+- 수출 확대·실적 개선·신사업 진출·수상·협약 등 긍정적 내용의 기사
+- 기업 성장·투자 유치·흑자 전환 등 호재성 기사
+- 제품 출시·마케팅·홍보성 기사
 
 [등급 기준] — relevant: true인 경우만 적용
 - 긴급: 아래 중 하나 해당
