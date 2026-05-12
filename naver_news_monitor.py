@@ -487,7 +487,7 @@ def main():
           <div style="color:rgba(255,255,255,0.85);font-size:14px;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</div>
         </div>
         <div style="padding:36px 24px;text-align:center;color:#64748b;font-size:17px;line-height:1.8;">
-          AI 뉴스기사 모니터링 결과<br>리스크에 해당하는 기사가 없습니다.
+          AI 리스크 탐지 결과<br>해당하는 뉴스가 없습니다.
         </div>
         <div style="padding:14px 22px;background:#fff;border-top:0.5px solid #e2e8f0;color:#94a3b8;font-size:14px;line-height:2.0;">
           ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
