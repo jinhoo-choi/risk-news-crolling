@@ -170,14 +170,21 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             },
             json={
                 "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 1000,
+                "max_tokens": 2000,
                 "messages": [{"role": "user", "content": prompt}],
             },
             timeout=30,
         )
         res.raise_for_status()
         raw = res.json()["content"][0]["text"].strip()
+        # 코드블록 제거
         raw = raw.replace("```json", "").replace("```", "").strip()
+        # JSON 배열 부분만 추출 (앞뒤 불필요한 텍스트 제거)
+        start_idx = raw.find("[")
+        end_idx = raw.rfind("]") + 1
+        if start_idx == -1 or end_idx == 0:
+            raise ValueError("JSON 배열을 찾을 수 없음")
+        raw = raw[start_idx:end_idx]
         grades = json.loads(raw)
         grade_map = {g["id"]: g for g in grades}
 
