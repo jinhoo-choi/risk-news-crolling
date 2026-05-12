@@ -1,6 +1,6 @@
 """
 네이버 뉴스 키워드 모니터링 & Claude AI 필터링 & 이메일 알림
-GitHub Actions 전용 버전
+GitHub Actions 전용 버전 / 네이버 검색 API 사용
 """
 
 import requests
@@ -15,13 +15,15 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # 설정 — GitHub Secrets에서 자동으로 읽어옴
 # ─────────────────────────────────────────────
-EMAIL_SENDER    = os.environ["EMAIL_SENDER"]
-EMAIL_PASSWORD  = os.environ["EMAIL_PASSWORD"]
-EMAIL_RECEIVER  = os.environ["EMAIL_RECEIVER"]
-ANTHROPIC_KEY   = os.environ["ANTHROPIC_API_KEY"]
+EMAIL_SENDER      = os.environ["EMAIL_SENDER"]
+EMAIL_PASSWORD    = os.environ["EMAIL_PASSWORD"]
+EMAIL_RECEIVERS   = [e.strip() for e in os.environ["EMAIL_RECEIVER"].split(",")]
+ANTHROPIC_KEY     = os.environ["ANTHROPIC_API_KEY"]
+NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
+NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
 KEYWORDS = ["리스크", "회생", "상장폐지", "파산", "워크아웃"]
-MAX_NEWS_PER_KEYWORD = 30   # seen 기반 시간대 필터링을 위해 넉넉히 수집
+MAX_NEWS_PER_KEYWORD = 30
 SEEN_FILE = "seen_news.json"
 
 GRADE_META = {
@@ -45,45 +47,62 @@ def save_seen_urls(seen: set):
 
 
 def crawl_naver_news(keyword: str) -> list:
-    url = f"https://search.naver.com/search.naver?where=news&query={keyword}&sort=1"
+    """네이버 검색 API로 뉴스 수집"""
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        )
+        "X-Naver-Client-Id": NAVER_CLIENT_ID,
+        "X-Naver-Client-Secret": NAVER_CLIENT_SECRET,
     }
-    try:
-        res = requests.get(url, headers=headers, timeout=10)
-        res.raise_for_status()
-    except Exception as e:
-        print(f"[{keyword}] 크롤링 오류: {e}")
-        return []
-
-    soup = BeautifulSoup(res.text, "html.parser")
     articles = []
-    for item in soup.select("ul.list_news > li.bx")[:MAX_NEWS_PER_KEYWORD]:
-        title_tag = item.select_one("a.news_tit")
-        if not title_tag:
-            continue
-        articles.append({
-            "title"  : title_tag.get_text(strip=True),
-            "url"    : title_tag.get("href", ""),
-            "keyword": keyword,
-        })
+    start = 1
+
+    while len(articles) < MAX_NEWS_PER_KEYWORD:
+        params = {
+            "query": keyword,
+            "display": 100,
+            "start": start,
+            "sort": "date",
+        }
+        try:
+            res = requests.get(
+                "https://openapi.naver.com/v1/search/news.json",
+                headers=headers,
+                params=params,
+                timeout=10,
+            )
+            res.raise_for_status()
+            data = res.json()
+        except Exception as e:
+            print(f"[{keyword}] API 오류: {e}")
+            break
+
+        items = data.get("items", [])
+        if not items:
+            break
+
+        for item in items:
+            title = BeautifulSoup(item.get("title", ""), "html.parser").get_text()
+            link  = item.get("originallink") or item.get("link", "")
+            if link:
+                articles.append({
+                    "title"  : title,
+                    "url"    : link,
+                    "keyword": keyword,
+                })
+            if len(articles) >= MAX_NEWS_PER_KEYWORD:
+                break
+
+        total = data.get("total", 0)
+        start += 100
+        if start > min(total, 1000):
+            break
+
     return articles
 
 
 def ai_filter_and_grade(articles: list) -> list:
-    """
-    Claude API로 뉴스 제목을 한번에 분석.
-    증권사 리스크 관점에서 무관한 뉴스 제거 + 등급 부여.
-    반환: grade 필드가 추가된 article 리스트 (무관 기사 제외)
-    """
     if not articles:
         return []
 
-    # 번호 매핑
     numbered = "\n".join([f"{i+1}. {a['title']}" for i, a in enumerate(articles)])
 
     prompt = f"""당신은 증권사 리스크 관리 전문가입니다.
@@ -126,8 +145,6 @@ def ai_filter_and_grade(articles: list) -> list:
         )
         res.raise_for_status()
         raw = res.json()["content"][0]["text"].strip()
-
-        # JSON 파싱
         grades = json.loads(raw)
         grade_map = {g["id"]: g for g in grades}
 
@@ -137,7 +154,6 @@ def ai_filter_and_grade(articles: list) -> list:
             if info.get("relevant") and info.get("grade"):
                 article["grade"] = info["grade"]
                 result.append(article)
-
         return result
 
     except Exception as e:
@@ -147,10 +163,8 @@ def ai_filter_and_grade(articles: list) -> list:
         return articles
 
 
-def build_email_html(articles: list) -> str:
+def build_email_html(articles: list):
     now = datetime.now().strftime("%Y년 %m월 %d일 %H:%M")
-
-    # 등급별 분류
     sections = {"긴급": [], "주의": [], "참고": []}
     for a in articles:
         sections[a["grade"]].append(a)
@@ -161,26 +175,19 @@ def build_email_html(articles: list) -> str:
         if not items:
             continue
         m = GRADE_META[grade]
-        rows += f"""<tr>
-          <td style="background:{m['color']};color:#fff;padding:8px 14px;
-              font-weight:bold;font-size:13px;">{m['emoji']} {grade} ({len(items)}건)</td>
-        </tr>"""
+        rows += f'<tr><td style="background:{m["color"]};color:#fff;padding:8px 14px;font-weight:bold;font-size:13px;">{m["emoji"]} {grade} ({len(items)}건)</td></tr>'
         for a in items:
-            rows += f"""<tr style="background:{m['bg']};">
-          <td style="padding:10px 14px;border-bottom:1px solid #eee;">
-            <a href="{a['url']}" style="color:#1a3c6e;font-weight:bold;
-               text-decoration:none;font-size:14px;line-height:1.6;">{a['title']}</a><br>
-            <span style="color:#999;font-size:11px;">{a['url']}</span><br>
-            <span style="color:#aaa;font-size:11px;">키워드: {a['keyword']}</span>
-          </td>
-        </tr>"""
+            rows += f'''<tr style="background:{m['bg']};"><td style="padding:10px 14px;border-bottom:1px solid #eee;">
+              <a href="{a['url']}" style="color:#1a3c6e;font-weight:bold;text-decoration:none;font-size:14px;line-height:1.6;">{a['title']}</a><br>
+              <span style="color:#999;font-size:11px;">{a['url']}</span><br>
+              <span style="color:#aaa;font-size:11px;">키워드: {a['keyword']}</span>
+            </td></tr>'''
 
     urgent_count = len(sections["긴급"])
     subject_flag = "🔴 긴급 포함 " if urgent_count else ""
 
     html = f"""<html><body style="font-family:'맑은 고딕',Arial,sans-serif;background:#f5f5f5;margin:0;padding:20px;">
-      <div style="max-width:680px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;
-                  box-shadow:0 2px 8px rgba(0,0,0,0.1);">
+      <div style="max-width:680px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
         <div style="background:#1a3c6e;padding:18px 24px;">
           <h2 style="color:#fff;margin:0;font-size:17px;">📰 뉴스 리스크 모니터링</h2>
           <p style="color:#aac4e8;margin:4px 0 0;font-size:12px;">
@@ -189,7 +196,7 @@ def build_email_html(articles: list) -> str:
           </p>
         </div>
         <table style="width:100%;border-collapse:collapse;">{rows}</table>
-        <div style="padding:14px 24px;background:#f9f9f9;color:#bbb;font-size:11px;text-align:center;">
+        <div style="padding:14px 24px;background:#f9f9f9;color:#bbb;font-size:11px;text-align:center;line-height:1.8;">
           AI 필터링 적용 · 키워드: {', '.join(KEYWORDS)}<br>
           ※ 본 이메일은 Claude API를 통해 발송되었습니다.<br>
           ※ 담당자 : 최진후 차장 / 이원세 대리 / 장인호 대리
@@ -207,7 +214,7 @@ def send_email(subject: str, html_body: str):
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-        server.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
+        server.sendmail(EMAIL_SENDER, EMAIL_RECEIVERS, msg.as_string())
     print("이메일 발송 완료")
 
 
@@ -216,14 +223,15 @@ def main():
     seen_urls    = load_seen_urls()
     raw_articles = []
 
-    # 1단계: 크롤링
     for keyword in KEYWORDS:
         articles = crawl_naver_news(keyword)
+        new = []
         for article in articles:
             if article["url"] and article["url"] not in seen_urls:
-                raw_articles.append(article)
+                new.append(article)
                 seen_urls.add(article["url"])
-        print(f"  [{keyword}] 수집 {len([a for a in raw_articles if a['keyword']==keyword])}건")
+        raw_articles.extend(new)
+        print(f"  [{keyword}] 신규 {len(new)}건")
 
     save_seen_urls(seen_urls)
 
@@ -231,7 +239,6 @@ def main():
         print("신규 뉴스 없음 — 종료")
         return
 
-    # 2단계: AI 필터링 & 등급 부여
     print(f"\nAI 필터링 중... (총 {len(raw_articles)}건)")
     filtered = ai_filter_and_grade(raw_articles)
     print(f"필터링 후 {len(filtered)}건 선별")
@@ -240,13 +247,10 @@ def main():
         print("증권사 리스크 관련 뉴스 없음 — 이메일 미발송")
         return
 
-    # 3단계: 이메일 발송
     now_str = datetime.now().strftime("%m/%d %H:%M")
     html, flag = build_email_html(filtered)
-    subject = f"[뉴스 리스크] {flag}{now_str} · {len(filtered)}건"
-    send_email(subject, html)
+    send_email(f"[뉴스 리스크] {flag}{now_str} · {len(filtered)}건", html)
 
 
 if __name__ == "__main__":
     main()
-
