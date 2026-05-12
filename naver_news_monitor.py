@@ -49,7 +49,6 @@ def save_seen_urls(seen: set):
 
 def crawl_naver_news(keyword: str) -> list:
     """네이버 검색 API로 뉴스 수집 — 당일(KST) 기사만"""
-    from email.utils import parsedate_to_datetime
     kst = timezone(timedelta(hours=9))
     today_kst = datetime.now(kst).date()
 
@@ -88,7 +87,7 @@ def crawl_naver_news(keyword: str) -> list:
         for item in items:
             pub_date_str = item.get("pubDate", "")
             try:
-                pub_dt = parsedate_to_datetime(pub_date_str).astimezone(kst)
+                pub_dt = _pdt(pub_date_str).astimezone(kst)
                 pub_date = pub_dt.date()
             except Exception:
                 pub_date = today_kst
@@ -317,15 +316,10 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
         for a in items:
             rows += f'''
         <div style="margin:0 18px 14px;border:0.5px solid {gs["card_border"]};border-radius:0 0 8px 8px;background:{gs["card_bg"]};padding:14px 16px;">
-          <a href="{a['url']}" style="color:#1e3a6e;font-weight:500;font-size:17px;text-decoration:none;display:block;margin-bottom:6px;line-height:1.6;">{a['title']} {f'<span style="font-size:13px;color:#94a3b8;font-weight:400;">{a["pub_str"]}</span>' if a.get("pub_str") else ""} <span style="font-size:12px;color:#16a34a;font-weight:500;">● 신규</span></a>
+          <a href="{a['url']}" style="color:#1e3a6e;font-weight:500;font-size:17px;text-decoration:none;display:block;margin-bottom:6px;line-height:1.6;">{a['title']} <span style="font-size:12px;color:#3b5491;font-weight:400;">↗ 기사 보기</span> {f'<span style="font-size:13px;color:#94a3b8;font-weight:400;">{a["pub_str"]}</span>' if a.get("pub_str") else ""} <span style="font-size:12px;color:#16a34a;font-weight:500;">● 신규</span></a>
           {f'<div style="font-size:13px;color:#64748b;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{a["desc"]}</div>' if a.get("desc") else ""}
-          <div style="font-size:14px;color:#64748b;margin-bottom:4px;">{a.get('reason','')}</div>
           {f'<div style="font-size:14px;color:#2563eb;background:#eff6ff;border-left:2px solid #93c5fd;padding:5px 10px;border-radius:0 6px 6px 0;margin-bottom:6px;">대응방안 : {a["action"]}</div>' if a.get("action") else ""}
-          <div style="font-size:13px;color:#94a3b8;margin-bottom:5px;">{a['url']}</div>
         </div>'''  
-
-    urgent_count = len(sections["긴급"])
-    subject_flag = ""
 
     html = f"""<html><body style="font-family:'맑은 고딕',Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px;">
       <div style="max-width:680px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:0.5px solid #e2e8f0;">
@@ -349,7 +343,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
           <div style="font-size:15px;color:#475569;line-height:1.8;">{ai_summary}</div>
         </div>
         {rows}
-        <div style="padding:12px 22px;background:#fff;border-top:0.5px solid #e2e8f0;border-bottom:0.5px solid #e2e8f0;font-size:14px;color:#64748b;line-height:2.0;">
+        <div style="padding:10px 22px;background:#fff;border-top:0.5px solid #e2e8f0;border-bottom:0.5px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.9;">
           <strong style="color:#334155;">등급 기준</strong><br>
           <strong style="color:#c0392b;">긴급</strong> · 부도·파산·회생·상폐 확정 또는 신청 / 리츠·펀드 기초자산 부실 / 금융당국 조사·제재 / 100억↑ 채무불이행<br>
           <strong style="color:#b7791f;">주의</strong> · 징후·가능성 단계 / 모니터링 필요 잠재 리스크<br>
@@ -362,7 +356,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
         </div>
       </div></body></html>"""
 
-    return html, subject_flag
+    return html
 
 
 def send_email(subject: str, html_body: str):
@@ -471,12 +465,31 @@ def main():
             kw_top[a["keyword"]] = kw_top.get(a["keyword"], 0) + 1
         top_kw_str = ", ".join(sorted(kw_top, key=kw_top.get, reverse=True)[:3])
 
-    ai_summary = f"총 {total_count}건 수집 중 {len(filtered)}건을 리스크 기사로 선별했습니다. "
-    if grade_summary:
-        ai_summary += f"{', '.join(grade_summary)}이 감지되었으며, "
-    ai_summary += f"주요 키워드는 {top_kw_str}입니다."
+    # AI에게 오늘 리스크 성격 한 줄 요약 요청
+    filtered_titles = "\n".join([f"- [{a['grade']}] {a['title']}" for a in filtered])
+    try:
+        sum_res = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 150,
+                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자에게 오늘의 리스크 성격과 핵심 이슈를 2문장 이내로 요약하세요. 숫자 통계 없이 내용 중심으로 작성하세요.\n\n{filtered_titles}"}],
+            },
+            timeout=15,
+        )
+        ai_summary = sum_res.json()["content"][0]["text"].strip()
+    except Exception:
+        ai_summary = f"총 {total_count}건 수집 중 {len(filtered)}건을 리스크 기사로 선별했습니다. "
+        if grade_summary:
+            ai_summary += f"{', '.join(grade_summary)}이 감지되었으며, "
+        ai_summary += f"주요 키워드는 {top_kw_str}입니다."
 
-    html, flag = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary)
+    html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary)
     send_email(subject, html)
 
 
