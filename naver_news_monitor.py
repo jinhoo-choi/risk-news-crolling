@@ -317,12 +317,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
         for a in items:
             rows += f'''
         <div style="margin:0 18px 14px;border:0.5px solid {gs["card_border"]};border-radius:0 0 8px 8px;background:{gs["card_bg"]};padding:14px 16px;">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-            {f'<span style="font-size:12px;color:#fff;background:#3b5491;padding:2px 8px;border-radius:4px;white-space:nowrap;">{a["entity"]}</span>' if a.get("entity") else ""}
-            {f'<span style="font-size:12px;color:#64748b;">{a["pub_str"]}</span>' if a.get("pub_str") else ""}
-            <span style="font-size:12px;color:#16a34a;font-weight:500;">● 신규</span>
-          </div>
-          <a href="{a['url']}" style="color:#1e3a6e;font-weight:500;font-size:17px;text-decoration:none;display:block;margin-bottom:6px;line-height:1.6;">{a['title']}</a>
+          <a href="{a['url']}" style="color:#1e3a6e;font-weight:500;font-size:17px;text-decoration:none;display:block;margin-bottom:6px;line-height:1.6;">{a['title']} {f'<span style="font-size:13px;color:#94a3b8;font-weight:400;">{a["pub_str"]}</span>' if a.get("pub_str") else ""} <span style="font-size:12px;color:#16a34a;font-weight:500;">● 신규</span></a>
           {f'<div style="font-size:13px;color:#64748b;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{a["desc"]}</div>' if a.get("desc") else ""}
           <div style="font-size:14px;color:#64748b;margin-bottom:4px;">{a.get('reason','')}</div>
           {f'<div style="font-size:14px;color:#2563eb;background:#eff6ff;border-left:2px solid #93c5fd;padding:5px 10px;border-radius:0 6px 6px 0;margin-bottom:6px;">대응방안 : {a["action"]}</div>' if a.get("action") else ""}
