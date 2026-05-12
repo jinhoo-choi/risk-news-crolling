@@ -427,6 +427,28 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
     return html
 
 
+def build_empty_html(now) -> str:
+    return f"""<html><body style="font-family:'맑은 고딕',Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px;">
+      <div style="max-width:680px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:0.5px solid #e2e8f0;">
+        <div style="background:linear-gradient(135deg,#4f6fad 0%,#3b5491 100%);padding:22px 26px;">
+          <div style="color:#fff;font-size:20px;font-weight:500;margin-bottom:6px;">
+            🤖 eBiz본부 리스크 탐지봇
+            <span style="font-size:12px;background:rgba(255,255,255,0.2);color:#fff;padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
+          </div>
+          <div style="color:rgba(255,255,255,0.85);font-size:14px;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</div>
+        </div>
+        <div style="padding:36px 24px;text-align:center;color:#64748b;font-size:17px;line-height:1.8;">
+          AI 리스크 탐지 결과<br>해당하는 뉴스가 없습니다.
+        </div>
+        <div style="padding:14px 22px;background:#fff;border-top:0.5px solid #e2e8f0;color:#94a3b8;font-size:12px;line-height:2.0;">
+          ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
+          ※ 담당자<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
+        </div>
+      </div></body></html>"""
+
+
 def send_email(subject: str, html_body: str):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -463,7 +485,11 @@ def main():
     save_seen_urls(seen_urls)
 
     if not raw_articles:
-        print("신규 뉴스 없음 — 종료")
+        print("신규 뉴스 없음 — 결과 없음 메일 발송")
+        now = datetime.now(timezone(timedelta(hours=9)))
+        now_str = now.strftime("%m월%d일 %H시")
+        subject = f"(eBiz본부) 리스크 탐지 결과_{now_str} 기준"
+        send_email(subject, build_empty_html(now))
         return
 
     print(f"\nAI 필터링 중... (총 {len(raw_articles)}건)")
@@ -477,26 +503,7 @@ def main():
 
     if not filtered:
         print("증권사 리스크 관련 뉴스 없음 — 결과 없음 메일 발송")
-        empty_html = f"""<html><body style="font-family:'맑은 고딕',Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px;">
-      <div style="max-width:680px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:0.5px solid #e2e8f0;">
-        <div style="background:linear-gradient(135deg,#4f6fad 0%,#3b5491 100%);padding:22px 26px;">
-          <div style="color:#fff;font-size:20px;font-weight:500;margin-bottom:6px;">
-            🤖 eBiz본부 리스크 탐지봇
-            <span style="font-size:12px;background:rgba(255,255,255,0.2);color:#fff;padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
-          </div>
-          <div style="color:rgba(255,255,255,0.85);font-size:14px;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</div>
-        </div>
-        <div style="padding:36px 24px;text-align:center;color:#64748b;font-size:17px;line-height:1.8;">
-          AI 리스크 탐지 결과<br>해당하는 뉴스가 없습니다.
-        </div>
-        <div style="padding:14px 22px;background:#fff;border-top:0.5px solid #e2e8f0;color:#94a3b8;font-size:14px;line-height:2.0;">
-          ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
-          ※ 담당자<br>
-          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
-          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
-        </div>
-      </div></body></html>"""
-        send_email(subject, empty_html)
+        send_email(subject, build_empty_html(now))
         return
 
     # AI 전체 요약 생성
@@ -505,36 +512,7 @@ def main():
         grade_summary.append(f"긴급 {len([a for a in filtered if a['grade']=='긴급'])}건")
     if len([a for a in filtered if a["grade"]=="주의"]) > 0:
         grade_summary.append(f"주의 {len([a for a in filtered if a['grade']=='주의'])}건")
-    # 긴급 기사의 제목에서 주요 단어 추출 (기업명·사건명 위주)
-    urgent_articles = [a for a in filtered if a["grade"] == "긴급"]
-    if urgent_articles:
-        # 긴급 기사 제목을 Claude에게 보내 핵심 단어 추출
-        urgent_titles = "\n".join([f"- {a['title']}" for a in urgent_articles])
-        try:
-            kw_res = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": "claude-haiku-4-5-20251001",
-                    "max_tokens": 100,
-                    "messages": [{"role": "user", "content": f"아래 긴급 뉴스 제목들에서 가장 중요한 기업명·사건명 키워드 3개를 쉼표로만 구분해서 반환하세요. 다른 말 없이 키워드만.\n\n{urgent_titles}"}],
-                },
-                timeout=15,
-            )
-            top_kw_str = kw_res.json()["content"][0]["text"].strip()
-        except Exception:
-            top_kw_str = ", ".join([a["keyword"] for a in urgent_articles[:3]])
-    else:
-        kw_top = {}
-        for a in filtered:
-            kw_top[a["keyword"]] = kw_top.get(a["keyword"], 0) + 1
-        top_kw_str = ", ".join(sorted(kw_top, key=kw_top.get, reverse=True)[:3])
-
-    # AI에게 오늘 리스크 성격 한 줄 요약 요청
+    # AI에게 오늘 리스크 성격 요약 요청
     filtered_titles = "\n".join([f"- [{a['grade']}] {a['title']}" for a in filtered])
     try:
         sum_res = requests.post(
@@ -553,10 +531,8 @@ def main():
         )
         ai_summary = sum_res.json()["content"][0]["text"].strip()
     except Exception:
-        ai_summary = f"총 {total_count}건 수집 중 {len(filtered)}건을 리스크 기사로 선별했습니다. "
-        if grade_summary:
-            ai_summary += f"{', '.join(grade_summary)}이 감지되었으며, "
-        ai_summary += f"주요 키워드는 {top_kw_str}입니다."
+        grade_str = ", ".join(grade_summary) if grade_summary else "없음"
+        ai_summary = f"총 {total_count}건 수집 중 {len(filtered)}건 선별. {grade_str} 감지."
 
     html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary)
     send_email(subject, html)
