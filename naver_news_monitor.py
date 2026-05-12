@@ -153,9 +153,15 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 - 주의: 징후·가능성 단계, 모니터링 필요한 잠재 리스크
 - 참고: 업황 파악에 유용하나 직접 위험은 낮은 것
 
+[중복 기사 처리]
+- 동일한 사건·이슈를 다른 언론사가 보도한 경우, 가장 먼저 나온 기사(id 숫자 작은 것) 1건만 relevant:true로 처리
+- 나머지 동일 사건 기사는 relevant:false로 처리
+- 제목이 다르더라도 핵심 사건(기업명+사건유형)이 동일하면 중복으로 판단
+
 반드시 JSON 배열만 반환하세요. 마크다운 코드블록(\`\`\`) 없이 순수 JSON만.
+- reason: 선별 이유를 증권사 실무 관점에서 20자 이내로 (relevant=false면 null)
 반환 형식 예시:
-[{{"id":1,"relevant":true,"grade":"긴급"}},{{"id":2,"relevant":false,"grade":null}}]
+[{{"id":1,"relevant":true,"grade":"긴급","reason":"400억 채무불이행·회생신청"}},{{"id":2,"relevant":false,"grade":null,"reason":null}}]
 
 뉴스 목록:
 {numbered}"""
@@ -207,8 +213,51 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
         return []
 
 
+def dedup_by_title(articles: list) -> list:
+    """배치 경계 걸친 중복 기사 제거 — Claude API로 최종 중복 제거"""
+    if not articles:
+        return []
+
+    numbered = "\n".join([f"{i+1}. {a['title']}" for i, a in enumerate(articles)])
+    prompt = f"""아래 뉴스 제목 목록에서 동일한 사건·이슈를 다룬 중복 기사를 제거하세요.
+동일 기업명 + 동일 사건유형이면 중복으로 판단하며, id가 가장 작은 것(먼저 나온 것)만 남기세요.
+
+반드시 JSON 배열만 반환하세요. 마크다운 코드블록 없이 순수 JSON만.
+형식: [{{"id": 유지할id}}, ...] — 유지할 기사 id만 포함
+
+뉴스 목록:
+{numbered}"""
+
+    try:
+        res = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 500,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=30,
+        )
+        res.raise_for_status()
+        raw = res.json()["content"][0]["text"].strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        start_idx = raw.find("[")
+        end_idx = raw.rfind("]") + 1
+        raw = raw[start_idx:end_idx]
+        keep_ids = {item["id"] for item in json.loads(raw)}
+        return [a for i, a in enumerate(articles) if (i + 1) in keep_ids]
+    except Exception as e:
+        print(f"중복 제거 오류: {e} — 중복 제거 생략")
+        return articles
+
+
 def ai_filter_and_grade(articles: list) -> list:
-    """전체 기사를 30건씩 배치로 나눠 AI 필터링"""
+    """전체 기사를 30건씩 배치로 나눠 AI 필터링 후 중복 제거"""
     if not articles:
         return []
     result = []
@@ -217,6 +266,12 @@ def ai_filter_and_grade(articles: list) -> list:
         batch = articles[i:i+batch_size]
         print(f"  배치 {i//batch_size+1}/{-(-len(articles)//batch_size)} 처리 중... ({len(batch)}건)")
         result.extend(ai_filter_batch(batch, offset=i))
+
+    if len(result) > 1:
+        print(f"  중복 제거 중... (필터링 후 {len(result)}건)")
+        result = dedup_by_title(result)
+        print(f"  중복 제거 후 {len(result)}건")
+
     return result
 
 
@@ -249,7 +304,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
         <div style="background:#1a3c6e;padding:18px 24px;">
           <h2 style="color:#fff;margin:0;font-size:17px;">📰 뉴스 리스크 모니터링</h2>
           <p style="color:#aac4e8;margin:4px 0 0;font-size:12px;">
-            {now} · 총 {len(articles)}건
+            {now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간) · 총 {len(articles)}건
             (🔴 긴급 {len(sections['긴급'])} / 🟡 주의 {len(sections['주의'])} / 🟢 참고 {len(sections['참고'])})
           </p>
         </div>
