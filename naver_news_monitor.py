@@ -97,11 +97,15 @@ def crawl_naver_news(keyword: str) -> list:
                 break
 
             title = BeautifulSoup(item.get("title", ""), "html.parser").get_text()
+            desc  = BeautifulSoup(item.get("description", ""), "html.parser").get_text()
             link  = item.get("originallink") or item.get("link", "")
+            pub   = item.get("pubDate", "")
             if title and link:
                 articles.append({
                     "title"  : title,
+                    "desc"   : desc[:80] if desc else "",
                     "url"    : link,
+                    "pubDate": pub,
                     "keyword": keyword,
                 })
 
@@ -161,8 +165,9 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 반드시 JSON 배열만 반환하세요. 마크다운 코드블록(\`\`\`) 없이 순수 JSON만.
 - reason: 선별 이유를 증권사 실무 관점에서 20자 이내로 (relevant=false면 null)
 - action: relevant:true인 모든 기사에 대해 실무 담당자 관점의 대응방안을 30자 이내 한 문장으로 (relevant=false면 null)
+- entity: 기사의 핵심 기업명 또는 주체 1개 (예: 태영건설, 금감원, 홈플러스) (relevant=false면 null)
 반환 형식 예시:
-[{{"id":1,"relevant":true,"grade":"긴급","reason":"400억 채무불이행·회생신청","action":"해당 리츠 보유 고객 익스포저 파악 및 손실 시나리오 검토"}},{{"id":2,"relevant":true,"grade":"주의","reason":"PF 부실 확산 가능성","action":"관련 채권 보유 현황 점검 및 모니터링 강화"}},{{"id":3,"relevant":false,"grade":null,"reason":null,"action":null}}]
+[{{"id":1,"relevant":true,"grade":"긴급","reason":"400억 채무불이행·회생신청","action":"해당 리츠 보유 고객 익스포저 파악 및 손실 시나리오 검토","entity":"제이알글로벌리츠"}},{{"id":2,"relevant":false,"grade":null,"reason":null,"action":null,"entity":null}}]
 
 뉴스 목록:
 {numbered}"""
@@ -202,6 +207,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 article["grade"] = info["grade"]
                 article["reason"] = info.get("reason", "")
                 article["action"] = info.get("action", "")
+                article["entity"] = info.get("entity", "")
                 result.append(article)
         return result
 
@@ -302,11 +308,16 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
         for a in items:
             rows += f'''
         <div style="margin:0 18px 14px;border:0.5px solid {gs["card_border"]};border-radius:0 0 8px 8px;background:{gs["card_bg"]};padding:14px 16px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            {f'<span style="font-size:12px;color:#fff;background:#3b5491;padding:2px 8px;border-radius:4px;white-space:nowrap;">{a["entity"]}</span>' if a.get("entity") else ""}
+            {f'<span style="font-size:12px;color:#64748b;">{a["pub_str"]}</span>' if a.get("pub_str") else ""}
+            <span style="font-size:12px;color:#16a34a;font-weight:500;">● 신규</span>
+          </div>
           <a href="{a['url']}" style="color:#1e3a6e;font-weight:500;font-size:17px;text-decoration:none;display:block;margin-bottom:6px;line-height:1.6;">{a['title']}</a>
+          {f'<div style="font-size:13px;color:#64748b;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{a["desc"]}</div>' if a.get("desc") else ""}
           <div style="font-size:14px;color:#64748b;margin-bottom:4px;">{a.get('reason','')}</div>
           {f'<div style="font-size:14px;color:#2563eb;background:#eff6ff;border-left:2px solid #93c5fd;padding:5px 10px;border-radius:0 6px 6px 0;margin-bottom:6px;">대응방안 : {a["action"]}</div>' if a.get("action") else ""}
-          <div style="font-size:14px;color:#64748b;margin-bottom:5px;">{a['url']}</div>
-          <span style="font-size:13px;color:#3b5491;background:#eef2ff;padding:2px 9px;border-radius:20px;">키워드: {a['keyword']}</span>
+          <div style="font-size:13px;color:#94a3b8;margin-bottom:5px;">{a['url']}</div>
         </div>'''  
 
     urgent_count = len(sections["긴급"])
@@ -324,9 +335,9 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
             수집 {total_count}건 → AI 필터링 후 {len(articles)}건 선별 ({round((1 - len(articles)/total_count)*100) if total_count else 0}% 제거)
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <span style="background:rgba(220,60,60,0.25);color:#ffd0d0;font-size:13px;font-weight:500;padding:4px 14px;border-radius:20px;border:1px solid rgba(255,180,180,0.4);">🔴 긴급 {len(sections['긴급'])}건</span>
-            <span style="background:rgba(240,180,30,0.25);color:#ffe9a0;font-size:13px;font-weight:500;padding:4px 14px;border-radius:20px;border:1px solid rgba(255,220,100,0.4);">🟡 주의 {len(sections['주의'])}건</span>
-            <span style="background:rgba(50,180,100,0.25);color:#b8f0cc;font-size:13px;font-weight:500;padding:4px 14px;border-radius:20px;border:1px solid rgba(100,220,140,0.4);">🟢 참고 {len(sections['참고'])}건</span>
+            <span style="background:#c0392b;color:#fff;font-size:13px;font-weight:500;padding:4px 14px;border-radius:20px;">🔴 긴급 {len(sections['긴급'])}건</span>
+            <span style="background:#d97706;color:#fff;font-size:13px;font-weight:500;padding:4px 14px;border-radius:20px;">🟡 주의 {len(sections['주의'])}건</span>
+            <span style="background:#276749;color:#fff;font-size:13px;font-weight:500;padding:4px 14px;border-radius:20px;">🟢 참고 {len(sections['참고'])}건</span>
           </div>
         </div>
         <div style="padding:16px 22px;background:#fff;border-bottom:0.5px solid #e2e8f0;">
@@ -369,9 +380,16 @@ def main():
 
     for keyword in KEYWORDS:
         articles = crawl_naver_news(keyword)
+        from email.utils import parsedate_to_datetime as _pdt
+        kst_tz = timezone(timedelta(hours=9))
         new = []
         for article in articles:
             if article["url"] and article["url"] not in seen_urls:
+                try:
+                    pub_dt = _pdt(article.get("pubDate","")).astimezone(kst_tz)
+                    article["pub_str"] = pub_dt.strftime("%m/%d %H:%M")
+                except Exception:
+                    article["pub_str"] = ""
                 new.append(article)
                 seen_urls.add(article["url"])
         raw_articles.extend(new)
