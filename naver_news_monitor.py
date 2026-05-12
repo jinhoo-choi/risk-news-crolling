@@ -345,7 +345,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
             rows += f'''
         <div class="card-wrap" style="border:0.5px solid {gs["card_border"]};background:{gs["card_bg"]};">
           <a href="{a['url']}" class="article-title">{a['title']} <span style="font-size:12px;color:#3b5491;font-weight:400;">↗ 기사 보기</span> {f'<span style="font-size:13px;color:#94a3b8;font-weight:400;">{a["pub_str"]}</span>' if a.get("pub_str") else ""} <span style="font-size:12px;color:#16a34a;font-weight:500;">● 신규</span></a>
-          {f'<div class="article-desc">{a["desc"]}</div>' if a.get("desc") else ""}
+          {f'<div class="article-desc" style="white-space:normal;word-break:keep-all;">{a["desc"]}</div>' if a.get("desc") else ""}
           {f'<div class="action-box">대응방안 : {a["action"]}</div>' if a.get("action") else ""}
         </div>'''  
 
@@ -365,8 +365,8 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
   .summary-title {{ font-size:15px; font-weight:500; color:#3b5491; margin-bottom:6px; }}
   .summary-body {{ font-size:14px; color:#475569; line-height:1.9; white-space:pre-line; }}
   .card-wrap {{ margin:0 18px 14px; border-radius:0 0 8px 8px; padding:14px 16px; }}
-  .article-title {{ font-weight:500; font-size:17px; text-decoration:none; display:block; margin-bottom:6px; line-height:1.6; color:#1e3a6e; }}
-  .article-desc {{ font-size:13px; color:#64748b; margin-bottom:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+  .article-title {{ font-weight:500; font-size:17px; text-decoration:none; display:block; margin-bottom:6px; line-height:1.6; color:#1e3a6e; white-space:normal; word-break:keep-all; overflow-wrap:break-word; }}
+  .article-desc {{ font-size:13px; color:#64748b; margin-bottom:6px; white-space:normal; word-break:keep-all; overflow-wrap:break-word; }}
   .action-box {{ font-size:14px; color:#2563eb; background:#eff6ff; border-left:2px solid #93c5fd; padding:5px 10px; border-radius:0 6px 6px 0; margin-bottom:6px; }}
   .footer-grade {{ padding:10px 22px; background:#fff; border-top:0.5px solid #e2e8f0; border-bottom:0.5px solid #e2e8f0; font-size:12px; color:#94a3b8; line-height:1.9; }}
   .footer-info {{ padding:14px 22px; background:#fff; color:#94a3b8; font-size:12px; line-height:2.0; }}
