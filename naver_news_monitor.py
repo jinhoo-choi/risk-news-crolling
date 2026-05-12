@@ -265,10 +265,10 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
           </tr>
         </table>
         <table style="width:100%;border-collapse:collapse;">{rows}</table>
-        <div style="padding:14px 24px;background:#f9f9f9;color:#bbb;font-size:11px;text-align:center;line-height:1.8;">
+        <div style="padding:14px 24px;background:#f9f9f9;color:#bbb;font-size:11px;text-align:left;line-height:1.8;">
           AI 필터링 적용 · 키워드: {', '.join(KEYWORDS)}<br>
-          ※ 본 이메일은 Claude API를 통해 발송되었습니다.<br>
-          ※ 담당자 : 최진후 차장 / 이원세 대리 / 장인호 대리
+          ※ 본 이메일은 네이버 검색 API로 수집한 뉴스를 Claude AI가 증권사 리스크 관점으로 자동 필터링·등급 분류하여 발송되었습니다.<br>
+          ※ 담당자 (정) 최진후 차장 / (부) 이원세 대리 · 장인호 대리
         </div>
       </div></body></html>"""
 
@@ -328,10 +328,10 @@ def main():
         <div style="padding:30px 24px;text-align:center;color:#666;font-size:15px;">
           AI 뉴스기사 모니터링 결과 리스크에 해당하는 기사가 없습니다.
         </div>
-        <div style="padding:14px 24px;background:#f9f9f9;color:#bbb;font-size:11px;text-align:center;line-height:1.8;">
+        <div style="padding:14px 24px;background:#f9f9f9;color:#bbb;font-size:11px;text-align:left;line-height:1.8;">
           AI 필터링 적용 · 키워드: {', '.join(KEYWORDS)}<br>
-          ※ 본 이메일은 Claude API를 통해 발송되었습니다.<br>
-          ※ 담당자 : 최진후 차장 / 이원세 대리 / 장인호 대리
+          ※ 본 이메일은 네이버 검색 API로 수집한 뉴스를 Claude AI가 증권사 리스크 관점으로 자동 필터링·등급 분류하여 발송되었습니다.<br>
+          ※ 담당자 (정) 최진후 차장 / (부) 이원세 대리 · 장인호 대리
         </div>
       </div></body></html>"""
         send_email(subject, empty_html)
