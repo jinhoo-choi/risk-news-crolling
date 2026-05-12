@@ -22,7 +22,7 @@ ANTHROPIC_KEY     = os.environ["ANTHROPIC_API_KEY"]
 NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
 NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
-KEYWORDS = ["리스크", "회생", "상장폐지", "파산", "워크아웃"]
+KEYWORDS = ["리스크", "회생", "기업회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "자본잠식", "횡령", "배임", "반대매매", "주가조작", "신용등급 강등", "PF 부실", "미매각", "영업정지", "자산유동화"]
 MAX_NEWS_PER_KEYWORD = 30
 SEEN_FILE = "seen_news.json"
 
@@ -168,6 +168,7 @@ def ai_filter_and_grade(articles: list) -> list:
             info = grade_map.get(i + 1, {})
             if info.get("relevant") and info.get("grade"):
                 article["grade"] = info["grade"]
+                article["reason"] = info.get("reason", "")
                 result.append(article)
         return result
 
@@ -183,7 +184,7 @@ def ai_filter_and_grade(articles: list) -> list:
         return articles
 
 
-def build_email_html(articles: list):
+def build_email_html(articles: list, total_count: int = 0, ai_summary: str = ''):
     now = datetime.now(timezone(timedelta(hours=9)))  # 한국시간 KST
     sections = {"긴급": [], "주의": [], "참고": []}
     for a in articles:
@@ -199,6 +200,7 @@ def build_email_html(articles: list):
         for a in items:
             rows += f'''<tr style="background:{m['bg']};"><td style="padding:10px 14px;border-bottom:1px solid #eee;">
               <a href="{a['url']}" style="color:#1a3c6e;font-weight:bold;text-decoration:none;font-size:14px;line-height:1.6;">{a['title']}</a><br>
+              <span style="color:#e67e22;font-size:11px;font-weight:500;">🤖 {a.get('reason','')}</span><br>
               <span style="color:#999;font-size:11px;">{a['url']}</span><br>
               <span style="color:#aaa;font-size:11px;">키워드: {a['keyword']}</span>
             </td></tr>'''
@@ -215,6 +217,24 @@ def build_email_html(articles: list):
             (🔴 긴급 {len(sections['긴급'])} / 🟡 주의 {len(sections['주의'])} / 🟢 참고 {len(sections['참고'])})
           </p>
         </div>
+        <table style="width:100%;border-collapse:collapse;">
+          <tr>
+            <td style="padding:14px 16px;background:#eef3fb;border-bottom:1px solid #dde3ec;font-size:13px;color:#1a3c6e;line-height:1.8;">
+              <b>🤖 AI 분석 요약</b><br>
+              <span style="color:#444;font-size:12px;">{ai_summary}</span>
+            </td>
+          </tr>
+        </table>
+        <table style="width:100%;border-collapse:collapse;">
+          <tr>
+            <td style="padding:12px 16px;background:#f0f4f9;border-bottom:1px solid #dde3ec;font-size:12px;color:#555;line-height:1.8;">
+              <b>📌 등급 기준</b><br>
+              🔴 <b>긴급</b> : 부도·파산·회생·상폐 확정 또는 신청 / 리츠·펀드 기초자산 부실 / 금융당국 조사·제재 착수 / 100억 이상 채무 미상환·디폴트 / 증권사 직접 손실 임박<br>
+              🟡 <b>주의</b> : 징후·가능성 단계 / 모니터링 필요한 잠재 리스크<br>
+              🟢 <b>참고</b> : 업황 파악에 유용하나 직접 위험은 낮은 것
+            </td>
+          </tr>
+        </table>
         <table style="width:100%;border-collapse:collapse;">{rows}</table>
         <div style="padding:14px 24px;background:#f9f9f9;color:#bbb;font-size:11px;text-align:center;line-height:1.8;">
           AI 필터링 적용 · 키워드: {', '.join(KEYWORDS)}<br>
@@ -266,6 +286,7 @@ def main():
     now = datetime.now(timezone(timedelta(hours=9)))  # 한국시간 KST
     now_str = now.strftime("%m월%d일 %H시 %M분")
     subject = f"(eBiz본부) AI 뉴스기사 모니터링 결과_{now_str} 기준"
+    total_count = len(raw_articles)
 
     if not filtered:
         print("증권사 리스크 관련 뉴스 없음 — 결과 없음 메일 발송")
@@ -287,7 +308,22 @@ def main():
         send_email(subject, empty_html)
         return
 
-    html, flag = build_email_html(filtered)
+    # AI 전체 요약 생성
+    grade_summary = []
+    if len([a for a in filtered if a["grade"]=="긴급"]) > 0:
+        grade_summary.append(f"긴급 {len([a for a in filtered if a['grade']=='긴급'])}건")
+    if len([a for a in filtered if a["grade"]=="주의"]) > 0:
+        grade_summary.append(f"주의 {len([a for a in filtered if a['grade']=='주의'])}건")
+    kw_top = {}
+    for a in filtered:
+        kw_top[a["keyword"]] = kw_top.get(a["keyword"], 0) + 1
+    top_kw = sorted(kw_top, key=kw_top.get, reverse=True)[:3]
+    ai_summary = f"총 {total_count}건 수집 중 {len(filtered)}건을 리스크 기사로 선별했습니다. "
+    if grade_summary:
+        ai_summary += f"{', '.join(grade_summary)}이 감지되었으며, "
+    ai_summary += f"주요 키워드는 {', '.join(top_kw)}입니다."
+
+    html, flag = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary)
     send_email(subject, html)
 
 
