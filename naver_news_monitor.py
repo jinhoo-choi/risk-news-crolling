@@ -383,7 +383,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
 
   <div style="padding:16px 22px;background:#fff;border-bottom:1px solid #e2e8f0;">
     <div style="font-size:15px;font-weight:500;color:#3b5491;margin-bottom:8px;">AI 분석 요약</div>
-    <div style="font-size:13px;color:#475569;line-height:1.6;white-space:pre-line;">{ai_summary}</div>
+    <div style="font-size:13px;color:#475569;line-height:1.6;">{ai_summary.replace(chr(10), "<br>")}</div>
   </div>
 
   {rows}
