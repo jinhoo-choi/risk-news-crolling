@@ -35,16 +35,25 @@ GRADE_META = {
 # ─────────────────────────────────────────────
 
 
-def load_seen_urls():
+def load_seen_urls() -> set:
+    """당일 날짜 기준으로 seen URL 로드 — 전날 데이터 자동 제거"""
+    today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
     if os.path.exists(SEEN_FILE):
         with open(SEEN_FILE, "r", encoding="utf-8") as f:
-            return set(json.load(f))
+            data = json.load(f)
+        # 구버전(리스트) 호환 처리
+        if isinstance(data, list):
+            return set()
+        # 당일 날짜 URL만 반환
+        return set(data.get(today, []))
     return set()
 
 
 def save_seen_urls(seen: set):
+    """당일 날짜로 seen URL 저장"""
+    today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
-        json.dump(list(seen), f, ensure_ascii=False)
+        json.dump({today: list(seen)}, f, ensure_ascii=False)
 
 
 def crawl_naver_news(keyword: str) -> list:
@@ -181,12 +190,26 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 - 공모주·IPO 청약 증거금 관련 기사
 - 증거금이 신용·담보 증거금률 변경이 아닌 청약·납입 맥락으로 사용된 기사
 - 단순 시황·지수 등락 보도 (구체적 리스크 사건 없는 것)
+- "전망", "예상", "가능성", "우려" 등 추측성 표현만 있고 확정된 사건이 없는 기사
+- 특정 기업·사건 없이 업계 전반의 리스크를 일반론으로만 다룬 기사
+- 인터뷰·기고·칼럼 형식의 기사 (기자 의견 또는 전문가 인터뷰 위주)
+- 해외 기업·시장 이슈로 국내 증권사 직접 익스포저가 없는 기사
+- 리스크 관련 정책·제도 변경 예고 기사 (시행 전 단계)
+- 증권사 실적·수수료·영업 관련 기사 (손실·부실 아닌 것)
+- "이 시각 주요 뉴스", "뉴스브리핑" 등 뉴스 모음·요약 기사
+- 기획기사·시리즈 기사 (제목에 ①②③ 또는 [기획] [시리즈] [르포] 등 표시된 것)
+- 리스크가 "안정화", "개선", "해소", "완화" 됐다는 긍정적 결과 기사
+- 충당금 감소·자산건전성 개선·부실 축소 등 리스크 해소 방향의 기사
+- M&A·사업 확장·신성장 동력 관련 기사 (부실 우려가 주된 내용이 아닌 것)
+- 금융당국 태스크포스·모니터링 가동 등 예방적 조치 기사 (실제 제재·손실 없는 것)
+- 보험사·캐피탈·저축은행 등 증권사와 직접 관련 없는 타 금융업권 기사 (증권사 익스포저 없는 것)
+- 제목이나 본문에서 리스크를 언급하지만 전체 맥락이 긍정적 전망인 기사
 
 [등급 기준] — relevant: true인 경우만 적용
 - 긴급: 아래 중 하나 해당
   · 부도·파산·회생·상폐 확정 또는 신청 (신청 단계도 긴급)
   · 리츠·펀드·ETF 등 증권사 판매 금융상품의 기초자산 부실·회생·상폐 신청
-  · 금융당국 조사·제재 착수
+  · 금융당국 조사·제재 착수 (예고·검토 단계 제외, 실제 착수 확정만)
   · 증권사 직접 손실 발생 또는 임박
   · 서킷브레이커 발동 또는 시장 전반 충격 현실화
   · 반대매매 급증·신용융자 한도 전면 중단 등 시장 충격 현실화
@@ -350,7 +373,6 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
         items = sections[grade]
         if not items:
             continue
-        m = GRADE_META[grade]
         gs = GRADE_STYLE[grade]
         rows += f'''
         <div style="padding:10px 18px 8px;background:{gs["header_bg"]};border-left:4px solid {gs["border_left"]};margin:16px 18px 0;border-radius:6px 6px 0 0;border:1px solid {gs["card_border"]};border-bottom:none;">
@@ -497,8 +519,8 @@ def main():
         # 본문 기반으로 대응방안 재생성
         print("  대응방안 재생성 중...")
         for a in filtered:
-            body_text = a.get("body") or a.get("desc", "")
-            if not body_text:
+            body_text = a.get("body", "")
+            if not body_text:  # 본문 크롤링 실패 시 기존 action 유지
                 continue
             try:
                 action_res = requests.post(
@@ -530,11 +552,6 @@ def main():
     now_str = now.strftime("%m월%d일 %H시")
     subject = f"(eBiz본부) 리스크 탐지 결과_{now_str} 기준"
     total_count = len(raw_articles)
-
-    if not filtered:
-        print("증권사 리스크 관련 뉴스 없음 — 결과 없음 메일 발송")
-        send_email(subject, build_empty_html(now))
-        return
 
     # AI 전체 요약 생성
     grade_summary = []
