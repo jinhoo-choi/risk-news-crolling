@@ -489,11 +489,42 @@ def main():
     filtered = ai_filter_and_grade(raw_articles)
     print(f"필터링 후 {len(filtered)}건 선별")
 
-    # 본문 크롤링 — 선별된 기사에만 적용
+    # 본문 크롤링 + 대응방안 재생성 — 선별된 기사에만 적용
     if filtered:
         print("  본문 크롤링 중...")
         for a in filtered:
             a["body"] = fetch_article_body(a["url"])
+        # 본문 기반으로 대응방안 재생성
+        print("  대응방안 재생성 중...")
+        for a in filtered:
+            body_text = a.get("body") or a.get("desc", "")
+            if not body_text:
+                continue
+            try:
+                action_res = requests.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": ANTHROPIC_KEY,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": "claude-haiku-4-5-20251001",
+                        "max_tokens": 150,
+                        "messages": [{"role": "user", "content": f"""증권사 리스크 담당자 입장에서 아래 기사에 대해 즉시 취해야 할 구체적 조치를 50자 이내로 작성하세요.
+보고·공유·전달 등 보고 행위 제외. 실제 확인·점검·산출 행동만 기재.
+등급: {a['grade']}
+제목: {a['title']}
+본문: {body_text[:400]}
+조치만 한 문장으로 반환하세요."""}],
+                    },
+                    timeout=10,
+                )
+                new_action = action_res.json()["content"][0]["text"].strip()
+                if new_action:
+                    a["action"] = new_action
+            except Exception:
+                pass
 
     now = datetime.now(timezone(timedelta(hours=9)))  # 한국시간 KST
     now_str = now.strftime("%m월%d일 %H시")
