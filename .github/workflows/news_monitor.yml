@@ -2,9 +2,9 @@ name: 네이버 뉴스 리스크 모니터링
 
 on:
   schedule:
-    - cron: '31 22 * * *'  # KST 07:31
-    - cron: '31 5 * * *'   # KST 14:31
-    - cron: '31 11 * * *'  # KST 20:31
+    - cron: '31 22 * * *'
+    - cron: '31 5 * * *'
+    - cron: '31 11 * * *'
   workflow_dispatch:
 
 env:
@@ -28,7 +28,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
+          key: pip-${{ runner.os }}-requests-beautifulsoup4
           restore-keys: |
             pip-${{ runner.os }}-
 
