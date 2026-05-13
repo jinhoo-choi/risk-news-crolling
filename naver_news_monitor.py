@@ -354,20 +354,20 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
         gs = GRADE_STYLE[grade]
         rows += f'''
         <div style="padding:10px 18px 8px;background:{gs["header_bg"]};border-left:4px solid {gs["border_left"]};margin:16px 18px 0;border-radius:6px 6px 0 0;border:1px solid {gs["card_border"]};border-bottom:none;">
-          <span style="font-size:15px;font-weight:600;color:{gs["label_color"]};">{grade} · {len(items)}건</span>
+          <span style="font-size:16px;font-weight:600;color:{gs["label_color"]};">{grade} · {len(items)}건</span>
         </div>'''
         for a in items:
             rows += f'''
         <div style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin:0 18px 0;padding:14px 16px;border-bottom:1px solid {gs["card_border"]};">
-          <a href="{a['url']}" style="font-weight:600;font-size:16px;text-decoration:none;display:block;margin-bottom:5px;line-height:1.6;color:#1e3a6e;word-break:keep-all;">{a['title']}</a>
-          <div style="font-size:12px;margin-bottom:6px;">
+          <a href="{a['url']}" style="font-weight:600;font-size:17px;text-decoration:none;display:block;margin-bottom:5px;line-height:1.6;color:#1e3a6e;word-break:keep-all;">{a['title']}</a>
+          <div style="font-size:13px;margin-bottom:6px;">
             <a href="{a['url']}" style="color:#3b5491;text-decoration:none;">↗ 기사 보기</a>
             &nbsp;
             {f'<span style="color:#94a3b8;">{a["pub_str"]}</span>' if a.get("pub_str") else ""}
             &nbsp;<span style="color:#16a34a;font-weight:500;">● 신규</span>
           </div>
-          {f'<div style="font-size:13px;color:#64748b;margin-bottom:6px;word-break:keep-all;">{a["desc"]}</div>' if a.get("desc") else ""}
-          {f'<div style="font-size:13px;color:#1d4ed8;background:#eff6ff;border-left:3px solid #93c5fd;padding:6px 10px;margin-top:4px;"><strong>대응방안</strong> : {a["action"]}</div>' if a.get("action") else ""}
+          {f'<div style="font-size:14px;color:#64748b;margin-bottom:6px;word-break:keep-all;">{a["desc"]}</div>' if a.get("desc") else ""}
+          {f'<div style="border-top:1px solid #e8d5d5;padding-top:8px;margin-top:8px;"><div style="font-size:12px;font-weight:700;color:#c0392b;letter-spacing:0.8px;margin-bottom:4px;">대응방안</div><div style="font-size:14px;color:#1e293b;line-height:1.6;word-break:keep-all;">{a["action"]}</div></div>' if a.get("action") else ""}
         </div>'''  
 
     html = f"""<html>
@@ -379,36 +379,36 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
 <div style="max-width:680px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:1px solid #e2e8f0;">
 
   <div style="background:linear-gradient(135deg,#4f6fad 0%,#3b5491 100%);padding:22px 26px;">
-    <div style="color:#fff;font-size:20px;font-weight:500;margin-bottom:10px;">
+    <div style="color:#fff;font-size:21px;font-weight:500;margin-bottom:10px;">
       🤖 eBiz본부 리스크 탐지봇
-      <span style="font-size:12px;background:rgba(255,255,255,0.2);color:#fff;padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
+      <span style="font-size:13px;background:rgba(255,255,255,0.2);color:#fff;padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
     </div>
-    <div style="color:rgba(255,255,255,0.85);font-size:14px;line-height:1.7;margin-bottom:12px;">
+    <div style="color:rgba(255,255,255,0.85);font-size:15px;line-height:1.7;margin-bottom:12px;">
       {now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간) &nbsp;·&nbsp;
       수집 {total_count}건 → AI 필터링 후 {len(articles)}건 선별 ({round((1 - len(articles)/total_count)*100) if total_count else 0}% 제거)
     </div>
     <div>
-      <span style="display:inline-block;background:#c0392b;color:#fff;font-size:13px;font-weight:500;padding:4px 14px;border-radius:20px;margin-right:6px;">🔴 긴급 {len(sections['긴급'])}건</span>
-      <span style="display:inline-block;background:#d97706;color:#fff;font-size:13px;font-weight:500;padding:4px 14px;border-radius:20px;margin-right:6px;">🟡 주의 {len(sections['주의'])}건</span>
-      <span style="display:inline-block;background:#276749;color:#fff;font-size:13px;font-weight:500;padding:4px 14px;border-radius:20px;">🟢 참고 {len(sections['참고'])}건</span>
+      <span style="display:inline-block;background:#c0392b;color:#fff;font-size:14px;font-weight:500;padding:4px 14px;border-radius:20px;margin-right:6px;">🔴 긴급 {len(sections['긴급'])}건</span>
+      <span style="display:inline-block;background:#d97706;color:#fff;font-size:14px;font-weight:500;padding:4px 14px;border-radius:20px;margin-right:6px;">🟡 주의 {len(sections['주의'])}건</span>
+      <span style="display:inline-block;background:#276749;color:#fff;font-size:14px;font-weight:500;padding:4px 14px;border-radius:20px;">🟢 참고 {len(sections['참고'])}건</span>
     </div>
   </div>
 
   <div style="padding:16px 22px;background:#fff;border-bottom:1px solid #e2e8f0;">
-    <div style="font-size:15px;font-weight:500;color:#3b5491;margin-bottom:8px;">AI 분석 요약</div>
-    <div style="font-size:13px;color:#475569;line-height:1.6;">{ai_summary.replace(chr(10), "<br>")}</div>
+    <div style="font-size:16px;font-weight:500;color:#3b5491;margin-bottom:8px;">AI 분석 요약</div>
+    <div style="font-size:14px;color:#475569;line-height:1.6;">{ai_summary.replace(chr(10), "<br>")}</div>
   </div>
 
   {rows}
 
-  <div style="padding:10px 22px;background:#fff;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.9;">
+  <div style="padding:10px 22px;background:#fff;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;font-size:13px;color:#94a3b8;line-height:1.9;">
     <strong style="color:#334155;">등급 기준</strong><br>
     <strong style="color:#c0392b;">긴급</strong> · 부도·파산·회생·상폐 확정 또는 신청 / 리츠·펀드 기초자산 부실 / 금융당국 조사·제재 / 채무불이행<br>
     <strong style="color:#b7791f;">주의</strong> · 징후·가능성 단계 / 모니터링 필요 잠재 리스크<br>
     <strong style="color:#276749;">참고</strong> · 업황 파악 목적 / 직접 위험 낮음
   </div>
 
-  <div style="padding:14px 22px;background:#fff;color:#94a3b8;font-size:12px;line-height:2.0;">
+  <div style="padding:14px 22px;background:#fff;color:#94a3b8;font-size:13px;line-height:2.0;">
     ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
     ※ 담당자<br>
     &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
@@ -424,16 +424,16 @@ def build_empty_html(now) -> str:
     return f"""<html><body style="font-family:'맑은 고딕',Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px;">
       <div style="max-width:680px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:0.5px solid #e2e8f0;">
         <div style="background:linear-gradient(135deg,#4f6fad 0%,#3b5491 100%);padding:22px 26px;">
-          <div style="color:#fff;font-size:20px;font-weight:500;margin-bottom:6px;">
+          <div style="color:#fff;font-size:21px;font-weight:500;margin-bottom:6px;">
             🤖 eBiz본부 리스크 탐지봇
-            <span style="font-size:12px;background:rgba(255,255,255,0.2);color:#fff;padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
+            <span style="font-size:13px;background:rgba(255,255,255,0.2);color:#fff;padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
           </div>
-          <div style="color:rgba(255,255,255,0.85);font-size:14px;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</div>
+          <div style="color:rgba(255,255,255,0.85);font-size:15px;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</div>
         </div>
-        <div style="padding:36px 24px;text-align:center;color:#64748b;font-size:17px;line-height:1.8;">
+        <div style="padding:36px 24px;text-align:center;color:#64748b;font-size:18px;line-height:1.8;">
           AI 리스크 탐지 결과<br>해당하는 뉴스가 없습니다.
         </div>
-        <div style="padding:14px 22px;background:#fff;border-top:0.5px solid #e2e8f0;color:#94a3b8;font-size:12px;line-height:2.0;">
+        <div style="padding:14px 22px;background:#fff;border-top:0.5px solid #e2e8f0;color:#94a3b8;font-size:13px;line-height:2.0;">
           ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
           ※ 담당자<br>
           &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
