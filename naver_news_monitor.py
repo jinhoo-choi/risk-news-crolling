@@ -9,6 +9,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import json
+import csv
 import os
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime as _pdt
@@ -26,6 +27,7 @@ NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 KEYWORDS = ["리스크", "회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "자본잠식", "배임", "반대매매", "신용등급 강등", "PF 부실", "미매각", "영업정지", "신용융자", "증거금", "발행어음", "서킷브레이커"]
 MAX_NEWS_PER_KEYWORD = 1000  # 당일 기사 전체 수집 (pubDate 필터로 제한됨)
 SEEN_FILE = "seen_news.json"
+EXPOSURE_FILE = "exposure_data.csv"
 
 GRADE_META = {
     "긴급": {"emoji": "🔴", "color": "#c0392b", "bg": "#fdf0ef"},
@@ -33,6 +35,25 @@ GRADE_META = {
     "참고": {"emoji": "🟢", "color": "#1e8449", "bg": "#f0faf4"},
 }
 # ─────────────────────────────────────────────
+
+
+def load_exposure_data() -> list:
+    """CSV에서 eBiz본부 익스포저 데이터 로드 — 파일 없으면 빈 리스트"""
+    if not os.path.exists(EXPOSURE_FILE):
+        return []
+    try:
+        with open(EXPOSURE_FILE, "r", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            return list(reader)
+    except Exception:
+        return []
+
+
+def find_exposure(entity: str, exposure_data: list) -> list:
+    """entity와 종목명 매칭 — 매칭된 행 리스트 반환"""
+    if not entity or not exposure_data:
+        return []
+    return [row for row in exposure_data if entity in row.get("종목명", "") or row.get("종목명", "") in entity]
 
 
 def load_seen_urls() -> set:
@@ -227,7 +248,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 - 나머지 동일 사건 기사는 relevant:false로 처리
 - 제목이 다르더라도 핵심 사건(기업명+사건유형)이 동일하면 중복으로 판단
 
-반드시 JSON 배열만 반환하세요. 마크다운 코드블록(\`\`\`) 없이 순수 JSON만.
+반드시 JSON 배열만 반환하세요. 마크다운 코드블록(```) 없이 순수 JSON만.
 - reason: 선별 이유를 증권사 실무 관점에서 20자 이내로 (relevant=false면 null)
 - action: relevant:true인 모든 기사에 대해 실무 담당자가 즉시 취해야 할 구체적 조치를 50자 이내로 작성하세요.
   "보고", "공유", "전달" 등 보고 행위는 제외하고 실제 확인·점검·산출 등 실무 행동만 기재.
@@ -243,7 +264,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
   - 반대매매·신용융자: 반대매매 가능 규모 및 담보 부족 계좌 현황 파악
   - 리츠·펀드 부실: 기초자산 담보가치 및 선순위 채권 현황 확인
   (relevant=false면 null)
-- entity: 기사의 핵심 기업명 또는 주체 1개 (예: 태영건설, 금감원, 홈플러스) (relevant=false면 null)
+- entity: 기사의 핵심 기업명 또는 종목명을 공식 명칭 기준으로 1개 추출 (예: 태영건설, 홈플러스, 제이알글로벌리츠, 한화솔루션). 금감원·금융위 등 기관명은 제외하고 기업·종목명만 추출. (relevant=false면 null)
 반환 형식 예시:
 [{{"id":1,"relevant":true,"grade":"긴급","reason":"400억 채무불이행·회생신청","action":"해당 리츠 보유 고객 전수 파악 및 손실 시나리오 작성","entity":"제이알글로벌리츠"}},{{"id":2,"relevant":false,"grade":null,"reason":null,"action":null,"entity":null}}]
 
@@ -361,7 +382,24 @@ def ai_filter_and_grade(articles: list) -> list:
     return result
 
 
-def build_email_html(articles: list, total_count: int = 0, ai_summary: str = ''):
+def build_exposure_html(entity: str, exposure_data: list, ref_date: str) -> str:
+    """익스포저 현황 HTML 생성 — 매칭 없으면 빈 문자열"""
+    rows = find_exposure(entity, exposure_data)
+    if not rows:
+        return ""
+    date_label = f" (기준일: {ref_date})" if ref_date else ""
+    items_html = "".join([
+        f'<div style="font-size:13px;color:#1e293b;margin-bottom:3px;">{row.get("종목유형","")} : {int(row.get("잔고(억)","0")):,}억원 / {int(row.get("고객수","0")):,}명</div>'
+        for row in rows
+    ])
+    return f'''<div style="margin-top:8px;padding:10px 12px;background:#f0f4ff;border:1px solid #c7d7f5;border-radius:6px;">
+      <div style="font-size:12px;font-weight:700;color:#3b5491;margin-bottom:6px;letter-spacing:0.5px;">eBiz본부 익스포저 현황{date_label}</div>
+      {items_html}
+    </div>'''
+
+
+def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '', exposure_data: list = None, ref_date: str = ''):
+    exposure_data = exposure_data or []
     now = datetime.now(timezone(timedelta(hours=9)))  # 한국시간 KST
     sections = {"긴급": [], "주의": [], "참고": []}
     for a in articles:
@@ -394,6 +432,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
           </div>
           {f'<div style="font-size:14px;color:#64748b;margin-bottom:6px;word-break:keep-all;">{a["desc"]}</div>' if a.get("desc") else ""}
           {f'<div style="border-top:1px solid #e8d5d5;padding-top:8px;margin-top:8px;"><div style="font-size:12px;font-weight:700;color:#c0392b;letter-spacing:0.8px;margin-bottom:4px;">대응방안</div><div style="font-size:14px;color:#1e293b;line-height:1.6;word-break:keep-all;">{a["action"]}</div></div>' if a.get("action") else ""}
+          {build_exposure_html(a.get("entity",""), exposure_data or [], ref_date)}
         </div>'''  
 
     html = f"""<html>
@@ -424,18 +463,18 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
 
   {rows}
 
-  <div style="padding:10px 22px;background:#fff;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;font-size:13px;color:#94a3b8;line-height:1.9;">
-    <strong style="color:#334155;">등급 기준</strong><br>
-    <strong style="color:#c0392b;">긴급</strong> · 부도·파산·회생·상폐 확정 또는 신청 / 리츠·펀드 기초자산 부실 / 금융당국 조사·제재 / 채무불이행<br>
-    <strong style="color:#b7791f;">주의</strong> · 징후·가능성 단계 / 모니터링 필요 잠재 리스크<br>
-    <strong style="color:#276749;">참고</strong> · 업황 파악 목적 / 직접 위험 낮음
-  </div>
-
-  <div style="padding:14px 22px;background:#fff;color:#94a3b8;font-size:13px;line-height:2.0;">
+  <div style="padding:12px 22px;background:#fff;border-top:1px solid #e2e8f0;color:#94a3b8;font-size:13px;line-height:2.0;">
     ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
     ※ 담당자<br>
     &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
     &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
+  </div>
+
+  <div style="padding:8px 22px 12px;background:#fff;font-size:11px;color:#c8d0db;line-height:1.9;">
+    등급 기준 &nbsp;|&nbsp;
+    <span style="color:#e8b4b0;">긴급</span> · 부도·파산·회생·상폐 / 기초자산 부실 / 금융당국 조사·제재 &nbsp;|&nbsp;
+    <span style="color:#e8d5a0;">주의</span> · 징후·가능성 / 잠재 리스크 &nbsp;|&nbsp;
+    <span style="color:#a8d5b8;">참고</span> · 업황 파악 목적
   </div>
 
 </div></body></html>"""
@@ -512,6 +551,14 @@ def main():
     filtered = ai_filter_and_grade(raw_articles)
     print(f"필터링 후 {len(filtered)}건 선별")
 
+    if not filtered:
+        print("증권사 리스크 관련 뉴스 없음 — 결과 없음 메일 발송")
+        now = datetime.now(timezone(timedelta(hours=9)))
+        now_str = now.strftime("%m월%d일 %H시")
+        subject = f"(eBiz본부) 리스크 탐지 결과_{now_str} 기준"
+        send_email(subject, build_empty_html(now))
+        return
+
     # 본문 크롤링 + 대응방안 재생성 — 선별된 기사에만 적용
     if filtered:
         print("  본문 크롤링 중...")
@@ -549,6 +596,14 @@ def main():
             except Exception:
                 pass
 
+    exposure_data = load_exposure_data()
+    if exposure_data:
+        ref_date = exposure_data[0].get("기준일", "")
+        print(f"  익스포저 데이터 로드 완료 ({len(exposure_data)}건, 기준일: {ref_date})")
+    else:
+        ref_date = ""
+        print("  익스포저 데이터 없음 — CSV 파일 미확인")
+
     now = datetime.now(timezone(timedelta(hours=9)))  # 한국시간 KST
     now_str = now.strftime("%m월%d일 %H시")
     subject = f"(eBiz본부) 리스크 탐지 결과_{now_str} 기준"
@@ -584,7 +639,7 @@ def main():
         except Exception:
             ai_summary = ""
 
-    html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary)
+    html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary, exposure_data=exposure_data, ref_date=ref_date)
     send_email(subject, html)
 
 
