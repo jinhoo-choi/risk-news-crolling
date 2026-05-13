@@ -561,25 +561,29 @@ def main():
         grade_summary.append(f"주의 {len([a for a in filtered if a['grade']=='주의'])}건")
     # AI에게 오늘 리스크 성격 요약 요청
     filtered_titles = "\n".join([f"- [{a['grade']}] {a['title']}" for a in filtered])
-    try:
-        sum_res = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 400,
-                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.\n\n▸ 오늘의 리스크 성격\n(15자 이내 한 문장)\n\n▸ 핵심 이슈\n(각 이슈를 · 로 구분, 이슈당 20자 이내, 최대 3개)\n\n▸ 주목 포인트\n(20자 이내 한 문장)\n\n반드시 짧고 핵심만. 문장 늘이지 말 것.\n\n{filtered_titles}"}],
-            },
-            timeout=15,
-        )
-        ai_summary = sum_res.json()["content"][0]["text"].strip()
-    except Exception:
+    if not filtered_titles.strip():
         grade_str = ", ".join(grade_summary) if grade_summary else "없음"
         ai_summary = f"총 {total_count}건 수집 중 {len(filtered)}건 선별. {grade_str} 감지."
+    else:
+        try:
+            sum_res = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 400,
+                    "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.\n\n▸ 오늘의 리스크 성격\n(15자 이내 한 문장)\n\n▸ 핵심 이슈\n(각 이슈를 · 로 구분, 이슈당 20자 이내, 최대 3개)\n\n▸ 주목 포인트\n(20자 이내 한 문장)\n\n반드시 짧고 핵심만. 문장 늘이지 말 것.\n\n{filtered_titles}"}],
+                },
+                timeout=15,
+            )
+            ai_summary = sum_res.json()["content"][0]["text"].strip()
+        except Exception:
+            grade_str = ", ".join(grade_summary) if grade_summary else "없음"
+            ai_summary = f"총 {total_count}건 수집 중 {len(filtered)}건 선별. {grade_str} 감지."
 
     html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary)
     send_email(subject, html)
