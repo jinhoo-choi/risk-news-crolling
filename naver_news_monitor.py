@@ -204,6 +204,10 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 - 금융당국 태스크포스·모니터링 가동 등 예방적 조치 기사 (실제 제재·손실 없는 것)
 - 보험사·캐피탈·저축은행 등 증권사와 직접 관련 없는 타 금융업권 기사 (증권사 익스포저 없는 것)
 - 제목이나 본문에서 리스크를 언급하지만 전체 맥락이 긍정적 전망인 기사
+- 제약·바이오·유통·제조업 등 비금융 기업 회생·파산 기사 (증권사 직접 여신·보증·판매 상품 익스포저 없는 것)
+- 해외 운용사·펀드·캐피탈 관련 기사 (국내 증권사 직접 익스포저 없는 것)
+- 이미 알려진 회생·부도 사건의 후속 현황·지역 영향 기사 (새로운 리스크 아닌 것)
+- 수익률 1위·공모가 초과·성과 우수 등 성과 관련 기사 (본문에 타 기업 부정적 언급 있어도 제목 주인공이 호재성이면 제외)
 
 [등급 기준] — relevant: true인 경우만 적용
 - 긴급: 아래 중 하나 해당
@@ -386,7 +390,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
             <a href="{a['url']}" style="color:#3b5491;text-decoration:none;">↗ 기사 보기</a>
             &nbsp;
             {f'<span style="color:#94a3b8;">{a["pub_str"]}</span>' if a.get("pub_str") else ""}
-            &nbsp;<span style="color:#16a34a;font-weight:500;">● 신규</span>
+
           </div>
           {f'<div style="font-size:14px;color:#64748b;margin-bottom:6px;word-break:keep-all;">{a["desc"]}</div>' if a.get("desc") else ""}
           {f'<div style="border-top:1px solid #e8d5d5;padding-top:8px;margin-top:8px;"><div style="font-size:12px;font-weight:700;color:#c0392b;letter-spacing:0.8px;margin-bottom:4px;">대응방안</div><div style="font-size:14px;color:#1e293b;line-height:1.6;word-break:keep-all;">{a["action"]}</div></div>' if a.get("action") else ""}
