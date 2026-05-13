@@ -2,8 +2,9 @@ name: 네이버 뉴스 리스크 모니터링
 
 on:
   schedule:
-    - cron: '0 22 * * *'
-    - cron: '0 5 * * *'
+    - cron: '31 22 * * *'
+    - cron: '31 5 * * *'
+    - cron: '31 11 * * *'
   workflow_dispatch:
 
 env:
@@ -42,4 +43,3 @@ jobs:
           NAVER_CLIENT_ID:      ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET:  ${{ secrets.NAVER_CLIENT_SECRET }}
         run: python naver_news_monitor.py
-        
