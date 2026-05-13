@@ -146,7 +146,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
         return []
 
     numbered = "\n".join([
-        f"{i+offset+1}. {a['title']}\n   본문: {a.get('body') or a.get('desc','')}"
+        f"{i+offset+1}. {a['title']}\n   요약: {a.get('desc','')}"
         for i, a in enumerate(batch)
     ])
 
@@ -173,6 +173,8 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 - 일반 기업 경영 이슈로 금융권 익스포저가 없는 기사
 - 제목에 구체적 기업명·사건 없이 일반론만 언급하는 기사
 - 수출 확대·실적 개선·신사업 진출·수상·협약·MOU 등 긍정적 기사
+- 주가 상승·목표주가 상향·투자의견 매수 등 호재성 기사 (본문에 타 기업 리스크 언급이 있어도 제목이 호재성이면 제외)
+- 기사 제목의 주인공이 리스크 상황이 아닌 경우, 본문의 타 기업 리스크 언급만으로 관련 있음 처리 금지
 - 기업 성장·투자 유치·흑자 전환·신규 상장 등 호재성 기사
 - 제품 출시·마케팅·홍보·이벤트 관련 기사
 - 증거금·신용융자 관련 투자 교육·이용 방법·금리 비교 안내 기사
@@ -218,7 +220,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             },
             json={
                 "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 2000,
+                "max_tokens": 4000,
                 "messages": [{"role": "user", "content": prompt}],
             },
             timeout=30,
@@ -338,97 +340,69 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
         m = GRADE_META[grade]
         gs = GRADE_STYLE[grade]
         rows += f'''
-        <div style="padding:10px 18px 8px;background:{gs["header_bg"]};border-left:4px solid {gs["border_left"]};margin:16px 18px 0;border-radius:6px 6px 0 0;">
+        <div style="padding:10px 18px 8px;background:{gs["header_bg"]};border-left:4px solid {gs["border_left"]};margin:16px 18px 0;border-radius:6px 6px 0 0;border:1px solid {gs["card_border"]};border-bottom:none;">
           <span style="font-size:15px;font-weight:600;color:{gs["label_color"]};">{grade} · {len(items)}건</span>
         </div>'''
         for a in items:
             rows += f'''
-        <div class="card-wrap" style="border:0.5px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin:0 18px 0;border-radius:0;border-bottom:0.5px solid {gs["card_border"]};">
-          <a href="{a['url']}" class="article-title">{a['title']}</a>
+        <div style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin:0 18px 0;padding:14px 16px;border-bottom:1px solid {gs["card_border"]};">
+          <a href="{a['url']}" style="font-weight:600;font-size:16px;text-decoration:none;display:block;margin-bottom:5px;line-height:1.6;color:#1e3a6e;word-break:keep-all;">{a['title']}</a>
           <div style="font-size:12px;margin-bottom:6px;">
-            <a href="{a['url']}" style="color:#3b5491;text-decoration:none;font-weight:400;">↗ 기사 보기</a>
+            <a href="{a['url']}" style="color:#3b5491;text-decoration:none;">↗ 기사 보기</a>
             &nbsp;
             {f'<span style="color:#94a3b8;">{a["pub_str"]}</span>' if a.get("pub_str") else ""}
             &nbsp;<span style="color:#16a34a;font-weight:500;">● 신규</span>
           </div>
-          {f'<div class="article-desc" style="white-space:normal;word-break:keep-all;">{a["desc"]}</div>' if a.get("desc") else ""}
-          {f'<div class="action-box"><strong>대응방안</strong> : {a["action"]}</div>' if a.get("action") else ""}
+          {f'<div style="font-size:13px;color:#64748b;margin-bottom:6px;word-break:keep-all;">{a["desc"]}</div>' if a.get("desc") else ""}
+          {f'<div style="font-size:13px;color:#1d4ed8;background:#eff6ff;border-left:3px solid #93c5fd;padding:6px 10px;margin-top:4px;"><strong>대응방안</strong> : {a["action"]}</div>' if a.get("action") else ""}
         </div>'''  
 
     html = f"""<html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>
-  body {{ margin:0; padding:0; background:#f4f6f9; font-family:'맑은 고딕',Arial,sans-serif; }}
-  .wrapper {{ max-width:680px; margin:0 auto; background:#fff; border-radius:14px; overflow:hidden; border:0.5px solid #e2e8f0; }}
-  .header {{ background:linear-gradient(135deg,#4f6fad 0%,#3b5491 100%); padding:22px 26px; }}
-  .title {{ color:#fff; font-size:20px; font-weight:500; margin-bottom:10px; }}
-  .badge {{ font-size:12px; background:rgba(255,255,255,0.2); color:#fff; padding:3px 9px; border-radius:20px; margin-left:8px; vertical-align:middle; }}
-  .meta {{ color:rgba(255,255,255,0.85); font-size:14px; line-height:1.7; margin-bottom:12px; }}
-  .grade-badges {{ display:flex; gap:8px; flex-wrap:wrap; }}
-  .summary-box {{ padding:16px 22px; background:#fff; border-bottom:0.5px solid #e2e8f0; }}
-  .summary-title {{ font-size:15px; font-weight:500; color:#3b5491; margin-bottom:6px; }}
-  .summary-body {{ font-size:14px; color:#475569; line-height:1.9; white-space:pre-line; }}
-  .card-wrap {{ margin:0 18px 0; border-radius:0; padding:14px 16px; border-bottom:0.5px solid #f0f0f0; }}
-  .article-title {{ font-weight:600; font-size:17px; text-decoration:none; display:block; margin-bottom:6px; line-height:1.6; color:#1e3a6e; white-space:normal; word-break:keep-all; overflow-wrap:break-word; }}
-  .article-desc {{ font-size:13px; color:#64748b; margin-bottom:6px; white-space:normal; word-break:keep-all; overflow-wrap:break-word; }}
-  .action-box {{ font-size:14px; color:#2563eb; background:#eff6ff; border-left:2px solid #93c5fd; padding:5px 10px; border-radius:0 6px 6px 0; margin-bottom:6px; }}
-  .footer-grade {{ padding:10px 22px; background:#fff; border-top:0.5px solid #e2e8f0; border-bottom:0.5px solid #e2e8f0; font-size:12px; color:#94a3b8; line-height:1.9; }}
-  .footer-info {{ padding:14px 22px; background:#fff; color:#94a3b8; font-size:12px; line-height:2.0; }}
-  @media only screen and (max-width: 600px) {{
-    body {{ padding:0 !important; background:#fff !important; }}
-    .wrapper {{ border-radius:0 !important; border:none !important; max-width:100% !important; width:100% !important; }}
-    .header {{ padding:18px 16px !important; }}
-    .title {{ font-size:17px !important; }}
-    .meta {{ font-size:13px !important; }}
-    .summary-box {{ padding:14px 16px !important; }}
-    .summary-title {{ font-size:14px !important; }}
-    .summary-body {{ font-size:13px !important; }}
-    .card-wrap {{ margin:0 10px 12px !important; padding:12px 14px !important; }}
-    .article-title {{ font-size:15px !important; line-height:1.7 !important; white-space:normal !important; }}
-    .article-desc {{ font-size:12px !important; white-space:normal !important; }}
-    .action-box {{ font-size:13px !important; padding:6px 10px !important; }}
-    .footer-grade {{ padding:10px 16px !important; font-size:11px !important; }}
-    .footer-info {{ padding:12px 16px !important; font-size:11px !important; }}
-  }}
-</style>
 </head>
-<body>
-<div style="padding:12px;">
-<div class="wrapper">
-        <div class="header">          <div class="title">
-            🤖 eBiz본부 리스크 탐지봇
-            <span class="badge">Powered by Claude AI</span>
-          </div>
-          <div class="meta">
-            {now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간) &nbsp;·&nbsp;
-            수집 {total_count}건 → AI 필터링 후 {len(articles)}건 선별 ({round((1 - len(articles)/total_count)*100) if total_count else 0}% 제거)
-          </div>
-          <div class="grade-badges">
-            <span style="background:#c0392b;color:#fff;font-size:13px;font-weight:500;padding:4px 14px;border-radius:20px;">🔴 긴급 {len(sections['긴급'])}건</span>
-            <span style="background:#d97706;color:#fff;font-size:13px;font-weight:500;padding:4px 14px;border-radius:20px;">🟡 주의 {len(sections['주의'])}건</span>
-            <span style="background:#276749;color:#fff;font-size:13px;font-weight:500;padding:4px 14px;border-radius:20px;">🟢 참고 {len(sections['참고'])}건</span>
-          </div>
-        </div>
-        <div class="summary-box">
-          <div class="summary-title">AI 분석 요약</div>
-          <div class="summary-body">{ai_summary}</div>
-        </div>
-        {rows}
-        <div class="footer-grade">
-          <strong style="color:#334155;">등급 기준</strong><br>
-          <strong style="color:#c0392b;">긴급</strong> · 부도·파산·회생·상폐 확정 또는 신청 / 리츠·펀드 기초자산 부실 / 금융당국 조사·제재 / 100억↑ 채무불이행<br>
-          <strong style="color:#b7791f;">주의</strong> · 징후·가능성 단계 / 모니터링 필요 잠재 리스크<br>
-          <strong style="color:#276749;">참고</strong> · 업황 파악 목적 / 직접 위험 낮음
-        </div>
-        <div class="footer-info">
-          ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
-          ※ 담당자<br>
-          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
-          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
-        </div>
-      </div></div></body></html>"""
+<body style="margin:0;padding:12px;background:#f4f6f9;font-family:'맑은 고딕',Arial,sans-serif;">
+<div style="max-width:680px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:1px solid #e2e8f0;">
+
+  <div style="background:linear-gradient(135deg,#4f6fad 0%,#3b5491 100%);padding:22px 26px;">
+    <div style="color:#fff;font-size:20px;font-weight:500;margin-bottom:10px;">
+      🤖 eBiz본부 리스크 탐지봇
+      <span style="font-size:12px;background:rgba(255,255,255,0.2);color:#fff;padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
+    </div>
+    <div style="color:rgba(255,255,255,0.85);font-size:14px;line-height:1.7;margin-bottom:12px;">
+      {now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간) &nbsp;·&nbsp;
+      수집 {total_count}건 → AI 필터링 후 {len(articles)}건 선별 ({round((1 - len(articles)/total_count)*100) if total_count else 0}% 제거)
+    </div>
+    <div>
+      <span style="display:inline-block;background:#c0392b;color:#fff;font-size:13px;font-weight:500;padding:4px 14px;border-radius:20px;margin-right:6px;">🔴 긴급 {len(sections['긴급'])}건</span>
+      <span style="display:inline-block;background:#d97706;color:#fff;font-size:13px;font-weight:500;padding:4px 14px;border-radius:20px;margin-right:6px;">🟡 주의 {len(sections['주의'])}건</span>
+      <span style="display:inline-block;background:#276749;color:#fff;font-size:13px;font-weight:500;padding:4px 14px;border-radius:20px;">🟢 참고 {len(sections['참고'])}건</span>
+    </div>
+  </div>
+
+  <div style="padding:16px 22px;background:#fff;border-bottom:1px solid #e2e8f0;">
+    <div style="font-size:15px;font-weight:500;color:#3b5491;margin-bottom:8px;">AI 분석 요약</div>
+    <div style="font-size:13px;color:#475569;line-height:1.6;white-space:pre-line;">{ai_summary}</div>
+  </div>
+
+  {rows}
+
+  <div style="padding:10px 22px;background:#fff;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.9;">
+    <strong style="color:#334155;">등급 기준</strong><br>
+    <strong style="color:#c0392b;">긴급</strong> · 부도·파산·회생·상폐 확정 또는 신청 / 리츠·펀드 기초자산 부실 / 금융당국 조사·제재 / 100억↑ 채무불이행<br>
+    <strong style="color:#b7791f;">주의</strong> · 징후·가능성 단계 / 모니터링 필요 잠재 리스크<br>
+    <strong style="color:#276749;">참고</strong> · 업황 파악 목적 / 직접 위험 낮음
+  </div>
+
+  <div style="padding:14px 22px;background:#fff;color:#94a3b8;font-size:12px;line-height:2.0;">
+    ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
+    ※ 담당자<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
+  </div>
+
+</div></body></html>"""
 
     return html
 
@@ -502,6 +476,12 @@ def main():
     filtered = ai_filter_and_grade(raw_articles)
     print(f"필터링 후 {len(filtered)}건 선별")
 
+    # 본문 크롤링 — 선별된 기사에만 적용
+    if filtered:
+        print("  본문 크롤링 중...")
+        for a in filtered:
+            a["body"] = fetch_article_body(a["url"])
+
     now = datetime.now(timezone(timedelta(hours=9)))  # 한국시간 KST
     now_str = now.strftime("%m월%d일 %H시")
     subject = f"(eBiz본부) 리스크 탐지 결과_{now_str} 기준"
@@ -531,7 +511,7 @@ def main():
             json={
                 "model": "claude-haiku-4-5-20251001",
                 "max_tokens": 150,
-                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.\n\n▸ 오늘의 리스크 성격\n(한 문장으로 오늘 전반적인 리스크 흐름)\n\n▸ 핵심 이슈\n(가장 중요한 이슈를 · 로 구분해 각각 줄바꿈)\n\n▸ 주목 포인트\n(담당자가 특히 주의할 사항 한 줄)\n\n숫자 통계 없이 내용 중심으로, 소제목과 내용 사이, 각 항목 사이는 반드시 줄바꿈으로 구분하세요.\n\n{filtered_titles}"}],
+                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.\n\n▸ 오늘의 리스크 성격\n(한 문장으로 오늘 전반적인 리스크 흐름)\n\n▸ 핵심 이슈\n(가장 중요한 이슈를 · 로 구분해 각각 줄바꿈)\n\n▸ 주목 포인트\n(담당자가 특히 주의할 사항 한 줄)\n\n숫자 통계 없이 내용 중심으로. 소제목 바로 다음 줄에 내용을 붙여 쓰고, 빈 줄 없이 작성하세요. 항목 사이만 한 줄 띄우세요.\n\n{filtered_titles}"}],
             },
             timeout=15,
         )
