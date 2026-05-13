@@ -416,10 +416,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
     </div>
   </div>
 
-  <div style="padding:16px 22px;background:#fff;border-bottom:1px solid #e2e8f0;">
-    <div style="font-size:16px;font-weight:500;color:#3b5491;margin-bottom:8px;">AI 분석 요약</div>
-    <div style="font-size:14px;color:#475569;line-height:1.6;">{ai_summary.replace(chr(10), "<br>")}</div>
-  </div>
+  {f'<div style="padding:16px 22px;background:#fff;border-bottom:1px solid #e2e8f0;"><div style="font-size:16px;font-weight:500;color:#3b5491;margin-bottom:8px;">AI 분석 요약</div><div style="font-size:14px;color:#475569;line-height:1.6;">{ai_summary.replace(chr(10), "<br>")}</div></div>' if ai_summary else ""}
 
   {rows}
 
@@ -562,8 +559,7 @@ def main():
     # AI에게 오늘 리스크 성격 요약 요청
     filtered_titles = "\n".join([f"- [{a['grade']}] {a['title']}" for a in filtered])
     if not filtered_titles.strip():
-        grade_str = ", ".join(grade_summary) if grade_summary else "없음"
-        ai_summary = f"총 {total_count}건 수집 중 {len(filtered)}건 선별. {grade_str} 감지."
+        ai_summary = ""
     else:
         try:
             sum_res = requests.post(
@@ -582,8 +578,7 @@ def main():
             )
             ai_summary = sum_res.json()["content"][0]["text"].strip()
         except Exception:
-            grade_str = ", ".join(grade_summary) if grade_summary else "없음"
-            ai_summary = f"총 {total_count}건 수집 중 {len(filtered)}건 선별. {grade_str} 감지."
+            ai_summary = ""
 
     html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary)
     send_email(subject, html)
