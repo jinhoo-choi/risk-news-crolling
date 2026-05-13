@@ -202,7 +202,20 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 
 반드시 JSON 배열만 반환하세요. 마크다운 코드블록(\`\`\`) 없이 순수 JSON만.
 - reason: 선별 이유를 증권사 실무 관점에서 20자 이내로 (relevant=false면 null)
-- action: relevant:true인 모든 기사에 대해 실무 담당자가 즉시 취해야 할 구체적 조치를 50자 이내로 작성하세요. "보고", "공유", "전달" 등 보고 행위는 제외하고 실제 확인·점검·산출 등 실무 행동만 기재 (relevant=false면 null)
+- action: relevant:true인 모든 기사에 대해 실무 담당자가 즉시 취해야 할 구체적 조치를 50자 이내로 작성하세요.
+  "보고", "공유", "전달" 등 보고 행위는 제외하고 실제 확인·점검·산출 등 실무 행동만 기재.
+  등급별 작성 기준:
+  - 긴급: [확인 대상] + [즉시 조치] + [기한] 포함. 예) "OO 보유 채권 담보 현황 즉시 파악, 금일 내 평가손 산출"
+  - 주의: [모니터링 주기] + [악화 시 트리거 조건] 포함. 예) "주 1회 잔고 추이 점검, 신용등급 추가 강등 시 즉시 대응"
+  - 참고: [업황 시사점] + [선제적 점검 항목] 포함. 예) "동종업계 PF 만기 구조 비교, 자사 익스포저 비중 점검"
+  기사 유형별 참고 패턴:
+  - 회생·파산·부도: 보유 채권 담보 현황 및 선순위 여부 파악
+  - 금감원·금융위 조사·제재: 컴플라이언스 소명자료 및 관련 계약 현황 점검
+  - PF·브릿지론 부실: 만기 도래 현황 및 미매각 잔액 파악
+  - 신용등급 강등: 해당 채권 듀레이션 및 평가손 산출
+  - 반대매매·신용융자: 반대매매 가능 규모 및 담보 부족 계좌 현황 파악
+  - 리츠·펀드 부실: 기초자산 담보가치 및 선순위 채권 현황 확인
+  (relevant=false면 null)
 - entity: 기사의 핵심 기업명 또는 주체 1개 (예: 태영건설, 금감원, 홈플러스) (relevant=false면 null)
 반환 형식 예시:
 [{{"id":1,"relevant":true,"grade":"긴급","reason":"400억 채무불이행·회생신청","action":"해당 리츠 보유 고객 전수 파악 및 손실 시나리오 작성","entity":"제이알글로벌리츠"}},{{"id":2,"relevant":false,"grade":null,"reason":null,"action":null,"entity":null}}]
@@ -390,7 +403,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '')
 
   <div style="padding:10px 22px;background:#fff;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;font-size:12px;color:#94a3b8;line-height:1.9;">
     <strong style="color:#334155;">등급 기준</strong><br>
-    <strong style="color:#c0392b;">긴급</strong> · 부도·파산·회생·상폐 확정 또는 신청 / 리츠·펀드 기초자산 부실 / 금융당국 조사·제재 / 100억↑ 채무불이행<br>
+    <strong style="color:#c0392b;">긴급</strong> · 부도·파산·회생·상폐 확정 또는 신청 / 리츠·펀드 기초자산 부실 / 금융당국 조사·제재 / 채무불이행<br>
     <strong style="color:#b7791f;">주의</strong> · 징후·가능성 단계 / 모니터링 필요 잠재 리스크<br>
     <strong style="color:#276749;">참고</strong> · 업황 파악 목적 / 직접 위험 낮음
   </div>
