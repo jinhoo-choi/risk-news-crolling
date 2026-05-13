@@ -1,9 +1,9 @@
 name: 네이버 뉴스 리스크 모니터링
 
 on:
-  schedule:
-    - cron: '30 21 * * *'  # 한국시간 오전 07시 (UTC 21:30 전일)
-    - cron: '30 4 * * *'   # 한국시간 오후 14시 (UTC 04:30)
+   schedule:
+    - cron: '0 22 * * *'  # 한국시간 오전 07시 (UTC 22:00 전일)
+    - cron: '0 5 * * *'   # 한국시간 오후 14시 (UTC 05:00)
   workflow_dispatch:
 
 env:
