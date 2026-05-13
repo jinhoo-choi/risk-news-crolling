@@ -29,11 +29,6 @@ MAX_NEWS_PER_KEYWORD = 1000  # 당일 기사 전체 수집 (pubDate 필터로 �
 SEEN_FILE = "seen_news.json"
 EXPOSURE_FILE = "exposure_data.csv"
 
-GRADE_META = {
-    "긴급": {"emoji": "🔴", "color": "#c0392b", "bg": "#fdf0ef"},
-    "주의": {"emoji": "🟡", "color": "#d68910", "bg": "#fefce8"},
-    "참고": {"emoji": "🟢", "color": "#1e8449", "bg": "#f0faf4"},
-}
 # ─────────────────────────────────────────────
 
 
