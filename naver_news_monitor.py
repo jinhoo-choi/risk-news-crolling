@@ -10,6 +10,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import json
 import csv
+import time
 import os
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime as _pdt
@@ -24,7 +25,7 @@ ANTHROPIC_KEY     = os.environ["ANTHROPIC_API_KEY"]
 NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
 NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
-KEYWORDS = ["부실 리스크", "신용 리스크", "유동성 리스크", "디폴트 리스크",  "기업회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "자본잠식", "배임", "반대매매", "신용등급 강등", "PF 부실", "미매각", "영업정지", "신용융자", "증거금", "발행어음", "서킷브레이커", "부실 리스크", "부실 리스크"]
+KEYWORDS = ["부실 리스크", "신용 리스크", "유동성 리스크", "디폴트 리스크", "기업회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "자본잠식", "배임", "반대매매", "신용등급 강등", "PF 부실", "미매각", "영업정지", "신용융자", "증거금", "발행어음", "서킷브레이커"]
 MAX_NEWS_PER_KEYWORD = 1000  # 당일 기사 전체 수집 (pubDate 필터로 제한됨)
 SEEN_FILE = "seen_news.json"
 EXPOSURE_FILE = "exposure_data.csv"
@@ -199,18 +200,25 @@ def crawl_naver_news(keyword: str) -> list:
             "start": start,
             "sort": "date",
         }
-        try:
-            res = requests.get(
-                "https://openapi.naver.com/v1/search/news.json",
-                headers=headers,
-                params=params,
-                timeout=10,
-            )
-            res.raise_for_status()
-            data = res.json()
-        except Exception as e:
-            print(f"[{keyword}] API 오류: {e}")
-            break
+        for crawl_attempt in range(3):
+            try:
+                res = requests.get(
+                    "https://openapi.naver.com/v1/search/news.json",
+                    headers=headers,
+                    params=params,
+                    timeout=15,
+                )
+                res.raise_for_status()
+                data = res.json()
+                break
+            except Exception as e:
+                if crawl_attempt < 2:
+                    print(f"[{keyword}] API 오류 — {5}초 후 재시도 ({crawl_attempt+1}/3): {e}")
+                    time.sleep(5)
+                else:
+                    print(f"[{keyword}] API 오류 — 3회 실패, 건너뜀: {e}")
+                    data = {"items": []}
+                    break
 
         items = data.get("items", [])
         if not items:
@@ -300,7 +308,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 
 [관련 없음 — relevant: false 조건]
 다음 중 하나라도 해당하면 반드시 제외:
-- 단순히 "리스크", "파산", "위기" 등 용어만 언급하는 분석·전망·칼럼·오피니언 기사
+- 단순히 "파산", "위기" 등 용어만 언급하는 분석·전망·칼럼·오피니언 기사
 - 학술·연구·교육·세미나·보고서·강의 관련 기사
 - 해외 사례 기사 (국내 증권사에 직접 영향 없는 것)
 - 일반 기업 경영 이슈로 금융권 익스포저가 없는 기사
@@ -384,54 +392,60 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 뉴스 목록:
 {numbered}"""
 
-    try:
-        res = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 4000,
-                "temperature": 0.0,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=30,
-        )
-        res.raise_for_status()
-        raw = res.json()["content"][0]["text"].strip()
-        # 코드블록 제거
-        raw = raw.replace("```json", "").replace("```", "").strip()
-        # JSON 배열 부분만 추출 (앞뒤 불필요한 텍스트 제거)
-        start_idx = raw.find("[")
-        end_idx = raw.rfind("]") + 1
-        if start_idx == -1 or end_idx == 0:
-            raise ValueError("JSON 배열을 찾을 수 없음")
-        raw = raw[start_idx:end_idx]
-        grades = json.loads(raw)
-        grade_map = {g["id"]: g for g in grades}
-
-        result = []
-        for i, article in enumerate(batch):
-            info = grade_map.get(i + offset + 1, {})
-            if info.get("relevant") and info.get("grade"):
-                article["grade"] = info["grade"]
-                article["reason"] = info.get("reason", "")
-                article["action"] = info.get("action", "")
-                article["entity"] = info.get("entity", "")
-                result.append(article)
-        return result
-
-    except Exception as e:
-        print(f"AI 필터링 오류: {e}")
+    for attempt in range(3):
         try:
-            print(f"API 응답 상태코드: {res.status_code}")
-            print(f"API 응답 원문: {res.text[:300]}")
-        except:
-            pass
-        return []
+            res = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 4000,
+                    "temperature": 0.0,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=30,
+            )
+            if res.status_code == 429:
+                wait = 60 * (attempt + 1)
+                print(f"  Rate limit 429 — {wait}초 대기 후 재시도 ({attempt+1}/3)")
+                time.sleep(wait)
+                continue
+            res.raise_for_status()
+            raw = res.json()["content"][0]["text"].strip()
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            start_idx = raw.find("[")
+            end_idx = raw.rfind("]") + 1
+            if start_idx == -1 or end_idx == 0:
+                raise ValueError("JSON 배열을 찾을 수 없음")
+            raw = raw[start_idx:end_idx]
+            grades = json.loads(raw)
+            grade_map = {g["id"]: g for g in grades}
+            result = []
+            for i, article in enumerate(batch):
+                info = grade_map.get(i + offset + 1, {})
+                if info.get("relevant") and info.get("grade"):
+                    article["grade"] = info["grade"]
+                    article["reason"] = info.get("reason", "")
+                    article["action"] = info.get("action", "")
+                    article["entity"] = info.get("entity", "")
+                    result.append(article)
+            return result
+        except Exception as e:
+            print(f"AI 필터링 오류: {e}")
+            try:
+                print(f"API 응답 상태코드: {res.status_code}")
+                print(f"API 응답 원문: {res.text[:300]}")
+            except:
+                pass
+            if attempt < 2:
+                time.sleep(30)
+                continue
+            return []
+    return []
 
 
 def dedup_by_title(articles: list) -> list:
@@ -487,6 +501,8 @@ def ai_filter_and_grade(articles: list) -> list:
         batch = articles[i:i+batch_size]
         print(f"  배치 {i//batch_size+1}/{-(-len(articles)//batch_size)} 처리 중... ({len(batch)}건)")
         result.extend(ai_filter_batch(batch, offset=i))
+        if i + batch_size < len(articles):
+            time.sleep(5)  # 배치 간 5초 대기
 
     if len(result) > 1:
         print(f"  중복 제거 중... (필터링 후 {len(result)}건)")
