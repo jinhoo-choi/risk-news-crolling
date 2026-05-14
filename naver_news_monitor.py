@@ -238,7 +238,8 @@ def crawl_naver_news(keyword: str) -> list:
                 pub_dt = now_kst
                 pub_date = today_kst
 
-            if pub_dt.replace(tzinfo=None) < cutoff_kst.replace(tzinfo=None) or pub_date < today_kst:
+            # 8시간 이전 기사 — 중단
+            if pub_dt < cutoff_kst:
                 stop = True
                 break
 
@@ -253,12 +254,12 @@ def crawl_naver_news(keyword: str) -> list:
                     "url"    : link,
                     "pubDate": pub,
                     "keyword": keyword,
-                    "body"   : "",  # 선별 후 크롤링
+                    "body"   : "",
                 })
 
         total = data.get("total", 0)
         start += 100
-        if stop or start > min(total, 1000):
+        if stop or start > min(total, 300):  # 최대 3페이지(300건)로 제한
             break
 
     return articles
@@ -515,13 +516,14 @@ def ai_filter_and_grade(articles: list) -> list:
     if not articles:
         return []
     result = []
-    batch_size = 30
+    batch_size = 50
     for i in range(0, len(articles), batch_size):
         batch = articles[i:i+batch_size]
         print(f"  배치 {i//batch_size+1}/{-(-len(articles)//batch_size)} 처리 중... ({len(batch)}건)")
         result.extend(ai_filter_batch(batch, offset=i))
+        # rate limit 없으면 딜레이 없이 진행
         if i + batch_size < len(articles):
-            time.sleep(2)  # 배치 간 2초 대기
+            time.sleep(1)  # 최소 1초만 대기
 
     if len(result) > 1:
         print(f"  중복 제거 중... (필터링 후 {len(result)}건)")
@@ -807,21 +809,35 @@ def main():
     seen_urls    = load_seen_urls()
     raw_articles = []
 
-    for keyword in KEYWORDS:
+    def crawl_keyword(keyword):
         articles = crawl_naver_news(keyword)
         kst_tz = timezone(timedelta(hours=9))
-        new = []
+        result = []
         for article in articles:
-            if article["url"] and article["url"] not in seen_urls:
+            if article["url"]:
                 try:
                     pub_dt = _pdt(article.get("pubDate","")).astimezone(kst_tz)
                     article["pub_str"] = pub_dt.strftime("%m/%d %H:%M")
                 except Exception:
                     article["pub_str"] = ""
-                new.append(article)
-                seen_urls.add(article["url"])
-        raw_articles.extend(new)
-        print(f"  [{keyword}] 신규 {len(new)}건")
+                result.append(article)
+        return keyword, result
+
+    print(f"  키워드 {len(KEYWORDS)}개 병렬 크롤링 중...")
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(crawl_keyword, kw): kw for kw in KEYWORDS}
+        for future in as_completed(futures):
+            try:
+                keyword, articles = future.result()
+                new = []
+                for article in articles:
+                    if article["url"] not in seen_urls:
+                        new.append(article)
+                        seen_urls.add(article["url"])
+                raw_articles.extend(new)
+                print(f"  [{keyword}] 신규 {len(new)}건")
+            except Exception as e:
+                print(f"  크롤링 오류: {e}")
 
     save_seen_urls(seen_urls)
 
