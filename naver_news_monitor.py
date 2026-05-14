@@ -97,9 +97,11 @@ def build_competitor_html(notices: list, today_str: str) -> str:
     rows_html = ""
     for i, n in enumerate(notices):
         border = "border-bottom:1px solid #dce8ff;" if i < len(notices) - 1 else ""
+        url = n.get('url', '')
+        title_cell = f'<a href="{url}" style="color:#334155;text-decoration:none;">{n["title"]}</a>' if url else n['title']
         rows_html += f"""<tr>
           <td style="padding:8px 4px;font-size:14px;font-weight:600;color:#1e293b;width:90px;vertical-align:middle;{border}">{n['company']}</td>
-          <td style="padding:8px 4px;font-size:14px;color:#334155;vertical-align:middle;{border}">{n['title']}</td>
+          <td style="padding:8px 4px;font-size:14px;vertical-align:middle;{border}">{title_cell}</td>
           <td style="padding:8px 4px;font-size:12px;color:#94a3b8;text-align:right;white-space:nowrap;vertical-align:middle;{border}">{n['date'][5:].replace('-', '/')}</td>
         </tr>"""
     return f"""<div style="padding:14px 18px;border-bottom:1px solid #e2e8f0;background:#f0f5ff;">
