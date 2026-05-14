@@ -297,7 +297,12 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
   · 반대매매 급증·신용융자 한도 전면 중단 등 시장 충격 현실화
   · 특정 기업이 100억원 이상 채무 미상환·디폴트 선언
   · 종목 증거금률 100% 상향 등 극단적 거래 제한 조치
-- 주의: 징후·가능성 단계, 모니터링 필요한 잠재 리스크
+- 주의: 아래 중 하나 해당
+  · 회생·부도·상폐 가능성이 언론에서 처음 언급된 단계 (확정·신청 전)
+  · 금융당국 조사·제재 예고·검토 단계 (착수 확정 전)
+  · 신용등급 강등 경고(Negative Watch·Outlook) 단계
+  · PF·브릿지론 부실 징후가 있으나 손실 미확정 단계
+  · 반대매매 우려·신용융자 한도 부분 축소 등 시장 충격 징후 단계
 - 참고: 업황 파악에 유용하나 직접 위험은 낮은 것
 
 [중복 기사 처리]
@@ -322,8 +327,13 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
   - 리츠·펀드 부실: 기초자산 담보가치 및 선순위 채권 현황 확인
   (relevant=false면 null)
 - entity: 기사의 핵심 기업명 또는 종목명을 공식 명칭 기준으로 1개 추출 (예: 태영건설, 홈플러스, 제이알글로벌리츠, 한화솔루션). 금감원·금융위 등 기관명은 제외하고 기업·종목명만 추출. (relevant=false면 null)
-반환 형식 예시:
-[{{"id":1,"relevant":true,"grade":"긴급","reason":"400억 채무불이행·회생신청","action":"해당 리츠 보유 고객 전수 파악 및 손실 시나리오 작성","entity":"제이알글로벌리츠"}},{{"id":2,"relevant":false,"grade":null,"reason":null,"action":null,"entity":null}}]
+반환 형식 예시 (긴급/주의/참고/제외 각 1건):
+[
+  {{"id":1,"relevant":true,"grade":"긴급","reason":"리츠 기초자산 회생신청·손실 확정","action":"해당 리츠 보유 고객 전수 파악 및 금일 내 평가손 산출","entity":"제이알글로벌리츠"}},
+  {{"id":2,"relevant":true,"grade":"주의","reason":"PF 부실 징후·손실 미확정 단계","action":"주 1회 PF 잔액 추이 점검, 연체 발생 시 즉시 대응","entity":"태영건설"}},
+  {{"id":3,"relevant":true,"grade":"참고","reason":"업계 발행어음 증가 동향","action":"동종업계 발행어음 만기 구조 비교, 자사 유동성 비율 점검","entity":"미래에셋증권"}},
+  {{"id":4,"relevant":false,"grade":null,"reason":null,"action":null,"entity":null}}
+]
 
 뉴스 목록:
 {numbered}"""
@@ -339,6 +349,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             json={
                 "model": "claude-haiku-4-5-20251001",
                 "max_tokens": 4000,
+                "temperature": 0.0,
                 "messages": [{"role": "user", "content": prompt}],
             },
             timeout=30,
