@@ -616,44 +616,44 @@ def main():
         return
 
     # 본문 크롤링 + 대응방안 재생성 — 선별된 기사에만 적용
-    if filtered:
-        print("  본문 크롤링 중...")
-        for a in filtered:
-            a["body"] = fetch_article_body(a["url"])
-        # 본문 기반으로 대응방안 재생성
-        print("  대응방안 재생성 중...")
-        for a in filtered:
-            body_text = a.get("body", "")
-            if not body_text:  # 본문 크롤링 실패 시 기존 action 유지
-                continue
-            try:
-                action_res = requests.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "x-api-key": ANTHROPIC_KEY,
-                        "anthropic-version": "2023-06-01",
-                        "content-type": "application/json",
-                    },
-                    json={
-                        "model": "claude-haiku-4-5-20251001",
-                        "max_tokens": 150,
-                        "messages": [{"role": "user", "content": f"""증권사 리스크 담당자 입장에서 아래 기사에 대해 즉시 취해야 할 구체적 조치를 50자 이내로 작성하세요.
+    print("  본문 크롤링 중...")
+    for a in filtered:
+        a["body"] = fetch_article_body(a["url"])
+    # 본문 기반으로 대응방안 재생성
+    print("  대응방안 재생성 중...")
+    for a in filtered:
+        body_text = a.get("body", "")
+        if not body_text:  # 본문 크롤링 실패 시 기존 action 유지
+            continue
+        try:
+            action_res = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 150,
+                    "messages": [{"role": "user", "content": f"""증권사 리스크 담당자 입장에서 아래 기사에 대해 즉시 취해야 할 구체적 조치를 50자 이내로 작성하세요.
 보고·공유·전달 등 보고 행위 제외. 실제 확인·점검·산출 행동만 기재.
 등급: {a['grade']}
 제목: {a['title']}
 본문: {body_text[:400]}
 조치만 한 문장으로 반환하세요."""}],
-                    },
-                    timeout=10,
-                )
-                new_action = action_res.json()["content"][0]["text"].strip()
-                if new_action:
-                    a["action"] = new_action
-            except Exception:
-                pass
+                },
+                timeout=10,
+            )
+            new_action = action_res.json()["content"][0]["text"].strip()
+            if new_action:
+                a["action"] = new_action
+        except Exception:
+            pass
 
-    exposure_data = load_exposure_data()
+    now = datetime.now(timezone(timedelta(hours=9)))
     today_str = now.strftime("%m월 %d일")
+    exposure_data = load_exposure_data()
     competitor_notices = load_competitor_notices()
     if competitor_notices:
         print(f"  경쟁사 신용·대출 특이사항 {len(competitor_notices)}건 발견")
@@ -666,7 +666,6 @@ def main():
         ref_date = ""
         print("  익스포저 데이터 없음 — CSV 파일 미확인")
 
-    now = datetime.now(timezone(timedelta(hours=9)))  # 한국시간 KST
     now_str = now.strftime("%m월%d일 %H시")
     subject = f"(eBiz본부) 리스크 탐지 결과_{now_str} 기준"
     total_count = len(raw_articles)
