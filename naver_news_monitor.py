@@ -102,7 +102,7 @@ def build_summary_html(ai_summary: str) -> str:
             return ""
         content_html = "<br>".join(items) if items else ""
         return f"""<tr>
-          <td width="90" valign="top" style="padding:7px 10px;font-size:13px;font-weight:bold;color:#3b5491;border-bottom:1px solid #eef2ff;">{label}</td>
+          <td width="80" valign="top" style="padding:7px 10px;font-size:13px;font-weight:bold;color:#3b5491;border-bottom:1px solid #eef2ff;white-space:nowrap;">{label}</td>
           <td style="padding:7px 10px;font-size:13px;color:#334155;line-height:1.7;border-bottom:1px solid #eef2ff;">{content_html}</td>
         </tr>"""
 
@@ -532,7 +532,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         gs = GRADE_STYLE[grade]
         GRADE_DESC = {"긴급": "확정된 손실·부실·제재 — 당일 내 확인·점검 필요", "주의": "손실·부실 가능성 — 주시 및 선제 점검 권고", "참고": "직접 손실 없는 동향 — 참고 파악용"}
         rows += f'''
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:16px;border:1px solid {gs["card_border"]};border-bottom:none;background:{gs["header_bg"]};border-left:4px solid {gs["border_left"]};">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;border:1px solid {gs["card_border"]};border-bottom:none;background:{gs["header_bg"]};border-left:4px solid {gs["border_left"]};">
           <tr>
             <td style="padding:10px 14px;">
               <span style="font-size:15px;font-weight:bold;color:{gs["label_color"]};">{grade} · {len(items)}건</span>
@@ -544,7 +544,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         </table>'''
         for a in items:
             rows += f'''
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:12px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:10px;">
           <tr>
             <td style="padding:14px 16px;">
               <a href="{a['url']}" style="font-weight:bold;font-size:16px;text-decoration:none;color:#1e3a6e;line-height:1.6;">{a['title']}</a>
@@ -579,22 +579,21 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
             <p style="margin:0 0 8px 0;font-size:20px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇
               <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">Powered by Claude AI</span>
             </p>
-            <p style="margin:0 0 12px 0;font-size:14px;color:#c8d8f0;line-height:1.7;">
-              {now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간) &nbsp;·&nbsp;
-              수집 {total_count}건 → AI 필터링 후 {len(articles)}건 선별 ({round((1 - len(articles)/total_count)*100) if total_count else 0}% 제거)
+            <p style="margin:0 0 12px 0;font-size:13px;color:#c8d8f0;line-height:1.6;white-space:nowrap;">
+              {now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간) · 수집 {total_count}건 → AI 필터링 후 {len(articles)}건 선별 ({round((1 - len(articles)/total_count)*100) if total_count else 0}% 제거)
             </p>
             <table cellpadding="0" cellspacing="0" border="0">
               <tr>
-                <td style="background:#c0392b;padding:4px 12px;margin-right:6px;">
-                  <span style="font-size:13px;font-weight:bold;color:#ffffff;">🔴 긴급 {len(sections['긴급'])}건</span>
+                <td style="background:#c0392b;padding:4px 14px;">
+                  <span style="font-size:13px;font-weight:bold;color:#ffffff;">긴급 {len(sections['긴급'])}건</span>
                 </td>
-                <td width="6"></td>
-                <td style="background:#d97706;padding:4px 12px;">
-                  <span style="font-size:13px;font-weight:bold;color:#ffffff;">🟡 주의 {len(sections['주의'])}건</span>
+                <td width="8"></td>
+                <td style="background:#d97706;padding:4px 14px;">
+                  <span style="font-size:13px;font-weight:bold;color:#ffffff;">주의 {len(sections['주의'])}건</span>
                 </td>
-                <td width="6"></td>
-                <td style="background:#276749;padding:4px 12px;">
-                  <span style="font-size:13px;font-weight:bold;color:#ffffff;">🟢 참고 {len(sections['참고'])}건</span>
+                <td width="8"></td>
+                <td style="background:#276749;padding:4px 14px;">
+                  <span style="font-size:13px;font-weight:bold;color:#ffffff;">참고 {len(sections['참고'])}건</span>
                 </td>
               </tr>
             </table>
@@ -611,7 +610,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
   {('<tr><td>' + build_competitor_html(competitor_notices or [], today_str) + '</td></tr>') if competitor_notices else ""}
 
   <!-- 뉴스 카드 -->
-  <tr><td style="padding:0 16px;">{rows}</td></tr>
+  <tr><td style="padding:0 22px 16px 22px;">{rows}</td></tr>
 
   <!-- 푸터 -->
   <tr>
