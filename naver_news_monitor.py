@@ -51,6 +51,68 @@ def find_exposure(entity: str, exposure_data: list) -> list:
     return [row for row in exposure_data if entity in row.get("종목명", "") or row.get("종목명", "") in entity]
 
 
+def load_competitor_notices() -> list:
+    """경쟁사 공지사항 CSV에서 당일 신용·대출 관련 공지 로드"""
+    CREDIT_KEYWORDS = [
+        "신용한도", "신용융자", "신용공여", "신용거래",
+        "증거금률", "증거금 변경", "반대매매",
+        "대출한도", "신용대출", "신용 중단", "한도 축소",
+        "신용 재개", "신용거래 제한"
+    ]
+    today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
+    result = []
+    # broker_notices.py 출력 파일들 확인
+    data_dir = "data"
+    if not os.path.exists(data_dir):
+        return []
+    try:
+        import csv as _csv
+        for fname in os.listdir(data_dir):
+            if not fname.endswith(".csv") or fname == "broker_notices_merged.csv":
+                continue
+            fpath = os.path.join(data_dir, fname)
+            with open(fpath, "r", encoding="utf-8-sig") as f:
+                reader = _csv.DictReader(f)
+                for row in reader:
+                    date = row.get("date", "")
+                    title = row.get("title", "")
+                    company = row.get("company", "")
+                    if date != today:
+                        continue
+                    if any(kw in title for kw in CREDIT_KEYWORDS):
+                        result.append({
+                            "company": company,
+                            "title": title,
+                            "date": date,
+                        })
+    except Exception as e:
+        print(f"  경쟁사 공지 로드 오류: {e}")
+    return result
+
+
+def build_competitor_html(notices: list, today_str: str) -> str:
+    """경쟁사 신용·대출 특이사항 HTML — 없으면 빈 문자열"""
+    if not notices:
+        return ""
+    rows_html = ""
+    for i, n in enumerate(notices):
+        border = "border-bottom:1px solid #dce8ff;" if i < len(notices) - 1 else ""
+        rows_html += f"""<tr>
+          <td style="padding:8px 4px;font-size:14px;font-weight:600;color:#1e293b;width:90px;vertical-align:middle;{border}">{n['company']}</td>
+          <td style="padding:8px 4px;font-size:14px;color:#334155;vertical-align:middle;{border}">{n['title']}</td>
+          <td style="padding:8px 4px;font-size:12px;color:#94a3b8;text-align:right;white-space:nowrap;vertical-align:middle;{border}">{n['date'][5:].replace('-', '/')}</td>
+        </tr>"""
+    return f"""<div style="padding:14px 18px;border-bottom:1px solid #e2e8f0;background:#f0f5ff;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <div style="font-size:15px;font-weight:600;color:#3b5491;">경쟁사 신용·대출 특이사항</div>
+        <div style="font-size:12px;color:#94a3b8;">{today_str} 당일 기준</div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;">
+        {rows_html}
+      </table>
+    </div>"""
+
+
 def load_seen_urls() -> set:
     """당일 날짜 기준으로 seen URL 로드 — 전날 데이터 자동 제거"""
     today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
@@ -393,7 +455,7 @@ def build_exposure_html(entity: str, exposure_data: list, ref_date: str) -> str:
     </div>'''
 
 
-def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '', exposure_data: list = None, ref_date: str = ''):
+def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '', exposure_data: list = None, ref_date: str = '', competitor_notices: list = None, today_str: str = ''):
     exposure_data = exposure_data or []
     now = datetime.now(timezone(timedelta(hours=9)))  # 한국시간 KST
     sections = {"긴급": [], "주의": [], "참고": []}
@@ -457,6 +519,8 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
   </div>
 
   {f'<div style="padding:16px 22px;background:#fff;border-bottom:1px solid #e2e8f0;"><div style="font-size:16px;font-weight:500;color:#3b5491;margin-bottom:8px;">AI 분석 요약</div><div style="font-size:14px;color:#475569;line-height:1.6;">{ai_summary.replace(chr(10), "<br>")}</div></div>' if ai_summary else ""}
+
+  {build_competitor_html(competitor_notices or [], today_str)}
 
   {rows}
 
@@ -589,6 +653,12 @@ def main():
                 pass
 
     exposure_data = load_exposure_data()
+    today_str = now.strftime("%m월 %d일")
+    competitor_notices = load_competitor_notices()
+    if competitor_notices:
+        print(f"  경쟁사 신용·대출 특이사항 {len(competitor_notices)}건 발견")
+    else:
+        print("  경쟁사 신용·대출 특이사항 없음")
     if exposure_data:
         ref_date = exposure_data[0].get("기준일", "")
         print(f"  익스포저 데이터 로드 완료 ({len(exposure_data)}건, 기준일: {ref_date})")
@@ -623,7 +693,7 @@ def main():
                 json={
                     "model": "claude-haiku-4-5-20251001",
                     "max_tokens": 400,
-                    "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.\n\n▸ 오늘의 리스크 성격\n(15자 이내 한 문장)\n\n▸ 핵심 이슈\n(각 이슈를 · 로 구분, 이슈당 20자 이내, 최대 3개)\n\n▸ 주목 포인트\n(20자 이내 한 문장)\n\n반드시 짧고 핵심만. 문장 늘이지 말 것.\n\n{filtered_titles}"}],
+                    "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.\n\n▸ 리스크 성격\n(오늘 전반적인 리스크 흐름을 15자 이내 한 문장)\n\n▸ 주요 포인트\n(담당자가 주목할 핵심 사항을 · 로 구분, 항목당 20자 이내, 최대 3개)\n\n반드시 짧고 핵심만. 문장 늘이지 말 것.\n\n{filtered_titles}"}],
                 },
                 timeout=15,
             )
@@ -631,7 +701,7 @@ def main():
         except Exception:
             ai_summary = ""
 
-    html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary, exposure_data=exposure_data, ref_date=ref_date)
+    html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary, exposure_data=exposure_data, ref_date=ref_date, competitor_notices=competitor_notices, today_str=today_str)
     send_email(subject, html)
 
 
