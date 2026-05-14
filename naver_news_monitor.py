@@ -26,7 +26,7 @@ ANTHROPIC_KEY     = os.environ["ANTHROPIC_API_KEY"]
 NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
 NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
-KEYWORDS = ["부실 리스크", "신용 리스크", "유동성 리스크", "디폴트 리스크", "기업회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "반대매매", "신용등급 강등", "PF 부실", "미매각", "신용융자", "발행어음", "서킷브레이커"]
+KEYWORDS = ["부실 리스크", "신용 리스크", "유동성 리스크", "디폴트 리스크", "기업회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "반대매매 급증", "신용등급 강등", "PF 부실", "미매각", "신용융자", "발행어음", "서킷브레이커"]
 MAX_NEWS_PER_KEYWORD = 1000  # 최근 8시간 기사 수집 (cutoff_kst 필터로 제한됨)
 SEEN_FILE = "seen_news.json"
 EXPOSURE_FILE = "exposure_data.csv"
@@ -57,7 +57,7 @@ def load_competitor_notices() -> list:
     """경쟁사 공지사항 CSV에서 당일 신용·대출 관련 공지 로드"""
     CREDIT_KEYWORDS = [
         "신용한도", "신용융자", "신용공여", "신용거래",
-        "증거금률", "증거금 변경", "반대매매",
+        "증거금률", "증거금 변경", "반대매매 급증",
         "대출한도", "신용대출", "신용 중단", "한도 축소",
         "신용 재개", "신용거래 제한"
     ]
@@ -336,6 +336,9 @@ eBiz본부는 비대면 주식거래(온라인 MTS·HTS)를 핵심 사업으로 
 - 해외 운용사·펀드·캐피탈 관련 기사 (국내 증권사 직접 익스포저 없는 것)
 - 이미 알려진 회생·부도 사건의 후속 현황·지역 영향 기사 (새로운 리스크 아닌 것)
 - 수익률 1위·공모가 초과·성과 우수 등 성과 관련 기사 (본문에 타 기업 부정적 언급 있어도 제목 주인공이 호재성이면 제외)
+- 변호사·법조인 인터뷰·수상·선정·특집 기사 (Rising Stars, 베스트 변호사 등)
+- 제목에 [특집], [기획], [인터뷰], [르포], [Rising Stars], [수상] 등이 포함된 기사
+- 특정 사건의 소송·법률 자문 업무 소개 기사 (리스크 당사자가 아닌 법률 서비스 소개)
 
 [관련 있음 — relevant: true 조건]
 위 제외 조건에 해당하지 않고 아래 중 하나라도 해당하면 관련 있음:
@@ -705,19 +708,19 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
               {now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 · 수집 {total_count}건 → {len(articles)}건 선별 ({round((1 - len(articles)/total_count)*100) if total_count else 0}% 필터링)
             </p>
             <!-- 대시보드 -->
-            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:rgba(0,0,0,0.15);">
+            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#2d4278;">
               <tr>
-                <td align="center" style="padding:12px 8px;border-right:1px solid rgba(255,255,255,0.15);">
+                <td align="center" style="padding:12px 8px;border-right:1px solid #4a6099;">
                   <p class="dash-num" style="margin:0 0 2px 0;font-size:22px;font-weight:bold;color:#ff6b6b;">{len(sections['긴급'])}</p>
-                  <p style="margin:0;font-size:12px;color:rgba(255,255,255,0.85);">긴급</p>
+                  <p style="margin:0;font-size:12px;color:#d0dcf0;">긴급</p>
                 </td>
-                <td align="center" style="padding:12px 8px;border-right:1px solid rgba(255,255,255,0.15);">
+                <td align="center" style="padding:12px 8px;border-right:1px solid #4a6099;">
                   <p class="dash-num" style="margin:0 0 2px 0;font-size:22px;font-weight:bold;color:#fbbf24;">{len(sections['주의'])}</p>
-                  <p style="margin:0;font-size:12px;color:rgba(255,255,255,0.85);">주의</p>
+                  <p style="margin:0;font-size:12px;color:#d0dcf0;">주의</p>
                 </td>
                 <td align="center" style="padding:12px 8px;">
                   <p class="dash-num" style="margin:0 0 2px 0;font-size:22px;font-weight:bold;color:#6ee7b7;">{len(sections['참고'])}</p>
-                  <p style="margin:0;font-size:12px;color:rgba(255,255,255,0.85);">참고</p>
+                  <p style="margin:0;font-size:12px;color:#d0dcf0;">참고</p>
                 </td>
               </tr>
             </table>
