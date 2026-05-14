@@ -128,7 +128,7 @@ def crawl_naver_news(keyword: str) -> list:
             if title and link:
                 articles.append({
                     "title"  : title,
-                    "desc"   : desc[:80] if desc else "",
+                    "desc"   : (desc[:80].rsplit(" ", 1)[0] if len(desc) > 80 and " " in desc[:80] else desc[:80]) if desc else "",
                     "url"    : link,
                     "pubDate": pub,
                     "keyword": keyword,
@@ -411,13 +411,15 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         if not items:
             continue
         gs = GRADE_STYLE[grade]
+        GRADE_DESC = {"긴급": "확정된 손실·부실·제재 — 당일 내 확인·점검 필요", "주의": "손실·부실 가능성 — 주시 및 선제 점검 권고", "참고": "직접 손실 없는 동향 — 참고 파악용"}
         rows += f'''
-        <div style="padding:10px 18px 8px;background:{gs["header_bg"]};border-left:4px solid {gs["border_left"]};margin:16px 18px 0;border-radius:6px 6px 0 0;border:1px solid {gs["card_border"]};border-bottom:none;">
+        <div style="position:relative;padding:10px 18px 8px;background:{gs["header_bg"]};border-left:4px solid {gs["border_left"]};margin:16px 18px 0;border-radius:6px 6px 0 0;border:1px solid {gs["card_border"]};border-bottom:none;">
           <span style="font-size:16px;font-weight:600;color:{gs["label_color"]};">{grade} · {len(items)}건</span>
+          <span style="position:absolute;right:14px;top:50%;transform:translateY(-50%);font-size:11px;color:#94a3b8;">※ {GRADE_DESC[grade]}</span>
         </div>'''
         for a in items:
             rows += f'''
-        <div style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin:0 18px 0;padding:14px 16px;border-bottom:1px solid {gs["card_border"]};">
+        <div style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin:0 18px 10px;padding:16px 16px;border-bottom:1px solid {gs["card_border"]};border-radius:0 0 6px 6px;">
           <a href="{a['url']}" style="font-weight:600;font-size:17px;text-decoration:none;display:block;margin-bottom:5px;line-height:1.6;color:#1e3a6e;word-break:keep-all;">{a['title']}</a>
           <div style="font-size:13px;margin-bottom:6px;">
             <a href="{a['url']}" style="color:#3b5491;text-decoration:none;">↗ 기사 보기</a>
@@ -465,12 +467,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
     &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
   </div>
 
-  <div style="padding:8px 22px 12px;background:#fff;font-size:11px;color:#c8d0db;line-height:1.9;">
-    등급 기준 &nbsp;|&nbsp;
-    <span style="color:#e8b4b0;">긴급</span> · 부도·파산·회생·상폐 / 기초자산 부실 / 금융당국 조사·제재 &nbsp;|&nbsp;
-    <span style="color:#e8d5a0;">주의</span> · 징후·가능성 / 잠재 리스크 &nbsp;|&nbsp;
-    <span style="color:#a8d5b8;">참고</span> · 업황 파악 목적
-  </div>
+
 
 </div></body></html>"""
 
