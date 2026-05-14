@@ -90,6 +90,42 @@ def load_competitor_notices() -> list:
     return result
 
 
+def build_summary_html(ai_summary: str) -> str:
+    """AI 분석 요약을 테이블 형식으로 렌더링"""
+    lines = [l.strip() for l in ai_summary.split("\n") if l.strip()]
+    rows_html = ""
+    current_label = ""
+    current_items = []
+
+    def flush_row(label, items):
+        if not label:
+            return ""
+        content_html = "<br>".join(items) if items else ""
+        return f"""<tr>
+          <td style="padding:8px 10px;font-size:13px;font-weight:600;color:#3b5491;white-space:nowrap;vertical-align:top;border-bottom:1px solid #eef2ff;width:90px;">{label}</td>
+          <td style="padding:8px 10px;font-size:13px;color:#334155;line-height:1.7;border-bottom:1px solid #eef2ff;">{content_html}</td>
+        </tr>"""
+
+    for line in lines:
+        if line.startswith("▸"):
+            rows_html += flush_row(current_label, current_items)
+            current_label = line.replace("▸", "").strip()
+            current_items = []
+        elif line.startswith("·") or line.startswith("•"):
+            current_items.append(line)
+        else:
+            current_items.append(line)
+
+    rows_html += flush_row(current_label, current_items)
+
+    return f"""<div style="padding:14px 18px;border-bottom:1px solid #e2e8f0;background:#f8fbff;">
+      <div style="font-size:15px;font-weight:600;color:#3b5491;margin-bottom:10px;">AI 분석 요약</div>
+      <table style="width:100%;border-collapse:collapse;">
+        {rows_html}
+      </table>
+    </div>"""
+
+
 def build_competitor_html(notices: list, today_str: str) -> str:
     """경쟁사 신용·대출 특이사항 HTML — 없으면 빈 문자열"""
     if not notices:
@@ -531,7 +567,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
     </div>
   </div>
 
-  {f'<div style="padding:16px 22px;background:#fff;border-bottom:1px solid #e2e8f0;"><div style="font-size:16px;font-weight:500;color:#3b5491;margin-bottom:8px;">AI 분석 요약</div><div style="font-size:14px;color:#475569;line-height:1.6;">{ai_summary.replace(chr(10), "<br>")}</div></div>' if ai_summary else ""}
+  {build_summary_html(ai_summary) if ai_summary else ""}
 
   {build_competitor_html(competitor_notices or [], today_str)}
 
