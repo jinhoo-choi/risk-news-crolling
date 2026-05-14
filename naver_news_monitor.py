@@ -85,6 +85,7 @@ def load_competitor_notices() -> list:
                             "company": company,
                             "title": title,
                             "date": date,
+                            "url": row.get("url", ""),
                         })
     except Exception as e:
         print(f"  경쟁사 공지 로드 오류: {e}")
@@ -291,23 +292,13 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
         for i, a in enumerate(batch)
     ])
 
-    prompt = f"""당신은 한국투자증권 리스크 관리 전문가입니다.
-아래 뉴스 제목들을 보고 증권사 실무 관점에서 엄격하게 판단하세요.
+    prompt = f"""당신은 한국투자증권 eBiz본부 리스크 담당자입니다.
+eBiz본부는 비대면 주식거래(온라인 MTS·HTS)를 핵심 사업으로 하며, 리츠·펀드·발행어음·신용융자·IMA 등 금융상품을 온라인 채널로 판매합니다.
+고객 자산 손실, 당사 익스포저 손실, 금융당국 제재, 비대면 거래 시스템 리스크에 특히 민감합니다.
+아래 기사가 이 네 가지 중 하나로 이어질 직접적 가능성이 있는지 엄격하게 판단하세요. 가능성이 낮으면 과감히 제외하세요.
 
-[관련 있음 — relevant: true 조건]
-다음 중 하나라도 해당하면 관련 있음:
-- 기업 부도·파산·회생·워크아웃·상장폐지가 확정되었거나 신청·징후 단계인 기사
-- 금융당국(금감원·금융위)의 증권사 대상 조사·검사·제재·규제 강화 기사
-- 부동산PF, 브릿지론, 미매각채권 관련 손실·부실 기사
-- 반대매매 급증, 마진콜, 신용융자 한도 소진·중단, 증거금 부족 관련 시장 충격 기사
-- 서킷브레이커 발동, 종목 증거금률 대폭 상향 등 시장 거래 제한 기사
-- 발행어음·IMA 관련 증권사 유동성 위기·만기 불일치 기사
-- 신용융자 잔고 급증으로 인한 반대매매 우려·증권사 리스크 관리 강화 기사
-- 특정 기업·업종의 신용등급 강등·부실로 증권사 익스포저 손실 우려 기사
-- 증권사가 직접 당사자인 제재·손실·건전성 악화 기사
-
-[관련 없음 — relevant: false 조건]
-다음 중 하나라도 해당하면 반드시 제외:
+[반드시 제외 — relevant: false 조건]
+다음 중 하나라도 해당하면 즉시 제외하세요:
 - 단순히 "파산", "위기" 등 용어만 언급하는 분석·전망·칼럼·오피니언 기사
 - 학술·연구·교육·세미나·보고서·강의 관련 기사
 - 해외 사례 기사 (국내 증권사에 직접 영향 없는 것)
@@ -341,6 +332,19 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 - 이미 알려진 회생·부도 사건의 후속 현황·지역 영향 기사 (새로운 리스크 아닌 것)
 - 수익률 1위·공모가 초과·성과 우수 등 성과 관련 기사 (본문에 타 기업 부정적 언급 있어도 제목 주인공이 호재성이면 제외)
 
+[관련 있음 — relevant: true 조건]
+위 제외 조건에 해당하지 않고 아래 중 하나라도 해당하면 관련 있음:
+- 기업 부도·파산·회생·워크아웃·상장폐지가 확정되었거나 신청·징후 단계인 기사
+- 금융당국(금감원·금융위)의 증권사 대상 조사·검사·제재·규제 강화 기사
+- 부동산PF, 브릿지론, 미매각채권 관련 손실·부실 기사
+- 반대매매 급증, 마진콜, 신용융자 한도 소진·중단, 증거금 부족 관련 시장 충격 기사
+- 서킷브레이커 발동, 종목 증거금률 대폭 상향 등 시장 거래 제한 기사
+- 발행어음·IMA 관련 증권사 유동성 위기·만기 불일치 기사
+- 비대면 주식거래 시스템 장애·해킹·전산 사고 관련 기사
+- 신용융자 잔고 급증으로 인한 반대매매 우려·증권사 리스크 관리 강화 기사
+- 특정 기업·업종의 신용등급 강등·부실로 증권사 익스포저 손실 우려 기사
+- 증권사가 직접 당사자인 제재·손실·건전성 악화 기사
+
 [등급 기준] — relevant: true인 경우만 적용
 - 긴급: 아래 중 하나 해당
   · 부도·파산·회생·상폐 확정 또는 신청 (신청 단계도 긴급)
@@ -359,10 +363,13 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
   · 반대매매 우려·신용융자 한도 부분 축소 등 시장 충격 징후 단계
 - 참고: 업황 파악에 유용하나 직접 위험은 낮은 것
 
-[중복 기사 처리]
-- 동일한 사건·이슈를 다른 언론사가 보도한 경우, id 숫자 작은 것 1건만 relevant:true로 처리
-- 나머지 동일 사건 기사는 relevant:false로 처리
-- 제목이 다르더라도 핵심 사건(기업명+사건유형)이 동일하면 중복으로 판단
+[중복 기사 처리 — 반드시 엄격히 적용]
+- 동일한 사건·이슈를 다른 언론사가 보도한 경우, id 숫자 가장 작은 것 1건만 relevant:true
+- 나머지 동일 사건 기사는 무조건 relevant:false
+- 제목이 달라도 핵심 사건(기업명+사건유형)이 동일하면 중복
+- 동일 정책·제도 변경(예: 동전주 상장폐지, 신용융자 잔고 현황 등)은 1건만 선택
+- 같은 기업의 같은 날 다른 측면을 다룬 기사도 가장 핵심적인 1건만 선택
+- 중복 의심 시 반드시 제외 (차라리 제외하는 게 나음)
 
 반드시 JSON 배열만 반환하세요. 마크다운 코드블록(```) 없이 순수 JSON만.
 - reason: 선별 이유를 증권사 실무 관점에서 20자 이내로 (relevant=false면 null)
@@ -454,8 +461,15 @@ def dedup_by_title(articles: list) -> list:
         return []
 
     numbered = "\n".join([f"{i+1}. {a['title']}" for i, a in enumerate(articles)])
-    prompt = f"""아래 뉴스 제목 목록에서 동일한 사건·이슈를 다룬 중복 기사를 제거하세요.
-동일 기업명 + 동일 사건유형이면 중복으로 판단하며, id가 가장 작은 것(먼저 나온 것)만 남기세요.
+    prompt = f"""아래 뉴스 제목 목록에서 중복 기사를 제거하세요.
+
+[중복 판단 기준 — 아래 중 하나라도 해당하면 중복]
+1. 동일 기업명 + 동일 사건유형 (예: 한화솔루션 유상증자, 동전주 상장폐지, 신용융자 급증)
+2. 제목 핵심 내용이 80% 이상 동일
+3. 동일 정책·제도 변경을 여러 언론사가 보도한 경우 (예: 동전주 상장폐지 7월 시행 관련 기사 다수)
+4. 동일 인물·기업의 동일 사건을 다른 각도로 보도한 경우
+
+중복이면 id가 가장 작은 것(먼저 나온 것) 1건만 남기고 나머지는 제거하세요.
 
 반드시 JSON 배열만 반환하세요. 마크다운 코드블록 없이 순수 JSON만.
 형식: [{{"id": 유지할id}}, ...] — 유지할 기사 id만 포함
@@ -473,7 +487,8 @@ def dedup_by_title(articles: list) -> list:
             },
             json={
                 "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 500,
+                "max_tokens": 1000,
+                "temperature": 0.0,
                 "messages": [{"role": "user", "content": prompt}],
             },
             timeout=30,
@@ -522,10 +537,12 @@ def build_exposure_html(entity: str, exposure_data: list, ref_date: str) -> str:
         f'<div style="font-size:13px;color:#1e293b;margin-bottom:3px;">{row.get("종목유형","")} : {int(row.get("잔고(억)","0")):,}억원 / {int(row.get("고객수","0")):,}명</div>'
         for row in rows
     ])
-    return f'''<div style="margin-top:8px;padding:10px 12px;background:#f0f4ff;border:1px solid #c7d7f5;border-radius:6px;">
-      <div style="font-size:12px;font-weight:700;color:#3b5491;margin-bottom:6px;letter-spacing:0.5px;">eBiz본부 익스포저 현황{date_label}</div>
-      {items_html}
-    </div>'''
+    return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:8px;background:#f0f4ff;border:1px solid #c7d7f5;">
+      <tr><td style="padding:8px 12px;">
+        <p style="margin:0 0 4px 0;font-size:12px;font-weight:bold;color:#3b5491;">eBiz본부 익스포저 현황{date_label}</p>
+        {items_html}
+      </td></tr>
+    </table>'''
 
 
 def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '', exposure_data: list = None, ref_date: str = '', competitor_notices: list = None, today_str: str = ''):
@@ -541,12 +558,16 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         "참고": {"header_bg":"#f0faf4","border_left":"#48bb78","label_color":"#276749","card_bg":"#f8fff9","card_border":"#b2dfca"},
     }
     rows = ""
+    GRADE_LIMIT = {"긴급": 999, "주의": 10, "참고": 999}  # 긴급 전건, 주의 10건, 참고 전건
+    GRADE_DESC = {"긴급": "확정된 손실·부실·제재 — 당일 내 확인·점검 필요", "주의": "손실·부실 가능성 — 주시 및 선제 점검 권고", "참고": "직접 손실 없는 동향 — 참고 파악용"}
     for grade in ["긴급", "주의", "참고"]:
         items = sections[grade]
         if not items:
             continue
         gs = GRADE_STYLE[grade]
-        GRADE_DESC = {"긴급": "확정된 손실·부실·제재 — 당일 내 확인·점검 필요", "주의": "손실·부실 가능성 — 주시 및 선제 점검 권고", "참고": "직접 손실 없는 동향 — 참고 파악용"}
+        limit = GRADE_LIMIT[grade]
+        display_items = items[:limit]
+        extra_items = items[limit:]
         rows += f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;border:1px solid {gs["card_border"]};border-bottom:none;background:{gs["header_bg"]};border-left:4px solid {gs["border_left"]};">
           <tr>
@@ -554,23 +575,55 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
               <span style="font-size:15px;font-weight:bold;color:{gs["label_color"]};">{grade} · {len(items)}건</span>
             </td>
             <td align="right" style="padding:10px 14px;">
-              <span style="font-size:11px;color:#94a3b8;">※ {GRADE_DESC[grade]}</span>
+              <span style="font-size:11px;color:#94a3b8;">{GRADE_DESC[grade]}</span>
             </td>
           </tr>
         </table>'''
-        for a in items:
-            rows += f'''
+        for a in display_items:
+            if grade == "참고":
+                rows += f'''
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-left:1px solid {gs["card_border"]};border-right:1px solid {gs["card_border"]};border-bottom:1px solid {gs["card_border"]};background:#fafafa;">
+          <tr>
+            <td style="padding:7px 16px;">
+              <a href="{a['url']}" style="font-size:13px;color:#475569;text-decoration:none;">{a['title']}</a>
+              {f'<span style="font-size:11px;color:#94a3b8;margin-left:8px;">{a["pub_str"]}</span>' if a.get("pub_str") else ""}
+            </td>
+          </tr>
+        </table>'''
+            else:
+                rows += f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:10px;">
           <tr>
             <td style="padding:14px 16px;">
               <a href="{a['url']}" style="font-weight:bold;font-size:16px;text-decoration:none;color:#1e3a6e;line-height:1.6;">{a['title']}</a>
-              <p style="margin:6px 0;font-size:12px;">
-                <a href="{a['url']}" style="color:#3b5491;text-decoration:none;">↗ 기사 보기</a>
-                &nbsp;{f'<span style="color:#94a3b8;">{a["pub_str"]}</span>' if a.get("pub_str") else ""}
-              </p>
+              <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:6px 0;">
+                <tr>
+                  <td style="font-size:12px;"><a href="{a['url']}" style="color:#3b5491;text-decoration:none;">↗ 기사 보기</a></td>
+                  <td align="right" style="font-size:11px;color:#94a3b8;">{a.get("pub_str","")}</td>
+                </tr>
+              </table>
               {f'<p style="margin:0 0 8px 0;font-size:13px;color:#64748b;">{a["desc"]}</p>' if a.get("desc") else ""}
-              {f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #e8d5d5;margin-top:8px;"><tr><td style="padding-top:8px;"><p style="margin:0 0 4px 0;font-size:11px;font-weight:bold;color:#c0392b;letter-spacing:0.8px;">대응방안</p><p style="margin:0;font-size:13px;color:#1e293b;line-height:1.6;">{a["action"]}</p></td></tr></table>' if a.get("action") else ""}
+              {f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #e8d5d5;margin-top:8px;"><tr><td style="padding-top:8px;"><p style="margin:0 0 4px 0;font-size:12px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:14px;color:#1e293b;line-height:1.6;font-weight:500;">{a["action"]}</p></td></tr></table>' if a.get("action") else ""}
               {build_exposure_html(a.get("entity",""), exposure_data or [], ref_date)}
+            </td>
+          </tr>
+        </table>'''
+        if extra_items:
+            extra_rows = "".join([f'''
+            <tr>
+              <td style="padding:4px 0;font-size:13px;color:#475569;border-bottom:1px solid #f0f0f0;">
+                <a href="{e['url']}" style="color:#475569;text-decoration:none;">· {e['title'][:60]}{"..." if len(e['title']) > 60 else ""}</a>
+                {f'<span style="font-size:11px;color:#94a3b8;margin-left:6px;">{e["pub_str"]}</span>' if e.get("pub_str") else ""}
+              </td>
+            </tr>''' for e in extra_items])
+            rows += f'''
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:#fafafa;margin-bottom:10px;">
+          <tr>
+            <td style="padding:10px 16px 4px 16px;">
+              <p style="margin:0 0 8px 0;font-size:12px;font-weight:bold;color:#64748b;">추가 {len(extra_items)}건</p>
+              <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                {extra_rows}
+              </table>
             </td>
           </tr>
         </table>'''  
@@ -595,7 +648,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
             <p style="margin:0 0 8px 0;font-size:20px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇
               <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">Powered by Claude AI</span>
             </p>
-            <p style="margin:0 0 12px 0;font-size:13px;color:#c8d8f0;line-height:1.6;white-space:nowrap;">
+            <p style="margin:0 0 12px 0;font-size:14px;color:#c8d8f0;line-height:1.6;white-space:nowrap;">
               {now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간) · 수집 {total_count}건 → AI 필터링 후 {len(articles)}건 선별 ({round((1 - len(articles)/total_count)*100) if total_count else 0}% 제거)
             </p>
             <table cellpadding="0" cellspacing="0" border="0">
@@ -632,8 +685,8 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
   <tr>
     <td style="padding:14px 22px;background:#fff;border-top:1px solid #e2e8f0;">
       <p style="margin:0;font-size:12px;color:#94a3b8;line-height:2.0;">
-        ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
-        ※ 담당자<br>
+        본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
+        담당자<br>
         &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
         &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
       </p>
@@ -671,8 +724,8 @@ def build_empty_html(now) -> str:
   <tr>
     <td style="padding:14px 22px;border-top:1px solid #e2e8f0;">
       <p style="margin:0;font-size:12px;color:#94a3b8;line-height:2.0;">
-        ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
-        ※ 담당자<br>
+        본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
+        담당자<br>
         &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
         &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
       </p>
@@ -746,6 +799,8 @@ def main():
     # 본문 기반으로 대응방안 재생성
     print("  대응방안 재생성 중...")
     for a in filtered:
+        if a.get("grade") == "참고":  # 참고는 제목 목록만 표시 — 대응방안 불필요
+            continue
         body_text = a.get("body", "")
         if not body_text:  # 본문 크롤링 실패 시 기존 action 유지
             continue
@@ -760,11 +815,32 @@ def main():
                 json={
                     "model": "claude-haiku-4-5-20251001",
                     "max_tokens": 150,
-                    "messages": [{"role": "user", "content": f"""증권사 리스크 담당자 입장에서 아래 기사에 대해 즉시 취해야 할 구체적 조치를 50자 이내로 작성하세요.
-보고·공유·전달 등 보고 행위 제외. 실제 확인·점검·산출 행동만 기재.
+                    "temperature": 0.0,
+                    "messages": [{"role": "user", "content": f"""한국투자증권 eBiz본부 리스크 담당자 입장에서 아래 기사의 본문을 읽고 즉시 취해야 할 구체적 조치를 작성하세요.
+
+규칙:
+- 보고·공유·전달 등 보고 행위 제외
+- 실제 확인·점검·산출 등 실무 행동만 기재
+- 한 문장, 50자 이내
+
+등급별 기준:
+- 긴급: [확인 대상] + [즉시 조치] + [기한]. 예) "OO 채권 담보 현황 즉시 파악, 금일 내 평가손 산출"
+- 주의: [모니터링 주기] + [악화 시 트리거]. 예) "주 1회 잔고 추이 점검, 신용등급 추가 강등 시 즉시 대응"
+- 참고: [시사점] + [선제 점검]. 예) "동종업계 PF 만기 구조 비교, 자사 익스포저 비중 점검"
+
+유형별 참고:
+- 회생·파산: 보유 채권 담보 현황 및 선순위 여부 파악
+- 금감원 제재: 컴플라이언스 소명자료 및 관련 계약 점검
+- PF·브릿지론: 만기 도래 현황 및 미매각 잔액 파악
+- 신용등급 강등: 해당 채권 듀레이션 및 평가손 산출
+- 반대매매·신용융자: 반대매매 가능 규모 및 담보 부족 계좌 파악
+- 리츠·펀드 부실: 기초자산 담보가치 및 선순위 채권 확인
+- 시스템 장애·해킹: 영향 범위 즉시 확인 및 고객 피해 현황 파악
+
 등급: {a['grade']}
 제목: {a['title']}
 본문: {body_text[:400]}
+
 조치만 한 문장으로 반환하세요."""}],
                 },
                 timeout=10,
@@ -816,7 +892,7 @@ def main():
                 json={
                     "model": "claude-haiku-4-5-20251001",
                     "max_tokens": 400,
-                    "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.\n\n▸ 리스크 성격\n(오늘 전반적인 리스크 흐름을 15자 이내 한 문장)\n\n▸ 주요 포인트\n(담당자가 주목할 핵심 사항을 · 로 구분, 항목당 20자 이내, 최대 3개)\n\n반드시 짧고 핵심만. 문장 늘이지 말 것.\n\n{filtered_titles}"}],
+                    "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.\n\n▸ 리스크 성격\n(오늘 전반적인 리스크 흐름을 30자 이내 한 문장)\n\n▸ 주요 포인트\n(담당자가 주목할 핵심 사항을 · 로 구분, 항목당 30자 이내, 최대 3개)\n\n반드시 짧고 핵심만. 문장 늘이지 말 것.\n\n{filtered_titles}"}],
                 },
                 timeout=15,
             )
