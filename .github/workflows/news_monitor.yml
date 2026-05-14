@@ -2,18 +2,55 @@ name: 네이버 뉴스 리스크 모니터링
 
 on:
   schedule:
-    - cron: '31 22 * * *'
-    - cron: '31 5 * * *'
-    - cron: '31 11 * * *'
+    - cron: '0 22 * * 1-5'    # KST 07:00 평일 (경쟁사 공지 수집)
+    - cron: '31 22 * * *'     # KST 07:31 매일 (리스크 탐지)
+    - cron: '0 5 * * 1-5'     # KST 14:00 평일 (경쟁사 공지 수집)
+    - cron: '31 5 * * *'      # KST 14:31 매일 (리스크 탐지)
+    - cron: '0 11 * * 1-5'    # KST 20:00 평일 (경쟁사 공지 수집)
+    - cron: '31 11 * * *'     # KST 20:31 매일 (리스크 탐지)
   workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  crawl-and-notify:
+
+  crawl-broker-notices:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 라이브러리 설치
+        run: pip install requests beautifulsoup4 pandas lxml
+
+      - name: 경쟁사 공지사항 크롤링
+        run: python broker_notices.py
+        continue-on-error: true
+
+      - name: CSV 커밋 & 푸시
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add data/*.csv || true
+          git add debug/*.html || true
+          git diff --cached --quiet || git commit -m "update broker notices"
+          git push
+        continue-on-error: true
+
+  crawl-and-notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: crawl-broker-notices
 
     steps:
       - name: 코드 체크아웃
@@ -28,12 +65,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-${{ runner.os }}-requests-beautifulsoup4
+          key: pip-${{ runner.os }}-requests-beautifulsoup4-pandas
           restore-keys: |
             pip-${{ runner.os }}-
 
       - name: 라이브러리 설치
-        run: pip install requests beautifulsoup4
+        run: pip install requests beautifulsoup4 pandas
 
       - name: seen_news.json 캐시 복원
         uses: actions/cache@v4
