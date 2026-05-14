@@ -13,6 +13,7 @@ import csv
 import time
 import os
 from datetime import datetime, timezone, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime as _pdt
 
 # ─────────────────────────────────────────────
@@ -25,7 +26,7 @@ ANTHROPIC_KEY     = os.environ["ANTHROPIC_API_KEY"]
 NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
 NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
-KEYWORDS = ["부실 리스크", "신용 리스크", "유동성 리스크", "디폴트 리스크", "기업회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "자본잠식", "배임", "반대매매", "신용등급 강등", "PF 부실", "미매각", "영업정지", "신용융자", "증거금", "발행어음", "서킷브레이커"]
+KEYWORDS = ["부실 리스크", "신용 리스크", "유동성 리스크", "디폴트 리스크", "기업회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "반대매매", "신용등급 강등", "PF 부실", "미매각", "신용융자", "발행어음", "서킷브레이커"]
 MAX_NEWS_PER_KEYWORD = 1000  # 당일 기사 전체 수집 (pubDate 필터로 제한됨)
 SEEN_FILE = "seen_news.json"
 EXPOSURE_FILE = "exposure_data.csv"
@@ -517,7 +518,7 @@ def ai_filter_and_grade(articles: list) -> list:
         print(f"  배치 {i//batch_size+1}/{-(-len(articles)//batch_size)} 처리 중... ({len(batch)}건)")
         result.extend(ai_filter_batch(batch, offset=i))
         if i + batch_size < len(articles):
-            time.sleep(5)  # 배치 간 5초 대기
+            time.sleep(2)  # 배치 간 2초 대기
 
     if len(result) > 1:
         print(f"  중복 제거 중... (필터링 후 {len(result)}건)")
@@ -792,18 +793,28 @@ def main():
         send_email(subject, build_empty_html(now))
         return
 
-    # 본문 크롤링 + 대응방안 재생성 — 선별된 기사에만 적용
+    # 본문 크롤링 병렬처리
     print("  본문 크롤링 중...")
-    for a in filtered:
-        a["body"] = fetch_article_body(a["url"])
-    # 본문 기반으로 대응방안 재생성
+    def crawl_body(article):
+        article["body"] = fetch_article_body(article["url"])
+        return article
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(crawl_body, a): a for a in filtered}
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception:
+                pass
+    # 대응방안 재생성 병렬처리 (참고 제외)
     print("  대응방안 재생성 중...")
-    for a in filtered:
-        if a.get("grade") == "참고":  # 참고는 제목 목록만 표시 — 대응방안 불필요
-            continue
-        body_text = a.get("body", "")
-        if not body_text:  # 본문 크롤링 실패 시 기존 action 유지
-            continue
+
+    def regenerate_action(article):
+        if article.get("grade") == "참고":
+            return
+        body_text = article.get("body", "")
+        if not body_text:
+            return
         try:
             action_res = requests.post(
                 "https://api.anthropic.com/v1/messages",
@@ -826,7 +837,6 @@ def main():
 등급별 기준:
 - 긴급: [확인 대상] + [즉시 조치] + [기한]. 예) "OO 채권 담보 현황 즉시 파악, 금일 내 평가손 산출"
 - 주의: [모니터링 주기] + [악화 시 트리거]. 예) "주 1회 잔고 추이 점검, 신용등급 추가 강등 시 즉시 대응"
-- 참고: [시사점] + [선제 점검]. 예) "동종업계 PF 만기 구조 비교, 자사 익스포저 비중 점검"
 
 유형별 참고:
 - 회생·파산: 보유 채권 담보 현황 및 선순위 여부 파악
@@ -837,8 +847,8 @@ def main():
 - 리츠·펀드 부실: 기초자산 담보가치 및 선순위 채권 확인
 - 시스템 장애·해킹: 영향 범위 즉시 확인 및 고객 피해 현황 파악
 
-등급: {a['grade']}
-제목: {a['title']}
+등급: {article['grade']}
+제목: {article['title']}
 본문: {body_text[:400]}
 
 조치만 한 문장으로 반환하세요."""}],
@@ -847,9 +857,17 @@ def main():
             )
             new_action = action_res.json()["content"][0]["text"].strip()
             if new_action:
-                a["action"] = new_action
+                article["action"] = new_action
         except Exception:
             pass
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(regenerate_action, a) for a in filtered]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception:
+                pass
 
     now = datetime.now(timezone(timedelta(hours=9)))
     today_str = now.strftime("%m월 %d일")
