@@ -102,8 +102,8 @@ def build_summary_html(ai_summary: str) -> str:
             return ""
         content_html = "<br>".join(items) if items else ""
         return f"""<tr>
-          <td style="padding:8px 10px;font-size:13px;font-weight:600;color:#3b5491;white-space:nowrap;vertical-align:top;border-bottom:1px solid #eef2ff;width:90px;">{label}</td>
-          <td style="padding:8px 10px;font-size:13px;color:#334155;line-height:1.7;border-bottom:1px solid #eef2ff;">{content_html}</td>
+          <td width="90" valign="top" style="padding:7px 10px;font-size:13px;font-weight:bold;color:#3b5491;border-bottom:1px solid #eef2ff;">{label}</td>
+          <td style="padding:7px 10px;font-size:13px;color:#334155;line-height:1.7;border-bottom:1px solid #eef2ff;">{content_html}</td>
         </tr>"""
 
     for line in lines:
@@ -118,12 +118,10 @@ def build_summary_html(ai_summary: str) -> str:
 
     rows_html += flush_row(current_label, current_items)
 
-    return f"""<div style="padding:14px 18px;border-bottom:1px solid #e2e8f0;background:#f8fbff;">
-      <div style="font-size:15px;font-weight:600;color:#3b5491;margin-bottom:10px;">AI 분석 요약</div>
-      <table style="width:100%;border-collapse:collapse;">
+    return f"""<p style="margin:0 0 10px 0;font-size:15px;font-weight:bold;color:#3b5491;">AI 분석 요약</p>
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">
         {rows_html}
-      </table>
-    </div>"""
+      </table>"""
 
 
 def build_competitor_html(notices: list, today_str: str) -> str:
@@ -136,19 +134,29 @@ def build_competitor_html(notices: list, today_str: str) -> str:
         url = n.get('url', '')
         title_cell = f'<a href="{url}" style="color:#334155;text-decoration:none;">{n["title"]}</a>' if url else n['title']
         rows_html += f"""<tr>
-          <td style="padding:8px 4px;font-size:14px;font-weight:600;color:#1e293b;width:90px;vertical-align:middle;{border}">{n['company']}</td>
-          <td style="padding:8px 4px;font-size:14px;vertical-align:middle;{border}">{title_cell}</td>
-          <td style="padding:8px 4px;font-size:12px;color:#94a3b8;text-align:right;white-space:nowrap;vertical-align:middle;{border}">{n['date'][5:].replace('-', '/')}</td>
+          <td width="100" valign="middle" style="padding:7px 4px;font-size:13px;font-weight:bold;color:#1e293b;{border}">{n['company']}</td>
+          <td valign="middle" style="padding:7px 4px;font-size:13px;{border}">{title_cell}</td>
+          <td align="right" valign="middle" style="padding:7px 4px;font-size:11px;color:#94a3b8;white-space:nowrap;{border}">{n['date'][5:].replace('-', '/')}</td>
         </tr>"""
-    return f"""<div style="padding:14px 18px;border-bottom:1px solid #e2e8f0;background:#f0f5ff;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-        <div style="font-size:15px;font-weight:600;color:#3b5491;">경쟁사 신용·대출 특이사항</div>
-        <div style="font-size:12px;color:#94a3b8;">{today_str} 당일 기준</div>
-      </div>
-      <table style="width:100%;border-collapse:collapse;">
-        {rows_html}
-      </table>
-    </div>"""
+    return f"""<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f0f5ff;border-bottom:1px solid #e2e8f0;">
+      <tr>
+        <td style="padding:14px 22px 4px 22px;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td><span style="font-size:15px;font-weight:bold;color:#3b5491;">경쟁사 신용·대출 특이사항</span></td>
+              <td align="right"><span style="font-size:11px;color:#94a3b8;">{today_str} 당일 기준</span></td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:6px 22px 14px 22px;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            {rows_html}
+          </table>
+        </td>
+      </tr>
+    </table>"""
 
 
 def load_seen_urls() -> set:
@@ -524,89 +532,141 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         gs = GRADE_STYLE[grade]
         GRADE_DESC = {"긴급": "확정된 손실·부실·제재 — 당일 내 확인·점검 필요", "주의": "손실·부실 가능성 — 주시 및 선제 점검 권고", "참고": "직접 손실 없는 동향 — 참고 파악용"}
         rows += f'''
-        <div style="position:relative;padding:10px 18px 8px;background:{gs["header_bg"]};border-left:4px solid {gs["border_left"]};margin:16px 18px 0;border-radius:6px 6px 0 0;border:1px solid {gs["card_border"]};border-bottom:none;">
-          <span style="font-size:16px;font-weight:600;color:{gs["label_color"]};">{grade} · {len(items)}건</span>
-          <span style="position:absolute;right:14px;top:50%;transform:translateY(-50%);font-size:11px;color:#94a3b8;">※ {GRADE_DESC[grade]}</span>
-        </div>'''
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:16px;border:1px solid {gs["card_border"]};border-bottom:none;background:{gs["header_bg"]};border-left:4px solid {gs["border_left"]};">
+          <tr>
+            <td style="padding:10px 14px;">
+              <span style="font-size:15px;font-weight:bold;color:{gs["label_color"]};">{grade} · {len(items)}건</span>
+            </td>
+            <td align="right" style="padding:10px 14px;">
+              <span style="font-size:11px;color:#94a3b8;">※ {GRADE_DESC[grade]}</span>
+            </td>
+          </tr>
+        </table>'''
         for a in items:
             rows += f'''
-        <div style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin:0 18px 10px;padding:16px 16px;border-bottom:1px solid {gs["card_border"]};border-radius:0 0 6px 6px;">
-          <a href="{a['url']}" style="font-weight:600;font-size:17px;text-decoration:none;display:block;margin-bottom:5px;line-height:1.6;color:#1e3a6e;word-break:keep-all;">{a['title']}</a>
-          <div style="font-size:13px;margin-bottom:6px;">
-            <a href="{a['url']}" style="color:#3b5491;text-decoration:none;">↗ 기사 보기</a>
-            &nbsp;
-            {f'<span style="color:#94a3b8;">{a["pub_str"]}</span>' if a.get("pub_str") else ""}
-
-          </div>
-          {f'<div style="font-size:14px;color:#64748b;margin-bottom:6px;word-break:keep-all;">{a["desc"]}</div>' if a.get("desc") else ""}
-          {f'<div style="border-top:1px solid #e8d5d5;padding-top:8px;margin-top:8px;"><div style="font-size:12px;font-weight:700;color:#c0392b;letter-spacing:0.8px;margin-bottom:4px;">대응방안</div><div style="font-size:14px;color:#1e293b;line-height:1.6;word-break:keep-all;">{a["action"]}</div></div>' if a.get("action") else ""}
-          {build_exposure_html(a.get("entity",""), exposure_data or [], ref_date)}
-        </div>'''  
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:12px;">
+          <tr>
+            <td style="padding:14px 16px;">
+              <a href="{a['url']}" style="font-weight:bold;font-size:16px;text-decoration:none;color:#1e3a6e;line-height:1.6;">{a['title']}</a>
+              <p style="margin:6px 0;font-size:12px;">
+                <a href="{a['url']}" style="color:#3b5491;text-decoration:none;">↗ 기사 보기</a>
+                &nbsp;{f'<span style="color:#94a3b8;">{a["pub_str"]}</span>' if a.get("pub_str") else ""}
+              </p>
+              {f'<p style="margin:0 0 8px 0;font-size:13px;color:#64748b;">{a["desc"]}</p>' if a.get("desc") else ""}
+              {f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #e8d5d5;margin-top:8px;"><tr><td style="padding-top:8px;"><p style="margin:0 0 4px 0;font-size:11px;font-weight:bold;color:#c0392b;letter-spacing:0.8px;">대응방안</p><p style="margin:0;font-size:13px;color:#1e293b;line-height:1.6;">{a["action"]}</p></td></tr></table>' if a.get("action") else ""}
+              {build_exposure_html(a.get("entity",""), exposure_data or [], ref_date)}
+            </td>
+          </tr>
+        </table>'''  
 
     html = f"""<html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!--[if mso]><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml><![endif]-->
 </head>
-<body style="margin:0;padding:12px;background:#f4f6f9;font-family:'맑은 고딕',Arial,sans-serif;">
-<div style="max-width:680px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:1px solid #e2e8f0;">
+<body style="margin:0;padding:0;background:#f4f6f9;font-family:'맑은 고딕',Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f6f9;">
+<tr><td align="center" style="padding:16px;">
+<table width="640" cellpadding="0" cellspacing="0" border="0" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
 
-  <div style="background:linear-gradient(135deg,#4f6fad 0%,#3b5491 100%);padding:22px 26px;">
-    <div style="color:#fff;font-size:21px;font-weight:500;margin-bottom:10px;">
-      🤖 eBiz본부 리스크 탐지봇
-      <span style="font-size:13px;background:rgba(255,255,255,0.2);color:#fff;padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
-    </div>
-    <div style="color:rgba(255,255,255,0.85);font-size:15px;line-height:1.7;margin-bottom:12px;">
-      {now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간) &nbsp;·&nbsp;
-      수집 {total_count}건 → AI 필터링 후 {len(articles)}건 선별 ({round((1 - len(articles)/total_count)*100) if total_count else 0}% 제거)
-    </div>
-    <div>
-      <span style="display:inline-block;background:#c0392b;color:#fff;font-size:14px;font-weight:500;padding:4px 14px;border-radius:20px;margin-right:6px;">🔴 긴급 {len(sections['긴급'])}건</span>
-      <span style="display:inline-block;background:#d97706;color:#fff;font-size:14px;font-weight:500;padding:4px 14px;border-radius:20px;margin-right:6px;">🟡 주의 {len(sections['주의'])}건</span>
-      <span style="display:inline-block;background:#276749;color:#fff;font-size:14px;font-weight:500;padding:4px 14px;border-radius:20px;">🟢 참고 {len(sections['참고'])}건</span>
-    </div>
-  </div>
+  <!-- 헤더 -->
+  <tr>
+    <td style="background:#3b5491;padding:22px 26px;">
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+          <td>
+            <p style="margin:0 0 8px 0;font-size:20px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇
+              <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">Powered by Claude AI</span>
+            </p>
+            <p style="margin:0 0 12px 0;font-size:14px;color:#c8d8f0;line-height:1.7;">
+              {now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간) &nbsp;·&nbsp;
+              수집 {total_count}건 → AI 필터링 후 {len(articles)}건 선별 ({round((1 - len(articles)/total_count)*100) if total_count else 0}% 제거)
+            </p>
+            <table cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="background:#c0392b;padding:4px 12px;margin-right:6px;">
+                  <span style="font-size:13px;font-weight:bold;color:#ffffff;">🔴 긴급 {len(sections['긴급'])}건</span>
+                </td>
+                <td width="6"></td>
+                <td style="background:#d97706;padding:4px 12px;">
+                  <span style="font-size:13px;font-weight:bold;color:#ffffff;">🟡 주의 {len(sections['주의'])}건</span>
+                </td>
+                <td width="6"></td>
+                <td style="background:#276749;padding:4px 12px;">
+                  <span style="font-size:13px;font-weight:bold;color:#ffffff;">🟢 참고 {len(sections['참고'])}건</span>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
 
-  {build_summary_html(ai_summary) if ai_summary else ""}
+  <!-- AI 분석 요약 -->
+  {('<tr><td style="padding:14px 22px;border-bottom:1px solid #e2e8f0;background:#f8fbff;">' + build_summary_html(ai_summary) + '</td></tr>') if ai_summary else ""}
 
-  {build_competitor_html(competitor_notices or [], today_str)}
+  <!-- 경쟁사 특이사항 -->
+  {('<tr><td>' + build_competitor_html(competitor_notices or [], today_str) + '</td></tr>') if competitor_notices else ""}
 
-  {rows}
+  <!-- 뉴스 카드 -->
+  <tr><td style="padding:0 16px;">{rows}</td></tr>
 
-  <div style="padding:12px 22px;background:#fff;border-top:1px solid #e2e8f0;color:#94a3b8;font-size:13px;line-height:2.0;">
-    ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
-    ※ 담당자<br>
-    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
-    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
-  </div>
+  <!-- 푸터 -->
+  <tr>
+    <td style="padding:14px 22px;background:#fff;border-top:1px solid #e2e8f0;">
+      <p style="margin:0;font-size:12px;color:#94a3b8;line-height:2.0;">
+        ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
+        ※ 담당자<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
+      </p>
+    </td>
+  </tr>
 
-
-
-</div></body></html>"""
+</table>
+</td></tr>
+</table>
+</body></html>"""
 
     return html
 
 
 def build_empty_html(now) -> str:
-    return f"""<html><body style="font-family:'맑은 고딕',Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px;">
-      <div style="max-width:680px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:0.5px solid #e2e8f0;">
-        <div style="background:linear-gradient(135deg,#4f6fad 0%,#3b5491 100%);padding:22px 26px;">
-          <div style="color:#fff;font-size:21px;font-weight:500;margin-bottom:6px;">
-            🤖 eBiz본부 리스크 탐지봇
-            <span style="font-size:13px;background:rgba(255,255,255,0.2);color:#fff;padding:3px 9px;border-radius:20px;margin-left:8px;vertical-align:middle;">Powered by Claude AI</span>
-          </div>
-          <div style="color:rgba(255,255,255,0.85);font-size:15px;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</div>
-        </div>
-        <div style="padding:36px 24px;text-align:center;color:#64748b;font-size:18px;line-height:1.8;">
-          AI 리스크 탐지 결과<br>해당하는 뉴스가 없습니다.
-        </div>
-        <div style="padding:14px 22px;background:#fff;border-top:0.5px solid #e2e8f0;color:#94a3b8;font-size:13px;line-height:2.0;">
-          ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
-          ※ 담당자<br>
-          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
-          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
-        </div>
-      </div></body></html>"""
+    return f"""<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#f4f6f9;font-family:'맑은 고딕',Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f6f9;">
+<tr><td align="center" style="padding:16px;">
+<table width="640" cellpadding="0" cellspacing="0" border="0" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
+  <tr>
+    <td style="background:#3b5491;padding:22px 26px;">
+      <p style="margin:0 0 6px 0;font-size:20px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇
+        <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">Powered by Claude AI</span>
+      </p>
+      <p style="margin:0;font-size:14px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</p>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" style="padding:40px 24px;">
+      <p style="margin:0;font-size:17px;color:#64748b;line-height:1.8;">AI 리스크 탐지 결과<br>해당하는 뉴스가 없습니다.</p>
+    </td>
+  </tr>
+  <tr>
+    <td style="padding:14px 22px;border-top:1px solid #e2e8f0;">
+      <p style="margin:0;font-size:12px;color:#94a3b8;line-height:2.0;">
+        ※ 본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
+        ※ 담당자<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
+      </p>
+    </td>
+  </tr>
+</table>
+</td></tr>
+</table>
+</body></html>"""
 
 
 def send_email(subject: str, html_body: str):
