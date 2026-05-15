@@ -34,23 +34,32 @@ EXPOSURE_FILE = "exposure_data.csv"
 # ─────────────────────────────────────────────
 
 
-def load_exposure_data() -> list:
-    """CSV에서 eBiz본부 익스포저 데이터 로드 — 파일 없으면 빈 리스트"""
+def load_exposure_data() -> dict:
+    """CSV에서 eBiz본부 익스포저 데이터 로드 — 종목명 기준 딕셔너리 반환"""
     if not os.path.exists(EXPOSURE_FILE):
-        return []
+        return {}
     try:
         with open(EXPOSURE_FILE, "r", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
-            return list(reader)
+            result = {}
+            for row in reader:
+                name = row.get("종목명", "").strip()
+                if name:
+                    result[name] = row
+            return result
     except Exception:
-        return []
+        return {}
 
 
-def find_exposure(entity: str, exposure_data: list) -> list:
-    """entity와 종목명 매칭 — 매칭된 행 리스트 반환"""
+def find_exposure(entity: str, exposure_data: dict) -> list:
+    """entity와 종목명 딕셔너리 매칭 — 매칭된 행 리스트 반환"""
     if not entity or not exposure_data:
         return []
-    return [row for row in exposure_data if entity in row.get("종목명", "") or row.get("종목명", "") in entity]
+    # 정확히 일치하면 즉시 반환
+    if entity in exposure_data:
+        return [exposure_data[entity]]
+    # 부분 일치 탐색
+    return [row for name, row in exposure_data.items() if entity in name or name in entity]
 
 
 def load_competitor_notices() -> list:
@@ -612,7 +621,7 @@ def build_exposure_html(entity: str, exposure_data: list, ref_date: str) -> str:
         return ""
     date_label = f" (기준일: {ref_date})" if ref_date else ""
     items_html = "".join([
-        f'<div style="font-size:13px;color:#1e293b;margin-bottom:3px;">{row.get("종목유형","")} : {int(row.get("잔고(억)","0")):,}억원 / {int(row.get("고객수","0")):,}명</div>'
+        f'<div style="font-size:13px;color:#1e293b;margin-bottom:3px;">{row.get("종목유형","")} : {int(str(row.get("잔고(억)","0")).replace(",","")):,}억원 / {int(str(row.get("고객수","0")).replace(",","")):,}명</div>'
         for row in rows
     ])
     return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:8px;background:#f0f4ff;border:1px solid #c7d7f5;">
@@ -623,8 +632,8 @@ def build_exposure_html(entity: str, exposure_data: list, ref_date: str) -> str:
     </table>'''
 
 
-def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '', exposure_data: list = None, ref_date: str = '', competitor_notices: list = None, today_str: str = ''):
-    exposure_data = exposure_data or []
+def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '', exposure_data: dict = None, ref_date: str = '', competitor_notices: list = None, today_str: str = ''):
+    exposure_data = exposure_data or {}
     now = datetime.now(timezone(timedelta(hours=9)))  # 한국시간 KST
     sections = {"긴급": [], "주의": [], "참고": []}
     for a in articles:
@@ -1084,7 +1093,7 @@ def main():
     else:
         print("  경쟁사 신용·대출 특이사항 없음")
     if exposure_data:
-        ref_date = exposure_data[0].get("기준일", "")
+        ref_date = next(iter(exposure_data.values())).get("기준일", "")
         print(f"  익스포저 데이터 로드 완료 ({len(exposure_data)}건, 기준일: {ref_date})")
     else:
         ref_date = ""
