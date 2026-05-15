@@ -551,17 +551,17 @@ def regrade_urgent(articles: list) -> list:
     try:
         res = requests.post(
             "https://api.anthropic.com/v1/messages",
-            headers={{
+            headers={
                 "x-api-key": ANTHROPIC_KEY,
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
-            }},
-            json={{
+            },
+            json={
                 "model": "claude-haiku-4-5-20251001",
                 "max_tokens": 200,
                 "temperature": 0.0,
-                "messages": [{{"role": "user", "content": prompt}}],
-            }},
+                "messages": [{"role": "user", "content": prompt}],
+            },
             timeout=15,
         )
         res.raise_for_status()
@@ -570,7 +570,7 @@ def regrade_urgent(articles: list) -> list:
         start_idx = raw.find("[")
         end_idx = raw.rfind("]") + 1
         raw = raw[start_idx:end_idx]
-        keep_ids = {{item["id"] for item in json.loads(raw)}}
+        keep_ids = {item["id"] for item in json.loads(raw)}
 
         result = []
         for i, a in enumerate(urgent):
@@ -585,7 +585,7 @@ def regrade_urgent(articles: list) -> list:
         return result + others
 
     except Exception as e:
-        print(f"  긴급 강등 오류: {{e}} — 원본 유지")
+        print(f"  긴급 강등 오류: {e} — 원본 유지")
         return articles
 
 
@@ -626,7 +626,7 @@ def build_exposure_html(entity: str, exposure_data: list, ref_date: str) -> str:
     ])
     return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:8px;background:#f0f4ff;border:1px solid #c7d7f5;">
       <tr><td style="padding:8px 12px;">
-        <p style="margin:0 0 4px 0;font-size:12px;font-weight:bold;color:#3b5491;">eBiz본부 익스포저 현황{date_label}</p>
+        <p style="margin:0 0 4px 0;font-size:12px;font-weight:bold;color:#3b5491;">뱅키스 고객 보유현황{date_label}</p>
         {items_html}
       </td></tr>
     </table>'''
@@ -645,7 +645,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         "참고": {"header_bg":"#f0faf4","border_left":"#48bb78","label_color":"#276749","card_bg":"#f8fff9","card_border":"#b2dfca"},
     }
     rows = ""
-    GRADE_LIMIT = {"긴급": 999, "주의": 10, "참고": 999}  # 긴급 전건, 주의 10건, 참고 전건
+    GRADE_LIMIT = {"긴급": 999, "주의": 5, "참고": 999}  # 긴급 전건, 주의 5건, 참고 전건
     GRADE_DESC = {"긴급": "확정된 손실·부실·제재 — 당일 내 확인·점검 필요", "주의": "손실·부실 가능성 — 주시 및 선제 점검 권고", "참고": "직접 손실 없는 동향 — 참고 파악용"}
     for grade in ["긴급", "주의", "참고"]:
         items = sections[grade]
@@ -705,25 +705,29 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
           </tr>
         </table>'''
                 else:
-                    # 긴급 풀카드
+                    # 긴급 풀카드 — A안 통합 박스
+                    exposure_html = build_exposure_html(a.get("entity",""), exposure_data or {}, ref_date)
+                    action_row = f'<tr><td style="padding:10px 18px;border-bottom:1px dashed {gs["card_border"]};"><p style="margin:0 0 3px 0;font-size:11px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.3px;">대응방안</p><p style="margin:0;font-size:13px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
+                    exposure_row = f'<tr><td style="padding:10px 18px;border-bottom:1px dashed {gs["card_border"]};">{exposure_html}</td></tr>' if exposure_html else ""
+                    notice_text = (a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice","")
+                    notice_row = f'<tr><td style="padding:10px 18px;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#64748b;">LMS 추천 문구</span></p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
+                    bottom_box = f'<tr><td><table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid {gs["card_border"]};background:#fff2f2;">{action_row}{exposure_row}{notice_row}</table></td></tr>' if (action_row or exposure_row or notice_row) else ""
                     rows += f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:10px;">
           <tr>
-            <td style="padding:14px 18px;">
-              {f"<p style='margin:0 0 6px 0;'>{badges}</p>" if badges else ""}
-              <a href="{a['url']}" class="title-link" style="font-weight:bold;font-size:16px;text-decoration:none;color:#1e3a6e;line-height:1.6;word-break:keep-all;display:block;">{a['title']}</a>
-              <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:6px 0;">
+            <td style="padding:14px 18px 12px 18px;">
+              {f"<p style='margin:0 0 8px 0;'>{badges}</p>" if badges else ""}
+              <a href="{a['url']}" class="title-link" style="font-weight:bold;font-size:15px;text-decoration:none;color:#1e3a6e;line-height:1.6;word-break:keep-all;display:block;">{a['title']}</a>
+              <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:5px 0 8px 0;">
                 <tr>
                   <td style="font-size:12px;"><a href="{a['url']}" style="color:#3b5491;text-decoration:none;">↗ 기사 보기</a></td>
                   <td align="right" style="font-size:11px;color:#94a3b8;">{a.get("pub_str","")}</td>
                 </tr>
               </table>
-              {f'<p style="margin:0 0 8px 0;font-size:13px;color:#64748b;">{a["desc"]}</p>' if a.get("desc") else ""}
-              {f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #e8d5d5;margin-top:8px;"><tr><td style="padding-top:8px;"><p style="margin:0 0 4px 0;font-size:12px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:14px;color:#1e293b;line-height:1.6;font-weight:500;">{a["action"]}</p></td></tr></table>' if a.get("action") else ""}
-              {build_exposure_html(a.get("entity",""), exposure_data or [], ref_date)}
-              {f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px dashed #e8d5d5;margin-top:8px;background:#f0f7ff;"><tr><td style="padding:8px 10px;"><p style="margin:0 0 6px 0;font-size:11px;font-weight:bold;letter-spacing:0.5px;"><span style="background:#2563eb;color:#fff;padding:2px 7px;font-size:10px;margin-right:5px;">✦ AI</span><span style="color:#64748b;">추천 문구</span></p><p style="margin:0;font-size:12px;color:#475569;line-height:1.7;white-space:pre-line;">{a["customer_notice"][:200] + "..." if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice","")}</p></td></tr></table>' if a.get("customer_notice") else ""}
+              {f'<p style="margin:0;font-size:12px;color:#64748b;line-height:1.6;word-break:keep-all;">{a["desc"]}</p>' if a.get("desc") else ""}
             </td>
           </tr>
+          {bottom_box}
         </table>'''
         if extra_items:
             extra_rows = "".join([f'''
