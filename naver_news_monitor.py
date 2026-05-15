@@ -514,6 +514,72 @@ def dedup_by_title(articles: list) -> list:
         return articles
 
 
+def regrade_urgent(articles: list) -> list:
+    """긴급 3건 초과 시 중요도 판단 후 주의로 강등"""
+    urgent = [a for a in articles if a.get("grade") == "긴급"]
+    others = [a for a in articles if a.get("grade") != "긴급"]
+
+    if len(urgent) <= 3:
+        return articles
+
+    print(f"  긴급 {len(urgent)}건 → 상위 3건 선별 중...")
+
+    numbered = "\n".join([f"{i+1}. {a['title']}" for i, a in enumerate(urgent)])
+    prompt = f"""아래 긴급 리스크 기사들의 중요도를 판단하여 상위 3건만 선별하세요.
+
+중요도 우선순위:
+1. 부도·파산·회생·상폐 확정 또는 신청
+2. 증권사 직접 제재·손실 발생 확정
+3. 기초자산(리츠·펀드) 부실·상폐 신청
+4. 위 해당 없는 나머지 (주의로 강등)
+
+반드시 JSON 배열만 반환하세요. 마크다운 코드블록 없이 순수 JSON만.
+형식: [{{"id": 유지할id}}, ...] — 긴급 유지할 상위 3건 id만 포함
+
+뉴스 목록:
+{numbered}"""
+
+    try:
+        res = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={{
+                "x-api-key": ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }},
+            json={{
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 200,
+                "temperature": 0.0,
+                "messages": [{{"role": "user", "content": prompt}}],
+            }},
+            timeout=15,
+        )
+        res.raise_for_status()
+        raw = res.json()["content"][0]["text"].strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        start_idx = raw.find("[")
+        end_idx = raw.rfind("]") + 1
+        raw = raw[start_idx:end_idx]
+        keep_ids = {{item["id"] for item in json.loads(raw)}}
+
+        result = []
+        for i, a in enumerate(urgent):
+            if (i + 1) in keep_ids:
+                result.append(a)
+            else:
+                a["grade"] = "주의"
+                a["customer_notice"] = None  # 주의로 강등 시 고객 안내 문구 제거
+                result.append(a)
+
+        print(f"  긴급 유지 {len(keep_ids)}건 / 주의 강등 {len(urgent)-len(keep_ids)}건")
+        return result + others
+
+    except Exception as e:
+        print(f"  긴급 강등 오류: {{e}} — 원본 유지")
+        return articles
+
+
 def ai_filter_and_grade(articles: list) -> list:
     """전체 기사를 30건씩 배치로 나눠 AI 필터링 후 중복 제거"""
     if not articles:
@@ -532,6 +598,9 @@ def ai_filter_and_grade(articles: list) -> list:
         print(f"  중복 제거 중... (필터링 후 {len(result)}건)")
         result = dedup_by_title(result)
         print(f"  중복 제거 후 {len(result)}건")
+
+    # 긴급 3건 초과 시 중요도 판단 후 주의로 강등
+    result = regrade_urgent(result)
 
     return result
 
@@ -643,6 +712,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
               {f'<p style="margin:0 0 8px 0;font-size:13px;color:#64748b;">{a["desc"]}</p>' if a.get("desc") else ""}
               {f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #e8d5d5;margin-top:8px;"><tr><td style="padding-top:8px;"><p style="margin:0 0 4px 0;font-size:12px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:14px;color:#1e293b;line-height:1.6;font-weight:500;">{a["action"]}</p></td></tr></table>' if a.get("action") else ""}
               {build_exposure_html(a.get("entity",""), exposure_data or [], ref_date)}
+              {f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px dashed #e8d5d5;margin-top:8px;background:#f0f7ff;"><tr><td style="padding:8px 10px;"><p style="margin:0 0 6px 0;font-size:11px;font-weight:bold;letter-spacing:0.5px;"><span style="background:#2563eb;color:#fff;padding:2px 7px;font-size:10px;margin-right:5px;">✦ AI</span><span style="color:#64748b;">추천 문구</span></p><p style="margin:0;font-size:12px;color:#475569;line-height:1.7;white-space:pre-line;">{a["customer_notice"][:200] + "..." if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice","")}</p></td></tr></table>' if a.get("customer_notice") else ""}
             </td>
           </tr>
         </table>'''
@@ -650,7 +720,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
             extra_rows = "".join([f'''
             <tr>
               <td style="padding:4px 0;font-size:13px;color:#475569;border-bottom:1px solid #f0f0f0;">
-                <a href="{e['url']}" style="color:#475569;text-decoration:none;">· {e['title'][:60]}{"..." if len(e['title']) > 60 else ""}</a>
+                <a href="{e['url']}" style="color:#475569;text-decoration:none;">{e['title'][:60]}{"..." if len(e['title']) > 60 else ""}</a>
                 {f'<span style="font-size:11px;color:#94a3b8;margin-left:6px;">{e["pub_str"]}</span>' if e.get("pub_str") else ""}
               </td>
             </tr>''' for e in extra_items])
@@ -820,7 +890,11 @@ def main():
             if article["url"]:
                 try:
                     pub_dt = _pdt(article.get("pubDate","")).astimezone(kst_tz)
-                    article["pub_str"] = pub_dt.strftime("%m/%d %H:%M")
+                    elapsed = now_kst - pub_dt
+                    hours = int(elapsed.total_seconds() // 3600)
+                    mins = int((elapsed.total_seconds() % 3600) // 60)
+                    elapsed_str = f"{hours}시간 전" if hours > 0 else f"{mins}분 전"
+                    article["pub_str"] = f"{pub_dt.strftime('%m/%d %H:%M')} ({elapsed_str})"
                 except Exception:
                     article["pub_str"] = ""
                 result.append(article)
@@ -848,7 +922,8 @@ def main():
         print("신규 뉴스 없음 — 결과 없음 메일 발송")
         now = datetime.now(timezone(timedelta(hours=9)))
         now_str = now.strftime("%m월%d일 %H시")
-        subject = f"(eBiz본부) 리스크 탐지 결과_{now_str} 기준"
+        urgent_count = len([a for a in filtered if a.get("grade") == "긴급"])
+    subject = f"(eBiz본부) 리스크 탐지{'_긴급'+str(urgent_count)+'건' if urgent_count > 0 else ''}_{now_str} 기준"
         send_email(subject, build_empty_html(now))
         return
 
@@ -860,11 +935,11 @@ def main():
         print("증권사 리스크 관련 뉴스 없음 — 결과 없음 메일 발송")
         now = datetime.now(timezone(timedelta(hours=9)))
         now_str = now.strftime("%m월%d일 %H시")
-        subject = f"(eBiz본부) 리스크 탐지 결과_{now_str} 기준"
+        urgent_count = len([a for a in filtered if a.get("grade") == "긴급"])
+    subject = f"(eBiz본부) 리스크 탐지{'_긴급'+str(urgent_count)+'건' if urgent_count > 0 else ''}_{now_str} 기준"
         send_email(subject, build_empty_html(now))
         return
 
-    # 본문 크롤링 병렬처리
     print("  본문 크롤링 중...")
     def crawl_body(article):
         article["body"] = fetch_article_body(article["url"])
@@ -921,6 +996,7 @@ def main():
 등급: {article['grade']}
 제목: {article['title']}
 본문: {body_text[:400]}
+{f"eBiz본부 익스포저: {', '.join([r.get('종목유형','') + ' ' + r.get('잔고(억)','') + '억원/' + r.get('고객수','') + '명' for r in find_exposure(article.get('entity',''), exposure_data)])}" if find_exposure(article.get('entity',''), exposure_data) else ""}
 
 조치만 한 문장으로 반환하세요."""}],
                 },
@@ -934,6 +1010,65 @@ def main():
 
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(regenerate_action, a) for a in filtered]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception:
+                pass
+
+    # 긴급 기사 고객 안내 문구 생성
+    print("  고객 안내 문구 생성 중...")
+
+    def generate_customer_notice(article):
+        if article.get("grade") != "긴급":
+            return
+        body_text = article.get("body", "")
+        entity = article.get("entity", "")
+        keyword = article.get("keyword", "")
+        try:
+            res = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 300,
+                    "temperature": 0.0,
+                    "messages": [{"role": "user", "content": f"""한국투자증권 eBiz본부 비대면 채널 담당자입니다.
+아래 기사를 바탕으로 고객에게 발송할 안내 문구를 작성하세요.
+
+작성 규칙:
+1. 첫 줄: [한국투자증권] 보유종목 안내
+2. 둘째 줄: 최근 {entity if entity else "관련"} 관련 시장 보도와 관련하여, 고객님의 보유종목 점검 차원에서 안내드립니다.
+3. 셋째 줄: 기사 본문의 핵심 수치(금액·비율 등)를 포함한 상황 설명 1문장 (없으면 생략)
+4. 넷째 줄: 현재 위험도 평가 1문장 (확정 손실이면 "손실 가능성이 확인되었습니다", 징후면 "관련 리스크가 높아지고 있습니다", 시장충격이면 "시장 변동성 확대로 주의가 필요합니다")
+5. 다섯째 줄: 유형별 권고 행동
+   - 회생·파산·상폐: "보유 여부를 즉시 확인하시고, 궁금하신 사항은 고객센터(1544-5000)로 문의해 주세요."
+   - ETF·펀드 부실: "포트폴리오 점검 및 손절 기준 재설정을 권고드리며, 고객센터(1544-5000)로 문의해 주세요."
+   - 신용융자·반대매매: "담보 유지율 점검 및 추가 증거금 준비를 권고드리며, 고객센터(1544-5000)로 문의해 주세요."
+   - 기타: "포트폴리오 점검을 권해드리며, 고객센터(1544-5000)로 문의해 주세요."
+
+기사 정보:
+- 키워드: {keyword}
+- 기업명: {entity}
+- 제목: {article['title']}
+- 본문: {body_text[:400]}
+
+문구만 반환하세요. 번호나 설명 없이. 반드시 5줄 이내로 작성하세요."""}],
+                },
+                timeout=10,
+            )
+            notice = res.json()["content"][0]["text"].strip()
+            if notice:
+                article["customer_notice"] = notice
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(generate_customer_notice, a) for a in filtered]
         for future in as_completed(futures):
             try:
                 future.result()
@@ -956,7 +1091,8 @@ def main():
         print("  익스포저 데이터 없음 — CSV 파일 미확인")
 
     now_str = now.strftime("%m월%d일 %H시")
-    subject = f"(eBiz본부) 리스크 탐지 결과_{now_str} 기준"
+    urgent_count = len([a for a in filtered if a.get("grade") == "긴급"])
+    subject = f"(eBiz본부) 리스크 탐지{'_긴급'+str(urgent_count)+'건' if urgent_count > 0 else ''}_{now_str} 기준"
     total_count = len(raw_articles)
 
     # AI 전체 요약 생성
@@ -981,7 +1117,10 @@ def main():
                 json={
                     "model": "claude-haiku-4-5-20251001",
                     "max_tokens": 400,
-                    "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.\n\n▸ 리스크 성격\n(오늘 전반적인 리스크 흐름을 30자 이내 한 문장)\n\n▸ 주요 포인트\n(담당자가 주목할 핵심 사항을 · 로 구분, 항목당 30자 이내, 최대 3개)\n\n반드시 짧고 핵심만. 문장 늘이지 말 것.\n\n{filtered_titles}"}],
+                    "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.
+
+등급 분포: 긴급 {len([a for a in filtered if a.get('grade')=='긴급'])}건 / 주의 {len([a for a in filtered if a.get('grade')=='주의'])}건 / 참고 {len([a for a in filtered if a.get('grade')=='참고'])}건
+\n\n▸ 리스크 성격\n(오늘 전반적인 리스크 흐름을 30자 이내 한 문장)\n\n▸ 주요 포인트\n(담당자가 주목할 핵심 사항을 · 로 구분, 항목당 30자 이내, 최대 3개)\n\n반드시 짧고 핵심만. 문장 늘이지 말 것.\n\n{filtered_titles}"}],
                 },
                 timeout=15,
             )
