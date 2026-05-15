@@ -624,9 +624,9 @@ def build_exposure_html(entity: str, exposure_data: list, ref_date: str) -> str:
         f'<div style="font-size:13px;color:#1e293b;margin-bottom:3px;"><span style="font-weight:bold;">{row.get("종목명","")}</span> ({row.get("종목유형","")}) : {int(str(row.get("잔고(억)","0")).replace(",","")):,}억원 / {int(str(row.get("고객수","0")).replace(",","")):,}명</div>'
         for row in rows
     ])
-    return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:8px;background:#f0f4ff;border:1px solid #c7d7f5;">
-      <tr><td style="padding:8px 12px;">
-        <p style="margin:0 0 4px 0;font-size:12px;font-weight:bold;color:#3b5491;">뱅키스 고객 보유현황{date_label}</p>
+    return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#fff8f8" style="background:#fff8f8;border-left:3px solid #c0392b;">
+      <tr><td bgcolor="#fff8f8" style="padding:10px 16px;background:#fff8f8;">
+        <p style="margin:0 0 4px 0;font-size:11px;font-weight:bold;color:#c0392b;letter-spacing:0.3px;">뱅키스 고객 보유현황{date_label}</p>
         {items_html}
       </td></tr>
     </table>'''
@@ -707,15 +707,15 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 else:
                     # 긴급 풀카드 — A안 통합 박스
                     exposure_html = build_exposure_html(a.get("entity",""), exposure_data or {}, ref_date)
-                    action_row = f'<tr><td style="padding:10px 18px;border-bottom:1px dashed {gs["card_border"]};"><p style="margin:0 0 3px 0;font-size:11px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.3px;">대응방안</p><p style="margin:0;font-size:13px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
+                    action_row = f'<tr><td bgcolor="#fff8f8" style="padding:10px 18px;border-bottom:1px dashed {gs["card_border"]};background:#fff8f8;"><p style="margin:0 0 3px 0;font-size:11px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.3px;">대응방안</p><p style="margin:0;font-size:13px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
                     exposure_row = f'<tr><td style="padding:10px 18px;border-bottom:1px dashed {gs["card_border"]};">{exposure_html}</td></tr>' if exposure_html else ""
                     notice_text = (a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice","")
-                    notice_row = f'<tr><td style="padding:10px 18px;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#64748b;">LMS 추천 문구</span></p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
-                    bottom_box = f'<tr><td><table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid {gs["card_border"]};background:#fff2f2;">{action_row}{exposure_row}{notice_row}</table></td></tr>' if (action_row or exposure_row or notice_row) else ""
+                    notice_row = f'<tr><td bgcolor="#eff6ff" style="padding:10px 16px;background:#eff6ff;border-top:1px solid #f5c6c6;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#1d4ed8;">LMS 추천 문구</span></p><p style="margin:0;font-size:12px;color:#1e3a6e;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
+                    bottom_box = f'<tr><td bgcolor="#fff8f8" style="background:#fff8f8;border-top:1px solid {gs["card_border"]};padding:0;"><table width="100%" cellpadding="0" cellspacing="0" border="0">{action_row}{exposure_row}{notice_row}</table></td></tr>' if (action_row or exposure_row or notice_row) else ""
                     rows += f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:10px;">
           <tr>
-            <td style="padding:14px 18px 12px 18px;">
+            <td bgcolor="#fff8f8" style="padding:12px 16px;background:#fff8f8;border-bottom:1px solid #f5c6c6;">
               {f"<p style='margin:0 0 8px 0;'>{badges}</p>" if badges else ""}
               <a href="{a['url']}" class="title-link" style="font-weight:bold;font-size:15px;text-decoration:none;color:#1e3a6e;line-height:1.6;word-break:keep-all;display:block;">{a['title']}</a>
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:5px 0 8px 0;">
