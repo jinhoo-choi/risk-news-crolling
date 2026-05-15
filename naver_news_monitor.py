@@ -922,8 +922,7 @@ def main():
         print("신규 뉴스 없음 — 결과 없음 메일 발송")
         now = datetime.now(timezone(timedelta(hours=9)))
         now_str = now.strftime("%m월%d일 %H시")
-        urgent_count = len([a for a in filtered if a.get("grade") == "긴급"])
-    subject = f"(eBiz본부) 리스크 탐지{'_긴급'+str(urgent_count)+'건' if urgent_count > 0 else ''}_{now_str} 기준"
+        subject = f"(eBiz본부) 리스크 탐지 결과_{now_str} 기준"
         send_email(subject, build_empty_html(now))
         return
 
@@ -935,8 +934,7 @@ def main():
         print("증권사 리스크 관련 뉴스 없음 — 결과 없음 메일 발송")
         now = datetime.now(timezone(timedelta(hours=9)))
         now_str = now.strftime("%m월%d일 %H시")
-        urgent_count = len([a for a in filtered if a.get("grade") == "긴급"])
-    subject = f"(eBiz본부) 리스크 탐지{'_긴급'+str(urgent_count)+'건' if urgent_count > 0 else ''}_{now_str} 기준"
+        subject = f"(eBiz본부) 리스크 탐지 결과_{now_str} 기준"
         send_email(subject, build_empty_html(now))
         return
 
@@ -1045,7 +1043,9 @@ def main():
 2. 둘째 줄: 최근 {entity if entity else "관련"} 관련 시장 보도와 관련하여, 고객님의 보유종목 점검 차원에서 안내드립니다.
 3. 셋째 줄: 기사 본문의 핵심 수치(금액·비율 등)를 포함한 상황 설명 1문장 (없으면 생략)
 4. 넷째 줄: 현재 위험도 평가 1문장 (확정 손실이면 "손실 가능성이 확인되었습니다", 징후면 "관련 리스크가 높아지고 있습니다", 시장충격이면 "시장 변동성 확대로 주의가 필요합니다")
-5. 다섯째 줄: 유형별 권고 행동
+5. 다섯째 줄: 유형별 권고 행동 (마지막 줄)
+
+전체 5줄 이내로 작성하세요. 절대 6줄 이상 작성하지 마세요.
    - 회생·파산·상폐: "보유 여부를 즉시 확인하시고, 궁금하신 사항은 고객센터(1544-5000)로 문의해 주세요."
    - ETF·펀드 부실: "포트폴리오 점검 및 손절 기준 재설정을 권고드리며, 고객센터(1544-5000)로 문의해 주세요."
    - 신용융자·반대매매: "담보 유지율 점검 및 추가 증거금 준비를 권고드리며, 고객센터(1544-5000)로 문의해 주세요."
@@ -1102,7 +1102,10 @@ def main():
     if len([a for a in filtered if a["grade"]=="주의"]) > 0:
         grade_summary.append(f"주의 {len([a for a in filtered if a['grade']=='주의'])}건")
     # AI에게 오늘 리스크 성격 요약 요청
-    filtered_titles = "\n".join([f"- [{a['grade']}] {a['title']}" for a in filtered])
+    urgent_cnt = len([a for a in filtered if a["grade"]=="긴급"])
+    caution_cnt = len([a for a in filtered if a["grade"]=="주의"])
+    ref_cnt = len([a for a in filtered if a["grade"]=="참고"])
+    filtered_titles = f"[등급 분포] 긴급 {urgent_cnt}건 / 주의 {caution_cnt}건 / 참고 {ref_cnt}건\n\n" + "\n".join([f"- [{a['grade']}] {a['title']}" for a in filtered])
     if not filtered_titles.strip():
         ai_summary = ""
     else:
@@ -1117,10 +1120,7 @@ def main():
                 json={
                     "model": "claude-haiku-4-5-20251001",
                     "max_tokens": 400,
-                    "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.
-
-등급 분포: 긴급 {len([a for a in filtered if a.get('grade')=='긴급'])}건 / 주의 {len([a for a in filtered if a.get('grade')=='주의'])}건 / 참고 {len([a for a in filtered if a.get('grade')=='참고'])}건
-\n\n▸ 리스크 성격\n(오늘 전반적인 리스크 흐름을 30자 이내 한 문장)\n\n▸ 주요 포인트\n(담당자가 주목할 핵심 사항을 · 로 구분, 항목당 30자 이내, 최대 3개)\n\n반드시 짧고 핵심만. 문장 늘이지 말 것.\n\n{filtered_titles}"}],
+                    "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.\n\n▸ 리스크 성격\n(오늘 전반적인 리스크 흐름을 30자 이내 한 문장)\n\n▸ 주요 포인트\n(담당자가 주목할 핵심 사항을 · 로 구분, 항목당 30자 이내, 최대 3개)\n\n반드시 짧고 핵심만. 문장 늘이지 말 것.\n\n{filtered_titles}"}],
                 },
                 timeout=15,
             )
