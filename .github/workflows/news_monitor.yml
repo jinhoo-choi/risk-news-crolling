@@ -71,7 +71,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: seen_news.json
-          key: seen-news-cache
+          key: seen-news-${{ github.run_id }}
           restore-keys: |
             seen-news-
 
@@ -86,17 +86,18 @@ jobs:
           NAVER_CLIENT_SECRET:  ${{ secrets.NAVER_CLIENT_SECRET }}
         run: python naver_news_monitor.py
 
-      - name: seen_news.json 캐시 저장 (실패 시에도)
+      - name: seen_news.json 캐시 저장
         if: always()
         uses: actions/cache@v4
         with:
           path: seen_news.json
-          key: seen-news-cache
+          key: seen-news-${{ github.run_id }}
 
       - name: 실행 실패 시 로그 저장
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: workflow-logs
-          path: seen_news.json
+          name: workflow-logs-${{ github.run_id }}
+          path: |
+            seen_news.json
           retention-days: 7
