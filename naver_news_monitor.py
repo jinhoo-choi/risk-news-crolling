@@ -102,7 +102,16 @@ def load_competitor_notices() -> list:
                         })
     except Exception as e:
         print(f"  경쟁사 공지 로드 오류: {e}")
-    return result
+
+    # 중복 제거 — (company, title) 기준
+    seen_keys = set()
+    deduped = []
+    for item in result:
+        key = (item["company"].strip(), item["title"].strip())
+        if key not in seen_keys:
+            seen_keys.add(key)
+            deduped.append(item)
+    return deduped
 
 
 def build_summary_html(ai_summary: str) -> str:
