@@ -53,14 +53,27 @@ def load_exposure_data() -> dict:
 
 
 def find_exposure(entity: str, exposure_data: dict) -> list:
-    """entity와 종목명 딕셔너리 매칭 — 매칭된 행 리스트 반환"""
+    """entity와 종목명 딕셔너리 매칭 — 단어 경계 기반 정밀 매칭"""
+    import re
     if not entity or not exposure_data:
         return []
-    # 정확히 일치하면 즉시 반환
+    # 1) 정확히 일치하면 즉시 반환
     if entity in exposure_data:
         return [exposure_data[entity]]
-    # 부분 일치 탐색
-    return [row for name, row in exposure_data.items() if entity in name or name in entity]
+    # 2) 단어 경계 기반 부분 매칭
+    #    앞뒤가 한글/영숫자가 아닌 경우만 허용
+    #    예: "화신" → "무궁화신탁" 불일치, "화신" → "화신정공" 일치
+    results = []
+    entity_pattern = re.compile(
+        r'(?<![가-힣a-zA-Z0-9])' + re.escape(entity) + r'(?![가-힣a-zA-Z0-9])'
+    )
+    for name, row in exposure_data.items():
+        name_pattern = re.compile(
+            r'(?<![가-힣a-zA-Z0-9])' + re.escape(name) + r'(?![가-힣a-zA-Z0-9])'
+        )
+        if entity_pattern.search(name) or name_pattern.search(entity):
+            results.append(row)
+    return results
 
 
 def load_competitor_notices() -> list:
