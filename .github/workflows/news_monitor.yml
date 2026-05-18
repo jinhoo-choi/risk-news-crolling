@@ -2,8 +2,7 @@ name: 네이버 뉴스 리스크 모니터링
 
 on:
   schedule:
-    - cron: '55 21 * * *'          
-    - cron: '10 5 * * *'      
+    - cron: '0 * * * *'    # 매 정시 실행 (1시간 간격, UTC 기준)
   workflow_dispatch:
 
 env:
@@ -81,6 +80,7 @@ jobs:
           EMAIL_SENDER:         ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD:       ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_RECEIVER:       ${{ secrets.EMAIL_RECEIVER }}
+          NO_RESULT_RECEIVER:   ${{ secrets.NO_RESULT_RECEIVER }}
           ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
           NAVER_CLIENT_ID:      ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET:  ${{ secrets.NAVER_CLIENT_SECRET }}
