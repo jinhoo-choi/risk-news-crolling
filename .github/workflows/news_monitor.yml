@@ -46,6 +46,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: crawl-broker-notices
+    permissions:
+      contents: write
 
     steps:
       - name: 코드 체크아웃
@@ -67,14 +69,6 @@ jobs:
       - name: 라이브러리 설치
         run: pip install requests beautifulsoup4 pandas
 
-      - name: seen_news.json 캐시 복원
-        uses: actions/cache@v4
-        with:
-          path: seen_news.json
-          key: seen-news-${{ github.run_id }}
-          restore-keys: |
-            seen-news-
-
       - name: 뉴스 크롤링 & AI 필터링 & 이메일 발송
         env:
           EMAIL_SENDER:         ${{ secrets.EMAIL_SENDER }}
@@ -86,18 +80,21 @@ jobs:
           NAVER_CLIENT_SECRET:  ${{ secrets.NAVER_CLIENT_SECRET }}
         run: python naver_news_monitor.py
 
-      - name: seen_news.json 캐시 저장
+      # seen_news.json 레포에 직접 커밋 — 캐시 대신 git으로 영속 관리
+      - name: seen_news.json 커밋 & 푸시
         if: always()
-        uses: actions/cache@v4
-        with:
-          path: seen_news.json
-          key: seen-news-${{ github.run_id }}
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add seen_news.json || true
+          git diff --cached --quiet || git commit -m "update seen_news [skip ci]"
+          git push
+        continue-on-error: true
 
       - name: 실행 실패 시 로그 저장
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: workflow-logs-${{ github.run_id }}
-          path: |
-            seen_news.json
+          path: seen_news.json
           retention-days: 7
