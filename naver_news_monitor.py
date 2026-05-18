@@ -661,7 +661,7 @@ def build_exposure_html(entity: str, exposure_data: list, ref_date: str) -> str:
         return ""
     date_label = f" (기준일: {ref_date})" if ref_date else ""
     items_html = "".join([
-        f'<div style="font-size:13px;color:#1e293b;margin-bottom:3px;"><span style="font-weight:bold;">{row.get("종목명","")}</span> ({row.get("종목유형","")}) : {int(str(row.get("잔고(억)","0")).replace(",","")):,}억원 / {int(str(row.get("고객수","0")).replace(",","")):,}명</div>'
+        f'<div style="font-size:13px;color:#1e293b;margin-bottom:3px;"><span style="font-weight:bold;">{row.get("종목명","")}</span> ({row.get("종목유형","")}) : {float(str(row.get("잔고(억)","0")).replace(",","")):.1f}억원 / {int(float(str(row.get("고객수","0")).replace(",",""))):,}명</div>'
         for row in rows
     ])
     return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#fff8f8" style="background:#fff8f8;border-left:3px solid #c0392b;">
