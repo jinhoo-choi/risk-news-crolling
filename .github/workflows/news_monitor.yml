@@ -2,7 +2,7 @@ name: 네이버 뉴스 리스크 모니터링
 
 on:
   schedule:
-    - cron: '0 * * * *'    # 매 정시 실행 (1시간 간격, UTC 기준)
+    - cron: '7 * * * *'    # 매 시 7분 실행 (1시간 간격, UTC 기준)
   workflow_dispatch:
 
 env:
