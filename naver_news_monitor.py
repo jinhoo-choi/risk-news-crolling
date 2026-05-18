@@ -22,12 +22,13 @@ from email.utils import parsedate_to_datetime as _pdt
 EMAIL_SENDER      = os.environ["EMAIL_SENDER"]
 EMAIL_PASSWORD    = os.environ["EMAIL_PASSWORD"]
 EMAIL_RECEIVERS   = [e.strip() for e in os.environ["EMAIL_RECEIVER"].split(",")]
+NO_RESULT_RECEIVER = os.environ.get("NO_RESULT_RECEIVER", "").strip()  # 결과 없을 때 수신자
 ANTHROPIC_KEY     = os.environ["ANTHROPIC_API_KEY"]
 NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
 NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
 KEYWORDS = ["부실 리스크", "신용 리스크", "유동성 리스크", "디폴트 리스크", "기업회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "반대매매 급증", "신용등급 강등", "PF 부실", "미매각", "신용융자", "발행어음", "서킷브레이커"]
-MAX_NEWS_PER_KEYWORD = 1000  # 최근 8시간 기사 수집 (cutoff_kst 필터로 제한됨)
+MAX_NEWS_PER_KEYWORD = 1000  # 최근 1시간 기사 수집 (cutoff_kst 필터로 제한됨)
 SEEN_FILE = "seen_news.json"
 EXPOSURE_FILE = "exposure_data.csv"
 
@@ -70,7 +71,9 @@ def load_competitor_notices() -> list:
         "대출한도", "신용대출", "신용 중단", "한도 축소",
         "신용 재개", "신용거래 제한"
     ]
-    today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
+    kst = timezone(timedelta(hours=9))
+    now = datetime.now(kst)
+    valid_dates = {(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(2)}
     result = []
     # broker_notices.py 출력 파일들 확인
     data_dir = "data"
@@ -88,7 +91,7 @@ def load_competitor_notices() -> list:
                     date = row.get("date", "")
                     title = row.get("title", "")
                     company = row.get("company", "")
-                    if date != today:
+                    if date not in valid_dates:
                         continue
                     if any(kw in title for kw in CREDIT_KEYWORDS):
                         result.append({
@@ -172,31 +175,59 @@ def build_competitor_html(notices: list, today_str: str) -> str:
 
 
 def load_seen_urls() -> set:
-    """당일 날짜 기준으로 seen URL 로드 — 전날 데이터 자동 제거"""
-    today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
+    """최근 2시간 키(YYYY-MM-DD HH) 기준 seen URL 로드 — 오래된 키 자동 제거"""
+    kst = timezone(timedelta(hours=9))
+    now = datetime.now(kst)
+    # 현재 시각 + 1시간 전 키 생성
+    valid_keys = {
+        (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
+        for i in range(2)
+    }
     if os.path.exists(SEEN_FILE):
         with open(SEEN_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        # 구버전(리스트) 호환 처리
+        # 구버전(리스트·날짜키) 호환 처리
         if isinstance(data, list):
             return set()
-        # 당일 날짜 URL만 반환
-        return set(data.get(today, []))
+        # 유효 키의 URL 합집합 반환
+        urls = set()
+        for k in valid_keys:
+            urls |= set(data.get(k, []))
+        return urls
     return set()
 
 
 def save_seen_urls(seen: set):
-    """당일 날짜로 seen URL 저장"""
-    today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
+    """현재 시각 키(YYYY-MM-DD HH)로 seen URL 저장 — 최근 2시간 키만 보존"""
+    kst = timezone(timedelta(hours=9))
+    now = datetime.now(kst)
+    current_key = now.strftime("%Y-%m-%d %H")
+    valid_keys = {
+        (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
+        for i in range(2)
+    }
+    # 기존 데이터 로드
+    existing = {}
+    if os.path.exists(SEEN_FILE):
+        try:
+            with open(SEEN_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                # 유효 키만 유지
+                existing = {k: v for k, v in raw.items() if k in valid_keys}
+        except Exception:
+            existing = {}
+    # 현재 시각 키에 저장
+    existing[current_key] = list(seen)
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
-        json.dump({today: list(seen)}, f, ensure_ascii=False)
+        json.dump(existing, f, ensure_ascii=False)
 
 
 def crawl_naver_news(keyword: str) -> list:
-    """네이버 검색 API로 뉴스 수집 — 최근 8시간 기사만"""
+    """네이버 검색 API로 뉴스 수집 — 최근 1시간 기사만"""
     kst = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst)
-    cutoff_kst = now_kst - timedelta(hours=8)
+    cutoff_kst = now_kst - timedelta(hours=1)
     today_kst = now_kst.date()
 
     headers = {
@@ -247,7 +278,7 @@ def crawl_naver_news(keyword: str) -> list:
                 pub_dt = now_kst
                 pub_date = today_kst
 
-            # 8시간 이전 기사 — 중단
+            # 1시간 이전 기사 — 중단
             if pub_dt < cutoff_kst:
                 stop = True
                 break
@@ -700,7 +731,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 </tr>
               </table>
               {f'<p style="margin:0 0 2px 0;font-size:11px;font-weight:bold;color:{gs["label_color"]};">대응방안</p><p style="margin:0;font-size:13px;color:#1e293b;line-height:1.5;">{a["action"]}</p>' if a.get("action") else ""}
-              {build_exposure_html(a.get("entity",""), exposure_data or [], ref_date)}
+              {build_exposure_html(a.get("entity",""), exposure_data or {}, ref_date)}
             </td>
           </tr>
         </table>'''
@@ -878,6 +909,20 @@ def build_empty_html(now) -> str:
 </body></html>"""
 
 
+
+def send_email_no_result(subject: str, html_body: str):
+    """결과 없을 때 특정인(NO_RESULT_RECEIVER)에게만 발송"""
+    receiver = NO_RESULT_RECEIVER if NO_RESULT_RECEIVER else EMAIL_SENDER
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = EMAIL_SENDER
+    msg["To"]      = receiver
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+        server.sendmail(EMAIL_SENDER, [receiver], msg.as_string())
+    print(f"  결과없음 메일 발송 완료 → {receiver}")
+
 def send_email(subject: str, html_body: str):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -892,6 +937,7 @@ def send_email(subject: str, html_body: str):
 
 def main():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 뉴스 모니터링 시작")
+    now_kst      = datetime.now(timezone(timedelta(hours=9)))  # 전역 기준 시각
     seen_urls    = load_seen_urls()
     raw_articles = []
 
@@ -932,11 +978,11 @@ def main():
     save_seen_urls(seen_urls)
 
     if not raw_articles:
-        print("신규 뉴스 없음 — 결과 없음 메일 발송")
+        print("신규 뉴스 없음 — 결과 없음 메일 발송 (특정인만)")
         now = datetime.now(timezone(timedelta(hours=9)))
         now_str = now.strftime("%m월%d일 %H시")
-        subject = f"(eBiz본부) 리스크 탐지 결과_{now_str} 기준"
-        send_email(subject, build_empty_html(now))
+        subject = f"(eBiz본부) [결과없음] 리스크 탐지_{now_str} 기준 — 신규 뉴스 없음"
+        send_email_no_result(subject, build_empty_html(now))
         return
 
     print(f"\nAI 필터링 중... (총 {len(raw_articles)}건)")
@@ -944,11 +990,11 @@ def main():
     print(f"필터링 후 {len(filtered)}건 선별")
 
     if not filtered:
-        print("증권사 리스크 관련 뉴스 없음 — 결과 없음 메일 발송")
+        print("AI 필터링 결과 없음 — 결과 없음 메일 발송 (특정인만)")
         now = datetime.now(timezone(timedelta(hours=9)))
         now_str = now.strftime("%m월%d일 %H시")
-        subject = f"(eBiz본부) 리스크 탐지 결과_{now_str} 기준"
-        send_email(subject, build_empty_html(now))
+        subject = f"(eBiz본부) [결과없음] 리스크 탐지_{now_str} 기준 — 해당 뉴스 없음"
+        send_email_no_result(subject, build_empty_html(now))
         return
 
     print("  본문 크롤링 중...")
