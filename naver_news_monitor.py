@@ -4,6 +4,7 @@ GitHub Actions 전용 버전 / 네이버 검색 API 사용
 """
 
 import requests
+from html import escape as _esc
 from bs4 import BeautifulSoup
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -350,7 +351,7 @@ def fetch_article_body(url: str) -> str:
 
 
 def ai_filter_batch(batch: list, offset: int = 0) -> list:
-    """30건씩 배치로 AI 필터링"""
+    """50건씩 배치로 AI 필터링"""
     if not batch:
         return []
 
@@ -499,7 +500,19 @@ eBiz본부는 비대면 주식거래(온라인 MTS·HTS)를 핵심 사업으로 
             if start_idx == -1 or end_idx == 0:
                 raise ValueError("JSON 배열을 찾을 수 없음")
             raw = raw[start_idx:end_idx]
-            grades = json.loads(raw)
+            try:
+                grades = json.loads(raw)
+            except json.JSONDecodeError:
+                # 개별 객체 단위 salvage — malformed 전체 유실 방지
+                import re as _re
+                grades = []
+                for obj_str in _re.findall(r'\{[^{}]+\}', raw):
+                    try:
+                        grades.append(json.loads(obj_str))
+                    except Exception:
+                        pass
+                if not grades:
+                    raise
             grade_map = {g["id"]: g for g in grades}
             result = []
             for i, article in enumerate(batch):
@@ -643,7 +656,7 @@ def regrade_urgent(articles: list) -> list:
 
 
 def ai_filter_and_grade(articles: list) -> list:
-    """전체 기사를 30건씩 배치로 나눠 AI 필터링 후 중복 제거"""
+    """전체 기사를 50건씩 배치로 나눠 AI 필터링 후 중복 제거"""
     if not articles:
         return []
     result = []
@@ -688,6 +701,10 @@ def build_exposure_html(entity: str, exposure_data: list, ref_date: str) -> str:
 def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '', exposure_data: dict = None, ref_date: str = '', competitor_notices: list = None, today_str: str = ''):
     exposure_data = exposure_data or {}
     now = datetime.now(timezone(timedelta(hours=9)))  # 한국시간 KST
+    # HTML escape — 뉴스 제목/본문에 특수문자 포함 시 메일 깨짐 방지
+    for a in articles:
+        a["title"] = _esc(a.get("title", ""))
+        a["desc"]  = _esc(a.get("desc", ""))
     sections = {"긴급": [], "주의": [], "참고": []}
     for a in articles:
         sections[a["grade"]].append(a)
@@ -940,10 +957,15 @@ def send_email_no_result(subject: str, html_body: str):
     msg["From"]    = EMAIL_SENDER
     msg["To"]      = receiver
     msg.attach(MIMEText(html_body, "html", "utf-8"))
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-        server.sendmail(EMAIL_SENDER, [receiver], msg.as_string())
-    print(f"  결과없음 메일 발송 완료 → {receiver}")
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            server.sendmail(EMAIL_SENDER, [receiver], msg.as_string())
+        print(f"  결과없음 메일 발송 완료 → {receiver}")
+    except smtplib.SMTPException as e:
+        print(f"  결과없음 메일 발송 실패 (SMTP): {e}")
+    except Exception as e:
+        print(f"  결과없음 메일 발송 실패: {e}")
 
 def send_email(subject: str, html_body: str):
     msg = MIMEMultipart("alternative")
@@ -951,17 +973,25 @@ def send_email(subject: str, html_body: str):
     msg["From"]    = EMAIL_SENDER
     msg["To"]      = ", ".join(EMAIL_RECEIVERS)
     msg.attach(MIMEText(html_body, "html", "utf-8"))
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-        server.sendmail(EMAIL_SENDER, EMAIL_RECEIVERS, msg.as_string())
-    print("이메일 발송 완료")
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            server.sendmail(EMAIL_SENDER, EMAIL_RECEIVERS, msg.as_string())
+        print("이메일 발송 완료")
+    except smtplib.SMTPException as e:
+        print(f"이메일 발송 실패 (SMTP): {e}")
+        raise
+    except Exception as e:
+        print(f"이메일 발송 실패: {e}")
+        raise
 
 
 def main():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 뉴스 모니터링 시작")
-    now_kst      = datetime.now(timezone(timedelta(hours=9)))  # 전역 기준 시각
-    seen_urls    = load_seen_urls()
-    raw_articles = []
+    now_kst         = datetime.now(timezone(timedelta(hours=9)))  # 전역 기준 시각
+    seen_urls       = load_seen_urls()
+    new_seen_this_run = set()  # 이번 실행에서 신규 수집한 URL만 별도 관리
+    raw_articles    = []
 
     def crawl_keyword(keyword):
         articles = crawl_naver_news(keyword)
@@ -992,12 +1022,13 @@ def main():
                     if article["url"] not in seen_urls:
                         new.append(article)
                         seen_urls.add(article["url"])
+                        new_seen_this_run.add(article["url"])
                 raw_articles.extend(new)
                 print(f"  [{keyword}] 신규 {len(new)}건")
             except Exception as e:
                 print(f"  크롤링 오류: {e}")
 
-    save_seen_urls(seen_urls)
+    save_seen_urls(new_seen_this_run)  # 이번 실행 신규 URL만 저장
 
     if not raw_articles:
         print("신규 뉴스 없음 — 결과 없음 메일 발송 (특정인만)")
@@ -1020,8 +1051,12 @@ def main():
         return
 
     exposure_data = load_exposure_data()  # regenerate_action에서 참조하므로 먼저 로드
-    print("  본문 크롤링 중...")
+    print("  본문 크롤링 중... (긴급·주의만)")
     def crawl_body(article):
+        # 참고 등급은 본문 불필요 — 속도 개선
+        if article.get("grade") == "참고":
+            article["body"] = ""
+            return article
         article["body"] = fetch_article_body(article["url"])
         return article
 
@@ -1036,7 +1071,8 @@ def main():
     print("  대응방안 재생성 중...")
 
     def regenerate_action(article):
-        if article.get("grade") == "참고":
+        # 긴급만 재생성 — 주의는 1차 AI action 유지 (비용 절감)
+        if article.get("grade") != "긴급":
             return
         body_text = article.get("body", "")
         if not body_text:
