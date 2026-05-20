@@ -207,12 +207,14 @@ def load_seen_urls() -> set:
         for i in range(7)
     }
     if os.path.exists(SEEN_FILE):
-        with open(SEEN_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        # 구버전(리스트·날짜키) 호환 처리
+        try:
+            with open(SEEN_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            # 파일 손상·빈 파일·partial write 시 빈 set 반환
+            return set()
         if isinstance(data, list):
             return set()
-        # 유효 키의 URL 합집합 반환
         urls = set()
         for k in valid_keys:
             urls |= set(data.get(k, []))
@@ -236,14 +238,28 @@ def save_seen_urls(seen: set):
             with open(SEEN_FILE, "r", encoding="utf-8") as f:
                 raw = json.load(f)
             if isinstance(raw, dict):
-                # 유효 키만 유지
                 existing = {k: v for k, v in raw.items() if k in valid_keys}
+            else:
+                existing = {}
         except Exception:
             existing = {}
-    # 현재 시각 키에 저장
-    existing[current_key] = list(seen)
-    with open(SEEN_FILE, "w", encoding="utf-8") as f:
-        json.dump(existing, f, ensure_ascii=False)
+    # 현재 시각 키 — 기존값과 merge (재실행·retry 시 유실 방지)
+    existing_urls = set(existing.get(current_key, []))
+    existing[current_key] = list(existing_urls | seen)
+    # atomic write — mkstemp으로 동시 실행 시 tmp 충돌 방지
+    import tempfile as _tmpfile, os as _os
+    fd, tmp_path = _tmpfile.mkstemp(prefix="seen_", suffix=".tmp",
+                                    dir=_os.path.dirname(_os.path.abspath(SEEN_FILE)) or ".")
+    try:
+        with _os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False)
+        _os.replace(tmp_path, SEEN_FILE)
+    except Exception:
+        try:
+            _os.unlink(tmp_path)
+        except Exception:
+            pass
+        raise
 
 
 def crawl_naver_news(keyword: str) -> list:
@@ -322,7 +338,7 @@ def crawl_naver_news(keyword: str) -> list:
 
         total = data.get("total", 0)
         start += 100
-        if stop or start > min(total, 300):  # 최대 3페이지(300건)로 제한
+        if stop or len(items) < 100 or start >= 301:  # 마지막 페이지·300건 제한
             break
 
     return articles
@@ -403,6 +419,13 @@ eBiz본부는 비대면 주식거래(온라인 MTS·HTS)를 핵심 사업으로 
 - 제목에 [특집], [기획], [인터뷰], [르포], [Rising Stars], [수상] 등이 포함된 기사
 - 특정 사건의 소송·법률 자문 업무 소개 기사 (리스크 당사자가 아닌 법률 서비스 소개)
 
+[직접 익스포저 판단 기준]
+아래 중 하나라도 가능성 있으면 관련 있음으로 판단:
+- 증권사 채권 인수·PF 대출 참여·신용공여
+- 리츠·ETF·펀드 기초자산 편입
+- 발행어음·IMA 운용자산 편입
+- 고객 보유 가능 상장상품 직접 손실
+
 [관련 있음 — relevant: true 조건]
 위 제외 조건에 해당하지 않고 아래 중 하나라도 해당하면 관련 있음:
 - 기업 부도·파산·회생·워크아웃·상장폐지가 확정되었거나 신청·징후 단계인 기사
@@ -433,6 +456,11 @@ eBiz본부는 비대면 주식거래(온라인 MTS·HTS)를 핵심 사업으로 
   · PF·브릿지론 부실 징후가 있으나 손실 미확정 단계
   · 반대매매 우려·신용융자 한도 부분 축소 등 시장 충격 징후 단계
 - 참고: 업황 파악에 유용하나 직접 위험은 낮은 것
+
+[매우 중요 — 핵심 주제 판단]
+기사의 핵심 주제·제목의 중심이 리스크가 아니면 relevant:false.
+본문 일부에 리스크 단어가 있어도 기사 주제가 호재·실적·전망·성과이면 제외.
+제목 주인공이 리스크 상황이 아닌데 본문에 타 기업 리스크가 언급된 경우도 제외.
 
 [중복 기사 처리 — 반드시 엄격히 적용]
 - 동일한 사건·이슈를 다른 언론사가 보도한 경우, id 숫자 가장 작은 것 1건만 relevant:true
@@ -493,7 +521,13 @@ eBiz본부는 비대면 주식거래(온라인 MTS·HTS)를 핵심 사업으로 
                 time.sleep(wait)
                 continue
             res.raise_for_status()
-            raw = res.json()["content"][0]["text"].strip()
+            payload = res.json()
+            content = payload.get("content", [])
+            if not content:
+                raise ValueError("Claude 응답 content 비어있음")
+            raw = content[0].get("text", "").strip()
+            if not raw:
+                raise ValueError("Claude 응답 text 비어있음")
             raw = raw.replace("```json", "").replace("```", "").strip()
             start_idx = raw.find("[")
             end_idx = raw.rfind("]") + 1
@@ -502,17 +536,9 @@ eBiz본부는 비대면 주식거래(온라인 MTS·HTS)를 핵심 사업으로 
             raw = raw[start_idx:end_idx]
             try:
                 grades = json.loads(raw)
-            except json.JSONDecodeError:
-                # 개별 객체 단위 salvage — malformed 전체 유실 방지
-                import re as _re
-                grades = []
-                for obj_str in _re.findall(r'\{[^{}]+\}', raw):
-                    try:
-                        grades.append(json.loads(obj_str))
-                    except Exception:
-                        pass
-                if not grades:
-                    raise
+            except json.JSONDecodeError as je:
+                # salvage 대신 명시적 에러 — retry 루프가 처리
+                raise ValueError(f"JSON 파싱 실패: {je}") from je
             grade_map = {g["id"]: g for g in grades}
             result = []
             for i, article in enumerate(batch):
@@ -536,6 +562,37 @@ eBiz본부는 비대면 주식거래(온라인 MTS·HTS)를 핵심 사업으로 
                 continue
             return []
     return []
+
+
+def dedup_deterministic(articles: list) -> list:
+    """제목 정규화 + SequenceMatcher 기반 1차 중복 제거 — Claude 호출 최소화"""
+    import unicodedata
+    import re as _re
+    from difflib import SequenceMatcher
+
+    def normalize(title: str) -> str:
+        t = unicodedata.normalize("NFKC", title)
+        t = _re.sub(r"\[.*?\]|\(.*?\)", "", t)   # [속보] (연합) 등 제거
+        t = _re.sub(r"[^가-힣a-zA-Z0-9]", "", t)      # 특수문자·공백 제거
+        return t.strip()
+
+    seen_norms = []
+    result = []
+    for a in articles:
+        norm = normalize(a["title"])
+        if not norm:
+            result.append(a)
+            continue
+        matched = False
+        for existing_norm in seen_norms:
+            ratio = SequenceMatcher(None, norm, existing_norm).ratio()
+            if ratio >= 0.92:
+                matched = True
+                break
+        if not matched:
+            seen_norms.append(norm)
+            result.append(a)
+    return result
 
 
 def dedup_by_title(articles: list) -> list:
@@ -577,7 +634,11 @@ def dedup_by_title(articles: list) -> list:
             timeout=30,
         )
         res.raise_for_status()
-        raw = res.json()["content"][0]["text"].strip()
+        payload = res.json()
+        content = payload.get("content", [])
+        raw = content[0].get("text", "").strip() if content else ""
+        if not raw:
+            return articles
         raw = raw.replace("```json", "").replace("```", "").strip()
         start_idx = raw.find("[")
         end_idx = raw.rfind("]") + 1
@@ -631,7 +692,11 @@ def regrade_urgent(articles: list) -> list:
             timeout=15,
         )
         res.raise_for_status()
-        raw = res.json()["content"][0]["text"].strip()
+        payload = res.json()
+        content = payload.get("content", [])
+        raw = content[0].get("text", "").strip() if content else ""
+        if not raw:
+            return articles
         raw = raw.replace("```json", "").replace("```", "").strip()
         start_idx = raw.find("[")
         end_idx = raw.rfind("]") + 1
@@ -671,8 +736,13 @@ def ai_filter_and_grade(articles: list) -> list:
 
     if len(result) > 1:
         print(f"  중복 제거 중... (필터링 후 {len(result)}건)")
-        result = dedup_by_title(result)
-        print(f"  중복 제거 후 {len(result)}건")
+        result = dedup_deterministic(result)
+        print(f"  1차 dedup 후 {len(result)}건")
+        if len(result) >= 10:
+            result = dedup_by_title(result)
+            print(f"  최종 중복 제거 후 {len(result)}건")
+        else:
+            print(f"  {len(result)}건 이하 — Claude dedup 스킵")
 
     # 긴급 3건 초과 시 중요도 판단 후 주의로 강등
     result = regrade_urgent(result)
@@ -701,10 +771,6 @@ def build_exposure_html(entity: str, exposure_data: list, ref_date: str) -> str:
 def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '', exposure_data: dict = None, ref_date: str = '', competitor_notices: list = None, today_str: str = ''):
     exposure_data = exposure_data or {}
     now = datetime.now(timezone(timedelta(hours=9)))  # 한국시간 KST
-    # HTML escape — 뉴스 제목/본문에 특수문자 포함 시 메일 깨짐 방지
-    for a in articles:
-        a["title"] = _esc(a.get("title", ""))
-        a["desc"]  = _esc(a.get("desc", ""))
     sections = {"긴급": [], "주의": [], "참고": []}
     for a in articles:
         sections[a["grade"]].append(a)
@@ -742,7 +808,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-left:1px solid {gs["card_border"]};border-right:1px solid {gs["card_border"]};border-bottom:1px solid {gs["card_border"]};background:#fafafa;">
           <tr>
             <td style="padding:7px 16px;font-size:13px;word-break:keep-all;">
-              <a href="{a['url']}" style="color:#475569;text-decoration:none;line-height:1.5;">{a['title']}</a>
+              <a href="{_esc(a['url'])}" style="color:#475569;text-decoration:none;line-height:1.5;">{_esc(a['title'])}</a>
             </td>
             <td align="right" valign="middle" style="padding:7px 16px 7px 4px;font-size:11px;color:#94a3b8;white-space:nowrap;">{a.get("pub_str","")}</td>
           </tr>
@@ -762,7 +828,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
           <tr>
             <td style="padding:10px 18px;">
               {f"<p style='margin:0 0 4px 0;'>{badges}</p>" if badges else ""}
-              <a href="{a['url']}" class="title-link caution-title" style="font-weight:bold;font-size:14px;text-decoration:none;color:#1e3a6e;line-height:1.6;word-break:keep-all;display:block;">{a['title']}</a>
+              <a href="{a['url']}" class="title-link caution-title" style="font-weight:bold;font-size:14px;text-decoration:none;color:#1e3a6e;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 6px 0;">
                 <tr>
                   <td style="font-size:11px;"><a href="{a['url']}" style="color:#3b5491;text-decoration:none;">↗ 기사 보기</a></td>
@@ -787,14 +853,14 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
           <tr>
             <td bgcolor="#fff8f8" style="padding:12px 16px;background:#fff8f8;border-bottom:1px solid #f5c6c6;">
               {f"<p style='margin:0 0 8px 0;'>{badges}</p>" if badges else ""}
-              <a href="{a['url']}" class="title-link" style="font-weight:bold;font-size:15px;text-decoration:none;color:#1e3a6e;line-height:1.6;word-break:keep-all;display:block;">{a['title']}</a>
+              <a href="{a['url']}" class="title-link" style="font-weight:bold;font-size:15px;text-decoration:none;color:#1e3a6e;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:5px 0 8px 0;">
                 <tr>
                   <td style="font-size:12px;"><a href="{a['url']}" style="color:#3b5491;text-decoration:none;">↗ 기사 보기</a></td>
                   <td align="right" style="font-size:11px;color:#94a3b8;">{a.get("pub_str","")}</td>
                 </tr>
               </table>
-              {f'<p style="margin:0;font-size:12px;color:#64748b;line-height:1.6;word-break:keep-all;">{a["desc"]}</p>' if a.get("desc") else ""}
+              {f'<p style="margin:0;font-size:12px;color:#64748b;line-height:1.6;word-break:keep-all;">{_esc(a["desc"])}</p>' if a.get("desc") else ""}
             </td>
           </tr>
           {bottom_box}
@@ -973,17 +1039,23 @@ def send_email(subject: str, html_body: str):
     msg["From"]    = EMAIL_SENDER
     msg["To"]      = ", ".join(EMAIL_RECEIVERS)
     msg.attach(MIMEText(html_body, "html", "utf-8"))
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_SENDER, EMAIL_RECEIVERS, msg.as_string())
-        print("이메일 발송 완료")
-    except smtplib.SMTPException as e:
-        print(f"이메일 발송 실패 (SMTP): {e}")
-        raise
-    except Exception as e:
-        print(f"이메일 발송 실패: {e}")
-        raise
+    for attempt in range(3):
+        try:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+                server.sendmail(EMAIL_SENDER, EMAIL_RECEIVERS, msg.as_string())
+            print("이메일 발송 완료")
+            return
+        except smtplib.SMTPException as e:
+            wait = 10 * (2 ** attempt)
+            print(f"이메일 발송 실패 (SMTP, {attempt+1}/3): {e} — {wait}초 후 재시도")
+            if attempt < 2:
+                time.sleep(wait)
+            else:
+                raise
+        except Exception as e:
+            print(f"이메일 발송 실패: {e}")
+            raise
 
 
 def main():
@@ -1012,7 +1084,7 @@ def main():
         return keyword, result
 
     print(f"  키워드 {len(KEYWORDS)}개 병렬 크롤링 중...")
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(crawl_keyword, kw): kw for kw in KEYWORDS}
         for future in as_completed(futures):
             try:
@@ -1057,10 +1129,12 @@ def main():
         if article.get("grade") == "참고":
             article["body"] = ""
             return article
-        article["body"] = fetch_article_body(article["url"])
+        body = fetch_article_body(article["url"])
+        # 본문 크롤링 실패(WAF 차단 등) 시 desc로 fallback
+        article["body"] = body if body else article.get("desc", "")
         return article
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {executor.submit(crawl_body, a): a for a in filtered}
         for future in as_completed(futures):
             try:
@@ -1070,77 +1144,21 @@ def main():
     # 대응방안 재생성 병렬처리 (참고 제외)
     print("  대응방안 재생성 중...")
 
-    def regenerate_action(article):
-        # 긴급만 재생성 — 주의는 1차 AI action 유지 (비용 절감)
+    # 긴급: action + LMS 통합 생성 (API 2회→1회, 비용 절감)
+    # 주의: 1차 AI action 유지
+    print("  대응방안·고객안내 생성 중... (긴급만)")
+
+    def generate_action_and_notice(article):
         if article.get("grade") != "긴급":
             return
         body_text = article.get("body", "")
-        if not body_text:
-            return
-        try:
-            action_res = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": "claude-haiku-4-5-20251001",
-                    "max_tokens": 150,
-                    "temperature": 0.0,
-                    "messages": [{"role": "user", "content": f"""한국투자증권 eBiz본부 리스크 담당자 입장에서 아래 기사의 본문을 읽고 즉시 취해야 할 구체적 조치를 작성하세요.
-
-규칙:
-- 보고·공유·전달 등 보고 행위 제외
-- 실제 확인·점검·산출 등 실무 행동만 기재
-- 한 문장, 50자 이내
-
-등급별 기준:
-- 긴급: [확인 대상] + [즉시 조치] + [기한]. 예) "OO 채권 담보 현황 즉시 파악, 금일 내 평가손 산출"
-- 주의: [모니터링 주기] + [악화 시 트리거]. 예) "주 1회 잔고 추이 점검, 신용등급 추가 강등 시 즉시 대응"
-
-유형별 참고:
-- 회생·파산: 보유 채권 담보 현황 및 선순위 여부 파악
-- 금감원 제재: 컴플라이언스 소명자료 및 관련 계약 점검
-- PF·브릿지론: 만기 도래 현황 및 미매각 잔액 파악
-- 신용등급 강등: 해당 채권 듀레이션 및 평가손 산출
-- 반대매매·신용융자: 반대매매 가능 규모 및 담보 부족 계좌 파악
-- 리츠·펀드 부실: 기초자산 담보가치 및 선순위 채권 확인
-- 시스템 장애·해킹: 영향 범위 즉시 확인 및 고객 피해 현황 파악
-
-등급: {article['grade']}
-제목: {article['title']}
-본문: {body_text[:400]}
-{f"eBiz본부 익스포저: {', '.join([r.get('종목유형','') + ' ' + r.get('잔고(억)','') + '억원/' + r.get('고객수','') + '명' for r in find_exposure(article.get('entity',''), exposure_data)])}" if find_exposure(article.get('entity',''), exposure_data) else ""}
-
-조치만 한 문장으로 반환하세요."""}],
-                },
-                timeout=10,
-            )
-            new_action = action_res.json()["content"][0]["text"].strip()
-            if new_action:
-                article["action"] = new_action
-        except Exception:
-            pass
-
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [executor.submit(regenerate_action, a) for a in filtered]
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception:
-                pass
-
-    # 긴급 기사 고객 안내 문구 생성
-    print("  고객 안내 문구 생성 중...")
-
-    def generate_customer_notice(article):
-        if article.get("grade") != "긴급":
-            return
-        body_text = article.get("body", "")
-        entity = article.get("entity", "")
-        keyword = article.get("keyword", "")
+        entity    = article.get("entity", "")
+        keyword   = article.get("keyword", "")
+        exp_rows  = find_exposure(entity, exposure_data)
+        exp_str   = ", ".join([
+            f"{r.get('종목유형','')} {r.get('잔고(억)','')}억원/{r.get('고객수','')}명"
+            for r in exp_rows
+        ]) if exp_rows else ""
         try:
             res = requests.post(
                 "https://api.anthropic.com/v1/messages",
@@ -1151,52 +1169,51 @@ def main():
                 },
                 json={
                     "model": "claude-haiku-4-5-20251001",
-                    "max_tokens": 300,
+                    "max_tokens": 500,
                     "temperature": 0.0,
-                    "messages": [{"role": "user", "content": f"""한국투자증권 eBiz본부 비대면 채널 담당자입니다.
-아래 기사를 바탕으로 LMS 발송용 고객 안내 문구를 작성하세요.
+                    "messages": [{"role": "user", "content": f"""한국투자증권 eBiz본부 리스크 담당자입니다.
+아래 기사를 바탕으로 두 가지를 JSON으로 반환하세요.
 
-[기사 유형별 톤 가이드]
+1. action: 즉시 취해야 할 실무 조치 (50자 이내, 보고·공유·전달 제외, 실제 행동만)
+   - [확인 대상] + [즉시 조치] + [기한] 포함
+   - 유형별: 회생·파산→담보현황파악, 금감원→컴플라이언스점검, PF→미매각잔액파악, 신용등급강등→평가손산출, 반대매매→담보부족계좌파악, 리츠→기초자산확인
 
-▸ 회생·파산·상폐 확정
-- 톤: 긴급·직접적
-- 첫 줄: [한국투자증권] 중요 안내
-- 예시: "고객님께서 보유 중이신 {entity}가 기업회생절차를 신청하였습니다. 손실 가능성이 있으니 즉시 확인 부탁드립니다. 문의: 고객센터 1544-5000"
+2. customer_notice: LMS 발송용 고객 안내 문구 (5줄 이내)
+   - 회생·파산·상폐: [한국투자증권] 중요 안내 / 긴급·직접적 톤
+   - ETF·펀드 상폐: [한국투자증권] 보유상품 안내 / 설명·안내형
+   - 신용융자·반대매매: [한국투자증권] 담보 유지율 안내 / 경고형
+   - PF·채권·제재: [한국투자증권] 시장 현황 안내 / 정보제공형
+   끝에 "문의: 고객센터 1544-5000" 포함
 
-▸ ETF·펀드 상폐 우려·기초자산 부실
-- 톤: 설명·안내형
-- 첫 줄: [한국투자증권] 보유상품 안내
-- 예시: "최근 시장 변동으로 고객님의 보유 상품 점검이 필요합니다. {entity} 관련 상황을 모니터링 중이며, 포트폴리오 점검을 권고드립니다. 문의: 1544-5000"
-
-▸ 신용융자·반대매매·증거금
-- 톤: 경고·주의형
-- 첫 줄: [한국투자증권] 담보 유지율 안내
-- 예시: "신용융자 잔고 급증으로 담보유지율 하락 위험이 있습니다. 추가 증거금 납입 또는 일부 매도를 검토해 주세요. 문의: 1544-5000"
-
-▸ PF·채권·금융당국 제재
-- 톤: 정보제공형
-- 첫 줄: [한국투자증권] 시장 현황 안내
-- 예시: "{entity} 관련 시장 상황을 안내드립니다. 보유 상품의 기초자산 현황을 점검하시고 궁금하신 사항은 고객센터(1544-5000)로 문의해 주세요."
-
-기사 유형을 판단하여 적합한 톤으로 작성하세요.
-5줄 이내, 문구만 반환, 번호나 설명 없이.
+반드시 JSON만 반환. 마크다운 없이.
+{{"action":"...", "customer_notice":"..."}}
 
 기사 정보:
 - 키워드: {keyword}
 - 기업명: {entity}
+- 등급: {article['grade']}
 - 제목: {article['title']}
-- 본문: {body_text[:400]}"""}],
+- 본문: {body_text[:400]}
+{f"- eBiz 익스포저: {exp_str}" if exp_str else ""}"""}],
                 },
-                timeout=10,
+                timeout=20,
             )
-            notice = res.json()["content"][0]["text"].strip()
-            if notice:
-                article["customer_notice"] = notice
+            payload = res.json()
+            content = payload.get("content", [])
+            raw = content[0].get("text", "").strip() if content else ""
+            if not raw:
+                return
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            result = json.loads(raw)
+            if result.get("action"):
+                article["action"] = result["action"]
+            if result.get("customer_notice"):
+                article["customer_notice"] = result["customer_notice"]
         except Exception:
             pass
 
     with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [executor.submit(generate_customer_notice, a) for a in filtered]
+        futures = [executor.submit(generate_action_and_notice, a) for a in filtered]
         for future in as_completed(futures):
             try:
                 future.result()
