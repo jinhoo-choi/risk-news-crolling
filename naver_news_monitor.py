@@ -197,13 +197,13 @@ def build_competitor_html(notices: list, today_str: str) -> str:
 
 
 def load_seen_urls() -> set:
-    """최근 2시간 키(YYYY-MM-DD HH) 기준 seen URL 로드 — 오래된 키 자동 제거"""
+    """최근 7시간 키(YYYY-MM-DD HH) 기준 seen URL 로드 — 오래된 키 자동 제거"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     # 현재 시각 + 1시간 전 키 생성
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(2)
+        for i in range(7)
     }
     if os.path.exists(SEEN_FILE):
         with open(SEEN_FILE, "r", encoding="utf-8") as f:
@@ -220,13 +220,13 @@ def load_seen_urls() -> set:
 
 
 def save_seen_urls(seen: set):
-    """현재 시각 키(YYYY-MM-DD HH)로 seen URL 저장 — 최근 2시간 키만 보존"""
+    """현재 시각 키(YYYY-MM-DD HH)로 seen URL 저장 — 최근 7시간 키만 보존"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     current_key = now.strftime("%Y-%m-%d %H")
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(2)
+        for i in range(7)
     }
     # 기존 데이터 로드
     existing = {}
@@ -300,7 +300,7 @@ def crawl_naver_news(keyword: str) -> list:
                 pub_dt = now_kst
                 pub_date = today_kst
 
-            # 1시간 이전 기사 — 중단
+            # 6시간 이전 기사 — 중단
             if pub_dt < cutoff_kst:
                 stop = True
                 break
@@ -1019,6 +1019,7 @@ def main():
         send_email_no_result(subject, build_empty_html(now))
         return
 
+    exposure_data = load_exposure_data()  # regenerate_action에서 참조하므로 먼저 로드
     print("  본문 크롤링 중...")
     def crawl_body(article):
         article["body"] = fetch_article_body(article["url"])
@@ -1168,7 +1169,7 @@ def main():
 
     now = datetime.now(timezone(timedelta(hours=9)))
     today_str = now.strftime("%m월 %d일")
-    exposure_data = load_exposure_data()
+    # exposure_data는 본문 크롤링 전에 이미 로드됨
     competitor_notices = load_competitor_notices()
     if competitor_notices:
         print(f"  경쟁사 신용·대출 특이사항 {len(competitor_notices)}건 발견")
