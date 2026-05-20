@@ -2,8 +2,13 @@ name: 네이버 뉴스 리스크 모니터링
 
 on:
   schedule:
-    - cron: '7 * * * *'    # 매시 7분 실행 (1시간 간격, UTC 기준)
+    - cron: '7 * * * *'    # 매 시 7분 실행 (1시간 간격, UTC 기준)
   workflow_dispatch:
+
+# 동시 실행 방지 — 이전 실행 완료 후 다음 실행 시작 (race condition 방지)
+concurrency:
+  group: risk-monitor
+  cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
