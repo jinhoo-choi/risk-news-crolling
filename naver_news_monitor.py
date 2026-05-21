@@ -201,7 +201,6 @@ def load_seen_urls() -> set:
     """최근 7시간 키(YYYY-MM-DD HH) 기준 seen URL 로드 — 오래된 키 자동 제거"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
-    # 현재 시각 + 1시간 전 키 생성
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
         for i in range(7)
@@ -211,19 +210,48 @@ def load_seen_urls() -> set:
             with open(SEEN_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception:
-            # 파일 손상·빈 파일·partial write 시 빈 set 반환
             return set()
         if isinstance(data, list):
             return set()
         urls = set()
         for k in valid_keys:
-            urls |= set(data.get(k, []))
+            entry = data.get(k, {})
+            if isinstance(entry, list):
+                urls |= set(entry)
+            elif isinstance(entry, dict):
+                urls |= set(entry.get("urls", []))
         return urls
     return set()
 
 
-def save_seen_urls(seen: set):
-    """현재 시각 키(YYYY-MM-DD HH)로 seen URL 저장 — 최근 7시간 키만 보존"""
+def load_seen_combos() -> set:
+    """최근 7시간 내 발송된 (entity, keyword) 조합 로드 — 실행 간 중복 사건 방지"""
+    kst = timezone(timedelta(hours=9))
+    now = datetime.now(kst)
+    valid_keys = {
+        (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
+        for i in range(7)
+    }
+    if os.path.exists(SEEN_FILE):
+        try:
+            with open(SEEN_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return set()
+        if isinstance(data, list):
+            return set()
+        combos = set()
+        for k in valid_keys:
+            entry = data.get(k, {})
+            if isinstance(entry, dict):
+                for combo in entry.get("combos", []):
+                    combos.add(tuple(combo))
+        return combos
+    return set()
+
+
+def save_seen_urls(seen: set, combos: set = None):
+    """현재 시각 키(YYYY-MM-DD HH)로 seen URL + 발송 조합 저장 — 최근 7시간 키만 보존"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     current_key = now.strftime("%Y-%m-%d %H")
@@ -231,7 +259,6 @@ def save_seen_urls(seen: set):
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
         for i in range(7)
     }
-    # 기존 데이터 로드
     existing = {}
     if os.path.exists(SEEN_FILE):
         try:
@@ -243,9 +270,20 @@ def save_seen_urls(seen: set):
                 existing = {}
         except Exception:
             existing = {}
-    # 현재 시각 키 — 기존값과 merge (재실행·retry 시 유실 방지)
-    existing_urls = set(existing.get(current_key, []))
-    existing[current_key] = list(existing_urls | seen)
+    # 현재 키 기존값 로드
+    cur = existing.get(current_key, {})
+    if isinstance(cur, list):
+        cur = {"urls": cur, "combos": []}
+    # URL merge
+    existing_urls = set(cur.get("urls", []))
+    existing_combos = [tuple(x) for x in cur.get("combos", [])]
+    merged_urls = list(existing_urls | seen)
+    # combo merge
+    if combos:
+        for combo in combos:
+            if list(combo) not in existing_combos and combo not in [tuple(x) for x in existing_combos]:
+                existing_combos.append(list(combo))
+    existing[current_key] = {"urls": merged_urls, "combos": existing_combos}
     # atomic write — mkstemp으로 동시 실행 시 tmp 충돌 방지
     import tempfile as _tmpfile, os as _os
     fd, tmp_path = _tmpfile.mkstemp(prefix="seen_", suffix=".tmp",
@@ -1101,7 +1139,9 @@ def main():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 뉴스 모니터링 시작")
     now_kst         = datetime.now(timezone(timedelta(hours=9)))  # 전역 기준 시각
     seen_urls       = load_seen_urls()
+    seen_combos     = load_seen_combos()  # 실행 간 중복 사건 방지
     new_seen_this_run = set()  # 이번 실행에서 신규 수집한 URL만 별도 관리
+    new_combos_this_run = set()  # 이번 실행에서 발송된 (entity, keyword) 조합
     raw_articles    = []
 
     def crawl_keyword(keyword):
@@ -1139,7 +1179,13 @@ def main():
             except Exception as e:
                 print(f"  크롤링 오류: {e}")
 
-    save_seen_urls(new_seen_this_run)  # 이번 실행 신규 URL만 저장
+    # 발송된 기사의 (entity, keyword) 조합 수집
+    for a in filtered:
+        entity  = a.get("entity", "").strip()
+        keyword = a.get("keyword", "").strip()
+        if entity and keyword:
+            new_combos_this_run.add((entity, keyword))
+    save_seen_urls(new_seen_this_run, new_combos_this_run)  # URL + 조합 저장
 
     if not raw_articles:
         print("신규 뉴스 없음 — 결과 없음 메일 발송 (특정인만)")
@@ -1151,6 +1197,20 @@ def main():
 
     print(f"\nAI 필터링 중... (총 {len(raw_articles)}건)")
     filtered = ai_filter_and_grade(raw_articles)
+    # 실행 간 중복 사건 필터 — 동일 entity+keyword 조합이 7시간 내 이미 발송된 경우 제외
+    before_combo = len(filtered)
+    filtered_final = []
+    for a in filtered:
+        entity  = a.get("entity", "").strip()
+        keyword = a.get("keyword", "").strip()
+        combo   = (entity, keyword) if entity and keyword else None
+        if combo and combo in seen_combos:
+            print(f"  [{a['grade']}] '{a['title'][:30]}' — 동일 사건 이미 발송, 스킵")
+            continue
+        filtered_final.append(a)
+    filtered = filtered_final
+    if before_combo != len(filtered):
+        print(f"  중복 사건 제거: {before_combo}건 → {len(filtered)}건")
     print(f"필터링 후 {len(filtered)}건 선별")
 
     if not filtered:
