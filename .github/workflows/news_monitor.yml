@@ -1,11 +1,7 @@
 name: 네이버 뉴스 리스크 모니터링
 
 on:
-  schedule:
-    # cron-job.org로 트리거 대체 — GitHub cron 지연 문제 해결
-    # cron-job.org 비활성화 시 아래 주석 해제하여 백업 스케줄 사용
-    # - cron: '7 * * * *'
-  workflow_dispatch:  # cron-job.org 및 수동 실행용
+  workflow_dispatch:  # cron-job.org 및 수동 실행 (cron-job.org가 매시 7분 트리거)
 
 # 동시 실행 방지 — 이전 실행 완료 후 다음 실행 시작 (race condition 방지)
 concurrency:
