@@ -575,33 +575,62 @@ eBiz본부는 비대면 주식거래(온라인 MTS·HTS)를 핵심 사업으로 
 
 
 def dedup_deterministic(articles: list) -> list:
-    """제목 정규화 + SequenceMatcher 기반 1차 중복 제거 — Claude 호출 최소화"""
+    """3단계 중복 제거 — 제목 유사도 + 기업명·키워드 조합 + desc 유사도"""
     import unicodedata
     import re as _re
     from difflib import SequenceMatcher
 
-    def normalize(title: str) -> str:
-        t = unicodedata.normalize("NFKC", title)
+    def normalize(text: str) -> str:
+        t = unicodedata.normalize("NFKC", text)
         t = _re.sub(r"\[.*?\]|\(.*?\)", "", t)   # [속보] (연합) 등 제거
         t = _re.sub(r"[^가-힣a-zA-Z0-9]", "", t)      # 특수문자·공백 제거
         return t.strip()
 
-    seen_norms = []
+    seen_norms   = []   # 정규화된 제목
+    seen_combos  = {}   # (entity, keyword) 조합
+    seen_descs   = []   # 정규화된 desc
     result = []
+
     for a in articles:
-        norm = normalize(a["title"])
-        if not norm:
-            result.append(a)
-            continue
+        title_norm = normalize(a.get("title", ""))
+        desc_norm  = normalize(a.get("desc", ""))
+        entity     = a.get("entity", "").strip()
+        keyword    = a.get("keyword", "").strip()
+        combo      = (entity, keyword) if entity else None
+
         matched = False
-        for existing_norm in seen_norms:
-            ratio = SequenceMatcher(None, norm, existing_norm).ratio()
-            if ratio >= 0.92:
+
+        # 1단계: 제목 유사도 (0.92 이상)
+        for existing in seen_norms:
+            if SequenceMatcher(None, title_norm, existing).ratio() >= 0.92:
                 matched = True
                 break
+
+        # 2단계: 기업명 + 키워드 동일 조합 (같은 사건 다른 제목)
+        if not matched and combo and combo in seen_combos:
+            # combo 일치하면 desc로 추가 검증
+            existing_desc = seen_combos[combo]
+            if desc_norm and existing_desc:
+                if SequenceMatcher(None, desc_norm, existing_desc).ratio() >= 0.70:
+                    matched = True
+            else:
+                # desc 없으면 combo만으로 중복 판정
+                matched = True
+
+        # 3단계: desc 유사도 (0.80 이상) — 제목 달라도 내용 같은 기사
+        if not matched and desc_norm and len(desc_norm) > 20:
+            for existing_desc in seen_descs:
+                if SequenceMatcher(None, desc_norm, existing_desc).ratio() >= 0.80:
+                    matched = True
+                    break
+
         if not matched:
-            seen_norms.append(norm)
+            seen_norms.append(title_norm)
+            seen_descs.append(desc_norm)
+            if combo:
+                seen_combos[combo] = desc_norm
             result.append(a)
+
     return result
 
 
