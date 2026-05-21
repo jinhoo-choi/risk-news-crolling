@@ -417,7 +417,11 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
     prompt = f"""당신은 한국투자증권 eBiz본부 리스크 담당자입니다.
 eBiz본부는 비대면 주식거래(온라인 MTS·HTS)를 핵심 사업으로 하며, 리츠·펀드·발행어음·신용융자·IMA 등 금융상품을 온라인 채널로 판매합니다.
 고객 자산 손실, 당사 익스포저 손실, 금융당국 제재, 비대면 거래 시스템 리스크에 특히 민감합니다.
-아래 기사가 이 네 가지 중 하나로 이어질 직접적 가능성이 있는지 엄격하게 판단하세요. 가능성이 낮으면 과감히 제외하세요.
+
+[판단 원칙 — 가장 중요]
+기사를 볼 때 아래 질문에 "YES"가 나와야만 relevant:true입니다.
+"이 기사가 오늘 당장 한국투자증권 고객의 자산 손실 또는 당사 손실로 이어질 수 있는가?"
+위 질문에 확신이 없으면 relevant:false입니다. 모호하면 무조건 제외하세요.
 
 [반드시 제외 — relevant: false 조건]
 다음 중 하나라도 해당하면 즉시 제외하세요:
@@ -473,6 +477,11 @@ eBiz본부는 비대면 주식거래(온라인 MTS·HTS)를 핵심 사업으로 
 - 부도·회생 기업에 증권사 직접 여신·보증·판매 상품이 없는 경우
 - 단순히 업황 악화·실적 부진 기사 (실제 손실 확정 아닌 것)
 - 해당 기업 주가 하락만 있고 상폐·거래정지·부도가 아닌 경우
+- "우려", "가능성", "전망", "위험성" 등 추측 표현만 있는 기사 (사실 확정 아닌 것)
+- 지역 경제·산업 영향 분석 기사 (한국투자증권 직접 손실과 무관한 것)
+- 타사(경쟁 증권사) 리스크 기사로 한국투자증권에 직접 영향 없는 것
+- 채권·PF 관련 기사 중 한국투자증권이 인수·참여하지 않은 것으로 보이는 경우
+- 기사에 구체적 금액·기업명·날짜 없이 일반론만 서술한 경우
 
 [관련 있음 — relevant: true 조건]
 위 제외 조건에 해당하지 않고 아래 중 하나라도 해당하면 관련 있음:
@@ -1191,7 +1200,7 @@ def main():
         print("신규 뉴스 없음 — 결과 없음 메일 발송 (특정인만)")
         now = datetime.now(timezone(timedelta(hours=9)))
         now_str = now.strftime("%m월%d일 %H시")
-        subject = f"(eBiz본부) [결과없음] 리스크 탐지_{now_str} 기준 — 신규 뉴스 없음"
+        subject = f"[리스크 탐지] {now_str_full} 기준 — 신규 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
         return
 
@@ -1217,7 +1226,7 @@ def main():
         print("AI 필터링 결과 없음 — 결과 없음 메일 발송 (특정인만)")
         now = datetime.now(timezone(timedelta(hours=9)))
         now_str = now.strftime("%m월%d일 %H시")
-        subject = f"(eBiz본부) [결과없음] 리스크 탐지_{now_str} 기준 — 해당 뉴스 없음"
+        subject = f"[리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
         return
 
@@ -1347,6 +1356,7 @@ def main():
 
     now = datetime.now(timezone(timedelta(hours=9)))
     today_str = now.strftime("%m월 %d일")
+    now_str_full = now.strftime("%m월 %d일 %H시 %M분")
     # exposure_data는 본문 크롤링 전에 이미 로드됨
     competitor_notices = load_competitor_notices()
     if competitor_notices:
@@ -1362,7 +1372,7 @@ def main():
 
     now_str = now.strftime("%m월%d일 %H시")
     urgent_count = len([a for a in filtered if a.get("grade") == "긴급"])
-    subject = f"(eBiz본부) 리스크 탐지{'_긴급'+str(urgent_count)+'건' if urgent_count > 0 else ''}_{now_str} 기준"
+    subject = f"[리스크 탐지] {now_str_full} 기준"
     total_count = len(raw_articles)
 
     # AI 전체 요약 생성
