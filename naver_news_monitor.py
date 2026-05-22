@@ -28,7 +28,7 @@ ANTHROPIC_KEY     = os.environ["ANTHROPIC_API_KEY"]
 NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
 NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
-KEYWORDS = ["부실 리스크", "신용 리스크", "유동성 리스크", "디폴트 리스크", "기업회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "반대매매 급증", "신용등급 강등", "PF 부실", "미매각", "신용융자", "발행어음", "서킷브레이커"]
+KEYWORDS = ["부실 리스크", "신용 리스크", "유동성 리스크", "디폴트 리스크", "기업회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "반대매매 급증", "신용등급 강등", "PF 부실", "미매각", "신용융자", "발행어음", "서킷브레이커", "한국투자증권오류", "한국투자증권 장애", "한국투자증권 접속불가"]
 MAX_NEWS_PER_KEYWORD = 1000  # 최근 6시간 기사 수집 (cutoff_kst 필터로 제한됨)
 SEEN_FILE = "seen_news.json"
 EXPOSURE_FILE = "exposure_data.csv"
