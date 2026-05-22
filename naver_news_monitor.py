@@ -440,6 +440,12 @@ eBiz본부는 비대면 주식거래(온라인 MTS·HTS)를 핵심 사업으로 
 - 증거금이 신용·담보 증거금률 변경이 아닌 청약·납입 맥락으로 사용된 기사
 - 단순 시황·지수 등락 보도 (구체적 리스크 사건 없는 것)
 - 외국인·기관·개인 매수·매도·순매도·순매수 동향 기사 (수급 기사)
+- 신용융자·빚투 잔고 증가·감소 동향 기사 (규모·통계 보도 수준, 실제 반대매매 확정 아닌 것)
+- 반대매매 우려·경고·전망 기사 (실제 반대매매 급증·역대 최대 등 사실 확정 아닌 것)
+- 코스피·코스닥 변동성·등락 기록 기사 (지수 자체의 변동성 보도)
+- 증권사 실적·수수료·영업이익 비교 기사 (손실·부실 아닌 성과 비교)
+- "이모저모", "브리핑", "소식" 등 단순 업계 동향 모음 기사
+- 금융당국 경고·권고 수준 기사 (실제 제재·조사 착수 아닌 것)
 - 연예인·유명인·개인 대상 해킹·보이스피싱·금융사기 피해 기사 (증권사 시스템·인프라 무관)
 - 증권사 IT 시스템과 직접 관련 없는 일반 사이버 범죄·해킹 사건
 - "전망", "예상", "가능성", "우려" 등 추측성 표현만 있고 확정된 사건이 없는 기사
@@ -1199,17 +1205,36 @@ def main():
 
     print(f"\nAI 필터링 중... (총 {len(raw_articles)}건)")
     filtered = ai_filter_and_grade(raw_articles)
-    # 실행 간 중복 사건 필터 — 동일 entity+keyword 조합이 7시간 내 이미 발송된 경우 제외
+    # 실행 간 중복 사건 필터 — 동일 entity+keyword 또는 keyword만으로도 중복 감지
     before_combo = len(filtered)
     filtered_final = []
+    seen_keywords_this_run = set()  # 이번 실행 내 동일 keyword 중복 방지
+
     for a in filtered:
         entity  = a.get("entity", "").strip()
         keyword = a.get("keyword", "").strip()
         combo   = (entity, keyword) if entity and keyword else None
+        kw_only = ("", keyword) if keyword else None
+
+        # 7시간 내 이미 발송된 (entity+keyword) 조합
         if combo and combo in seen_combos:
-            print(f"  [{a['grade']}] '{a['title'][:30]}' — 동일 사건 이미 발송, 스킵")
+            print(f"  [{a['grade']}] '{a['title'][:30]}' — 동일 사건(entity+kw) 이미 발송, 스킵")
             continue
+
+        # 7시간 내 이미 발송된 keyword만 조합 (entity 없는 경우)
+        if not entity and kw_only and kw_only in seen_combos:
+            print(f"  [{a['grade']}] '{a['title'][:30]}' — 동일 키워드 이미 발송, 스킵")
+            continue
+
+        # 이번 실행 내 동일 keyword 중복 (반대매매·빚투 등 entity 없이 몰리는 경우)
+        if keyword and keyword in seen_keywords_this_run:
+            print(f"  [{a['grade']}] '{a['title'][:30]}' — 이번 실행 내 동일 키워드 중복, 스킵")
+            continue
+
         filtered_final.append(a)
+        if keyword:
+            seen_keywords_this_run.add(keyword)
+
     filtered = filtered_final
     if before_combo != len(filtered):
         print(f"  중복 사건 제거: {before_combo}건 → {len(filtered)}건")
@@ -1409,8 +1434,8 @@ def main():
     for a in filtered:
         entity  = a.get("entity", "").strip()
         keyword = a.get("keyword", "").strip()
-        if entity and keyword:
-            new_combos_this_run.add((entity, keyword))
+        if keyword:
+            new_combos_this_run.add((entity, keyword))  # entity 없어도 keyword만으로 저장
     save_seen_urls(new_seen_this_run, new_combos_this_run)
 
 
