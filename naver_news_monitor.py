@@ -1188,20 +1188,13 @@ def main():
             except Exception as e:
                 print(f"  크롤링 오류: {e}")
 
-    # 발송된 기사의 (entity, keyword) 조합 수집
-    for a in filtered:
-        entity  = a.get("entity", "").strip()
-        keyword = a.get("keyword", "").strip()
-        if entity and keyword:
-            new_combos_this_run.add((entity, keyword))
-    save_seen_urls(new_seen_this_run, new_combos_this_run)  # URL + 조합 저장
-
     if not raw_articles:
         print("신규 뉴스 없음 — 결과 없음 메일 발송 (특정인만)")
         now = datetime.now(timezone(timedelta(hours=9)))
         now_str = now.strftime("%m월%d일 %H시")
         subject = f"[리스크 탐지] {now_str_full} 기준 — 신규 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
+        save_seen_urls(new_seen_this_run)
         return
 
     print(f"\nAI 필터링 중... (총 {len(raw_articles)}건)")
@@ -1228,6 +1221,7 @@ def main():
         now_str = now.strftime("%m월%d일 %H시")
         subject = f"[리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
+        save_seen_urls(new_seen_this_run)
         return
 
     exposure_data = load_exposure_data()  # regenerate_action에서 참조하므로 먼저 로드
@@ -1410,6 +1404,14 @@ def main():
 
     html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary, exposure_data=exposure_data, ref_date=ref_date, competitor_notices=competitor_notices, today_str=today_str)
     send_email(subject, html)
+
+    # 발송된 기사의 (entity, keyword) 조합 저장 — 실행 간 중복 사건 방지
+    for a in filtered:
+        entity  = a.get("entity", "").strip()
+        keyword = a.get("keyword", "").strip()
+        if entity and keyword:
+            new_combos_this_run.add((entity, keyword))
+    save_seen_urls(new_seen_this_run, new_combos_this_run)
 
 
 if __name__ == "__main__":
