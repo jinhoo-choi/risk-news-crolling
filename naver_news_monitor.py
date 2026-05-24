@@ -1213,7 +1213,8 @@ def save_filter_log(raw_articles: list, hard_excluded: list, ai_filtered: list, 
         print(f"  필터링 로그 저장: {log_path} (하드제외 {len(hard_excluded)}건 / 발송 {len(final_sent)}건)")
         if excl_stats:
             top3 = excl_stats.most_common(3)
-            print(f"  제외 사유 Top3: {' | '.join([f"{k}:{v}건" for k,v in top3])}")
+            top3_str = " | ".join([f"{k}:{v}건" for k, v in top3])
+            print(f"  제외 사유 Top3: {top3_str}")
     except Exception as e:
         print(f"  로그 저장 실패: {e}")
 
