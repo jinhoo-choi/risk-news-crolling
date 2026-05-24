@@ -96,6 +96,15 @@ jobs:
           git push
         continue-on-error: true
 
+      - name: 필터링 로그 artifact 저장
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: filter-log-${{ github.run_id }}
+          path: filter_log_*.json
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: 실행 실패 시 로그 저장
         if: failure()
         uses: actions/upload-artifact@v4
