@@ -470,20 +470,19 @@ EXCLUDE_TITLE_RE_PATTERNS = [
     r"^\d+위\s",           # 순위 기사
 ]
 
-def is_hard_excluded(title: str, desc: str = "") -> bool:
-    """하드 제외 패턴 매칭 — 제목 + desc 함께 적용"""
+def is_hard_excluded(title: str, desc: str = "") -> tuple:
+    """하드 제외 패턴 매칭 — (excluded: bool, reason: str) 반환
+    제목 + desc 함께 적용 — 본문 첫 문단까지 커버
+    """
     import re as _re
-    # 제목과 desc를 합쳐서 판단 — 본문 첫 문단까지 커버
     text = title + " " + (desc or "")
-    # 패턴 매칭
     for pat in EXCLUDE_PATTERNS:
         if pat in text:
-            return True
-    # 정규식 패턴
+            return True, pat
     for pat in EXCLUDE_TITLE_RE_PATTERNS:
         if _re.search(pat, title):
-            return True
-    return False
+            return True, pat
+    return False, None
 
 
 def ai_filter_batch(batch: list, offset: int = 0) -> list:
@@ -568,6 +567,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 
 반드시 JSON 배열만 반환하세요. 마크다운 코드블록(```) 없이 순수 JSON만.
 - reason: 선별 이유를 증권사 실무 관점에서 20자 이내로 (relevant=false면 null)
+- confidence: relevant 판단 확신도 0.0~1.0 (1.0=완전확신, 0.5=애매함). relevant=false도 반드시 포함.
 - action: relevant:true인 모든 기사에 대해 실무 담당자가 즉시 취해야 할 구체적 조치를 50자 이내로 작성하세요.
   "보고", "공유", "전달" 등 보고 행위는 제외하고 실제 확인·점검·산출 등 실무 행동만 기재.
   등급별 작성 기준:
@@ -585,10 +585,10 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 - entity: 기사의 핵심 기업명 또는 종목명을 공식 명칭 기준으로 1개 추출 (예: 태영건설, 홈플러스, 제이알글로벌리츠, 한화솔루션). 금감원·금융위 등 기관명은 제외하고 기업·종목명만 추출. (relevant=false면 null)
 반환 형식 예시 (긴급/주의/참고/제외 각 1건):
 [
-  {{"id":1,"relevant":true,"grade":"긴급","reason":"리츠 기초자산 회생신청·손실 확정","action":"해당 리츠 보유 고객 전수 파악 및 금일 내 평가손 산출","entity":"제이알글로벌리츠"}},
-  {{"id":2,"relevant":true,"grade":"주의","reason":"PF 부실 징후·손실 미확정 단계","action":"주 1회 PF 잔액 추이 점검, 연체 발생 시 즉시 대응","entity":"태영건설"}},
-  {{"id":3,"relevant":true,"grade":"참고","reason":"업계 발행어음 증가 동향","action":"동종업계 발행어음 만기 구조 비교, 자사 유동성 비율 점검","entity":"미래에셋증권"}},
-  {{"id":4,"relevant":false,"grade":null,"reason":null,"action":null,"entity":null}}
+  {{"id":1,"relevant":true,"grade":"긴급","reason":"리츠 기초자산 회생신청·손실 확정","confidence":0.97,"action":"해당 리츠 보유 고객 전수 파악 및 금일 내 평가손 산출","entity":"제이알글로벌리츠"}},
+  {{"id":2,"relevant":true,"grade":"주의","reason":"PF 부실 징후·손실 미확정 단계","confidence":0.82,"action":"주 1회 PF 잔액 추이 점검, 연체 발생 시 즉시 대응","entity":"태영건설"}},
+  {{"id":3,"relevant":true,"grade":"참고","reason":"업계 발행어음 증가 동향","confidence":0.71,"action":"동종업계 발행어음 만기 구조 비교, 자사 유동성 비율 점검","entity":"미래에셋증권"}},
+  {{"id":4,"relevant":false,"grade":null,"reason":null,"confidence":0.12,"action":null,"entity":null}}
 ]
 
 뉴스 목록:
@@ -639,8 +639,9 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             result = []
             for i, article in enumerate(batch):
                 info = grade_map.get(i + offset + 1, {})
+                article["_ai_confidence"] = info.get("confidence", None)
                 if info.get("relevant") and info.get("grade"):
-                    article["grade"] = info["grade"]
+                    article["grade"]  = info["grade"]
                     article["reason"] = info.get("reason", "")
                     article["action"] = info.get("action", "")
                     article["entity"] = info.get("entity", "")
@@ -1147,46 +1148,72 @@ def build_empty_html(now) -> str:
 
 
 def save_filter_log(raw_articles: list, hard_excluded: list, ai_filtered: list, final_sent: list):
-    """필터링 로그 저장 — 튜닝·역추적용"""
+    """필터링 로그 저장 — reason code + confidence 포함"""
     import hashlib
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     log_path = f"filter_log_{now.strftime('%Y%m%d_%H%M')}.json"
 
-    # 최종 발송 제목 set
-    sent_titles = {a.get("title","") for a in final_sent}
-    hard_excluded_titles = {a.get("title","") for a in hard_excluded}
+    sent_titles          = {a.get("title","") for a in final_sent}
+    hard_excl_map        = {a.get("title",""): a.get("_excl_reason","") for a in hard_excluded}
     ai_filtered_titles   = {a.get("title","") for a in ai_filtered}
+    ai_conf_map          = {a.get("title",""): a.get("_ai_confidence") for a in ai_filtered}
+
+    # hard_excluded도 raw_articles에 합쳐서 전체 추적
+    all_articles = raw_articles + hard_excluded
 
     logs = []
-    for a in raw_articles:
+    for a in all_articles:
         title = a.get("title","")
-        h = hashlib.sha256(title.encode()).hexdigest()[:8]
-        if title in hard_excluded_titles:
-            decision = "HARD_EXCLUDED"
-            reason   = "하드 제외룰 매칭"
+        h     = hashlib.sha256(title.encode()).hexdigest()[:8]
+
+        if title in hard_excl_map:
+            decision   = "HARD_EXCLUDED"
+            reason     = hard_excl_map[title]   # 어떤 패턴에 걸렸는지
+            confidence = None
         elif title not in ai_filtered_titles:
-            decision = "AI_EXCLUDED"
-            reason   = "AI 필터링 제외"
+            decision   = "AI_EXCLUDED"
+            reason     = "AI 필터링 제외"
+            confidence = ai_conf_map.get(title)  # 낮은 confidence로 제외된 경우 추적
         elif title not in sent_titles:
-            decision = "DEDUP_EXCLUDED"
-            reason   = "중복 제거"
+            decision   = "DEDUP_EXCLUDED"
+            reason     = "중복 제거"
+            confidence = ai_conf_map.get(title)
         else:
-            decision = "SENT"
-            reason   = "발송"
+            decision   = "SENT"
+            reason     = a.get("grade","")
+            confidence = ai_conf_map.get(title)
+
         logs.append({
-            "hash"    : h,
-            "title"   : title[:60],
-            "keyword" : a.get("keyword",""),
-            "decision": decision,
-            "reason"  : reason,
+            "hash"      : h,
+            "title"     : title[:60],
+            "keyword"   : a.get("keyword",""),
+            "decision"  : decision,
+            "reason"    : reason,       # reason code — 통계 집계 가능
+            "confidence": confidence,   # AI 확신도 — 0.5~0.7 구간 수동 검토용
         })
+
+    # 제외 사유별 통계
+    from collections import Counter
+    excl_stats = Counter(
+        l["reason"] for l in logs if l["decision"] == "HARD_EXCLUDED"
+    )
 
     try:
         with open(log_path, "w", encoding="utf-8") as f:
-            json.dump({"time": now.isoformat(), "total": len(raw_articles),
-                       "sent": len(final_sent), "logs": logs}, f, ensure_ascii=False, indent=2)
-        print(f"  필터링 로그 저장: {log_path}")
+            json.dump({
+                "time"       : now.isoformat(),
+                "total"      : len(all_articles),
+                "sent"       : len(final_sent),
+                "hard_excl"  : len(hard_excluded),
+                "ai_excl"    : len(all_articles) - len(hard_excluded) - len(ai_filtered),
+                "excl_stats" : dict(excl_stats),   # 제외 사유별 빈도
+                "logs"       : logs,
+            }, f, ensure_ascii=False, indent=2)
+        print(f"  필터링 로그 저장: {log_path} (하드제외 {len(hard_excluded)}건 / 발송 {len(final_sent)}건)")
+        if excl_stats:
+            top3 = excl_stats.most_common(3)
+            print(f"  제외 사유 Top3: {' | '.join([f"{k}:{v}건" for k,v in top3])}")
     except Exception as e:
         print(f"  로그 저장 실패: {e}")
 
@@ -1291,14 +1318,16 @@ def main():
 
     # 하드 제외룰 적용 — AI 호출 전 사전 필터
     before_hard = len(raw_articles)
-    hard_excluded_articles = [
-        a for a in raw_articles
-        if is_hard_excluded(a.get("title",""), a.get("desc",""))
-    ]
-    raw_articles = [
-        a for a in raw_articles
-        if not is_hard_excluded(a.get("title",""), a.get("desc",""))
-    ]
+    hard_excluded_articles = []
+    raw_articles_kept      = []
+    for _a in raw_articles:
+        _excl, _reason = is_hard_excluded(_a.get("title",""), _a.get("desc",""))
+        if _excl:
+            _a["_excl_reason"] = _reason   # reason code 저장
+            hard_excluded_articles.append(_a)
+        else:
+            raw_articles_kept.append(_a)
+    raw_articles = raw_articles_kept
     if before_hard != len(raw_articles):
         print(f"  하드 제외룰: {before_hard}건 → {len(raw_articles)}건 ({before_hard - len(raw_articles)}건 제거)")
 
