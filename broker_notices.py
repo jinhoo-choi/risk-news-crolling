@@ -225,7 +225,7 @@ def load_seen_urls() -> set:
 
 
 def load_seen_combos() -> set:
-    """최근 7시간 내 발송된 (entity, keyword) 조합 로드 — 실행 간 중복 사건 방지"""
+    """최근 7시간 내 발송된 (entity, keyword) 조합 로드"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     valid_keys = {
@@ -250,7 +250,33 @@ def load_seen_combos() -> set:
     return set()
 
 
-def save_seen_urls(seen: set, combos: set = None):
+def load_seen_context() -> dict:
+    """최근 7시간 내 발송된 기사의 title_norms·desc_norms 로드 — 맥락 기반 중복 감지"""
+    kst = timezone(timedelta(hours=9))
+    now = datetime.now(kst)
+    valid_keys = {
+        (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
+        for i in range(7)
+    }
+    title_norms = []
+    desc_norms  = []
+    if os.path.exists(SEEN_FILE):
+        try:
+            with open(SEEN_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return {"title_norms": [], "desc_norms": []}
+        if isinstance(data, list):
+            return {"title_norms": [], "desc_norms": []}
+        for k in valid_keys:
+            entry = data.get(k, {})
+            if isinstance(entry, dict):
+                title_norms.extend(entry.get("title_norms", []))
+                desc_norms.extend(entry.get("desc_norms",  []))
+    return {"title_norms": title_norms, "desc_norms": desc_norms}
+
+
+def save_seen_urls(seen: set, combos: set = None, title_norms: list = None, desc_norms: list = None):
     """현재 시각 키(YYYY-MM-DD HH)로 seen URL + 발송 조합 저장 — 최근 7시간 키만 보존"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
@@ -273,17 +299,29 @@ def save_seen_urls(seen: set, combos: set = None):
     # 현재 키 기존값 로드
     cur = existing.get(current_key, {})
     if isinstance(cur, list):
-        cur = {"urls": cur, "combos": []}
+        cur = {"urls": cur, "combos": [], "title_norms": [], "desc_norms": []}
     # URL merge
-    existing_urls = set(cur.get("urls", []))
+    existing_urls   = set(cur.get("urls", []))
     existing_combos = [tuple(x) for x in cur.get("combos", [])]
+    existing_titles = cur.get("title_norms", [])
+    existing_descs  = cur.get("desc_norms", [])
     merged_urls = list(existing_urls | seen)
     # combo merge
     if combos:
         for combo in combos:
-            if list(combo) not in existing_combos and combo not in [tuple(x) for x in existing_combos]:
+            if combo not in [tuple(x) for x in existing_combos]:
                 existing_combos.append(list(combo))
-    existing[current_key] = {"urls": merged_urls, "combos": existing_combos}
+    # title_norms·desc_norms merge (최근 50건만 유지 — 메모리 절약)
+    if title_norms:
+        existing_titles = (existing_titles + title_norms)[-50:]
+    if desc_norms:
+        existing_descs  = (existing_descs  + desc_norms)[-50:]
+    existing[current_key] = {
+        "urls":        merged_urls,
+        "combos":      existing_combos,
+        "title_norms": existing_titles,
+        "desc_norms":  existing_descs,
+    }
     # atomic write — mkstemp으로 동시 실행 시 tmp 충돌 방지
     import tempfile as _tmpfile, os as _os
     fd, tmp_path = _tmpfile.mkstemp(prefix="seen_", suffix=".tmp",
@@ -1158,7 +1196,8 @@ def main():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 뉴스 모니터링 시작")
     now_kst         = datetime.now(timezone(timedelta(hours=9)))  # 전역 기준 시각
     seen_urls       = load_seen_urls()
-    seen_combos     = load_seen_combos()  # 실행 간 중복 사건 방지
+    seen_combos     = load_seen_combos()   # 실행 간 중복 사건 방지
+    seen_context    = load_seen_context()  # 이전 실행 발송 기사 맥락 (title/desc norms)
     new_seen_this_run = set()  # 이번 실행에서 신규 수집한 URL만 별도 관리
     new_combos_this_run = set()  # 이번 실행에서 발송된 (entity, keyword) 조합
     raw_articles    = []
@@ -1209,35 +1248,88 @@ def main():
 
     print(f"\nAI 필터링 중... (총 {len(raw_articles)}건)")
     filtered = ai_filter_and_grade(raw_articles)
-    # 실행 간 중복 사건 필터 — 동일 entity+keyword 또는 keyword만으로도 중복 감지
+    # 실행 간 중복 사건 필터 — combo + 맥락(title/desc) 기반
+    import unicodedata as _ud
+    import re as _re2
+    from difflib import SequenceMatcher as _SM
+
+    def _norm(text):
+        t = _ud.normalize("NFKC", text or "")
+        t = _re2.sub(r"\[.*?\]|\(.*?\)", "", t)
+        t = _re2.sub(r"[^가-힣a-zA-Z0-9]", "", t)
+        return t.strip()
+
     before_combo = len(filtered)
     filtered_final = []
-    seen_keywords_this_run = set()  # 이번 실행 내 동일 keyword 중복 방지
+    seen_keywords_this_run = set()
+    prev_title_norms = seen_context.get("title_norms", [])
+    prev_desc_norms  = seen_context.get("desc_norms",  [])
+    new_title_norms  = []
+    new_desc_norms   = []
 
     for a in filtered:
-        entity  = a.get("entity", "").strip()
-        keyword = a.get("keyword", "").strip()
-        combo   = (entity, keyword) if entity and keyword else None
-        kw_only = ("", keyword) if keyword else None
+        entity   = a.get("entity", "").strip()
+        keyword  = a.get("keyword", "").strip()
+        combo    = (entity, keyword) if entity and keyword else None
+        kw_only  = ("", keyword) if keyword else None
+        t_norm   = _norm(a.get("title", ""))
+        d_norm   = _norm(a.get("desc",  ""))
+        matched  = False
+        reason   = ""
 
-        # 7시간 내 이미 발송된 (entity+keyword) 조합
+        # 사건 진행 단계 키워드 — 이게 포함된 기사는 중복이어도 통과
+        NEXT_STAGE_KEYWORDS = [
+            "가처분", "효력정지", "집행정지", "이의신청", "항고", "재항고",
+            "취하", "철회", "기각", "인용", "결정", "확정", "판결",
+            "보류", "유예", "연장", "조건부", "승인",
+            "재개", "재상장", "거래재개", "상장유지",
+            "파산선고", "청산", "폐업", "법정관리", "회생인가", "회생계획",
+            "배당", "변제", "채무조정", "출자전환",
+            "추가제재", "과징금", "검찰고발", "수사착수",
+        ]
+
+        def is_next_stage(title: str, desc: str) -> bool:
+            text = (title or "") + (desc or "")
+            return any(kw in text for kw in NEXT_STAGE_KEYWORDS)
+
+        # ① 7시간 내 이미 발송된 (entity+keyword) 조합
         if combo and combo in seen_combos:
-            print(f"  [{a['grade']}] '{a['title'][:30]}' — 동일 사건(entity+kw) 이미 발송, 스킵")
-            continue
+            if is_next_stage(a.get("title",""), a.get("desc","")):
+                pass  # 다음 절차 기사 — 중복이어도 통과
+            else:
+                matched = True; reason = "동일 사건(entity+kw) 이미 발송"
 
-        # 7시간 내 이미 발송된 keyword만 조합 (entity 없는 경우)
-        if not entity and kw_only and kw_only in seen_combos:
-            print(f"  [{a['grade']}] '{a['title'][:30]}' — 동일 키워드 이미 발송, 스킵")
-            continue
+        # ② keyword만 조합 (entity 없는 경우)
+        if not matched and not entity and kw_only and kw_only in seen_combos:
+            matched = True; reason = "동일 키워드 이미 발송"
 
-        # 이번 실행 내 동일 keyword 중복 (반대매매·빚투 등 entity 없이 몰리는 경우)
-        if keyword and keyword in seen_keywords_this_run:
-            print(f"  [{a['grade']}] '{a['title'][:30]}' — 이번 실행 내 동일 키워드 중복, 스킵")
+        # ③ 이번 실행 내 동일 keyword 중복
+        if not matched and keyword and keyword in seen_keywords_this_run:
+            matched = True; reason = "이번 실행 내 동일 키워드 중복"
+
+        # ④ 이전 실행 발송 기사와 제목 유사도 (0.88 이상) — 다음 절차 기사는 제외
+        if not matched and t_norm and not is_next_stage(a.get("title",""), a.get("desc","")):
+            for prev_t in prev_title_norms:
+                if _SM(None, t_norm, prev_t).ratio() >= 0.88:
+                    matched = True; reason = "이전 실행 발송 기사와 제목 유사"
+                    break
+
+        # ⑤ 이전 실행 발송 기사와 desc 유사도 (0.80 이상) — 다음 절차 기사는 제외
+        if not matched and d_norm and len(d_norm) > 20 and not is_next_stage(a.get("title",""), a.get("desc","")):
+            for prev_d in prev_desc_norms:
+                if _SM(None, d_norm, prev_d).ratio() >= 0.80:
+                    matched = True; reason = "이전 실행 발송 기사와 내용 유사"
+                    break
+
+        if matched:
+            print(f"  [{a['grade']}] '{a['title'][:30]}' — {reason}, 스킵")
             continue
 
         filtered_final.append(a)
         if keyword:
             seen_keywords_this_run.add(keyword)
+        new_title_norms.append(t_norm)
+        new_desc_norms.append(d_norm)
 
     filtered = filtered_final
     if before_combo != len(filtered):
@@ -1440,7 +1532,8 @@ def main():
         keyword = a.get("keyword", "").strip()
         if keyword:
             new_combos_this_run.add((entity, keyword))  # entity 없어도 keyword만으로 저장
-    save_seen_urls(new_seen_this_run, new_combos_this_run)
+    save_seen_urls(new_seen_this_run, new_combos_this_run,
+                   title_norms=new_title_norms, desc_norms=new_desc_norms)
 
 
 if __name__ == "__main__":
