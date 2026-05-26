@@ -428,13 +428,13 @@ def crawl_naver_news(keyword: str) -> list:
 
 
 def fetch_article_body(url: str) -> str:
-    """기사 본문 크롤링 — Session + 헤더 강화로 WAF 대응"""
+    """기사 본문 크롤링 — Session + 헤더 강화로 WAF 대응 / 2MB 초과 시 스킵"""
     try:
         session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(max_retries=2)
         session.mount("https://", adapter)
         session.mount("http://", adapter)
-        res = session.get(url, timeout=12, headers={
+        res = session.get(url, timeout=12, stream=True, headers={
             "User-Agent": random.choice(USER_AGENTS),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
@@ -442,8 +442,13 @@ def fetch_article_body(url: str) -> str:
             "Referer": "https://search.naver.com/",
             "Connection": "keep-alive",
         })
+        # 2MB 초과 페이지 스킵 — GitHub Actions 메모리 절약
+        content_length = int(res.headers.get("Content-Length", 0))
+        if content_length > 2_000_000:
+            return ""
+        res_text = res.text  # stream 후 실제 로딩
         res.raise_for_status()
-        soup = BeautifulSoup(res.text, "html.parser")
+        soup = BeautifulSoup(res_text, "html.parser")
         # 네이버 뉴스 본문 선택자
         for selector in ["#dic_area", "#articleBodyContents", ".article-body", "#articeBody", "article"]:
             tag = soup.select_one(selector)
@@ -643,6 +648,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 
     for attempt in range(3):
         try:
+            _t0 = time.time()
             res = requests.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={
@@ -658,6 +664,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 },
                 timeout=60,
             )
+            print(f"  [AI] 배치 {offset//50+1} 응답 {time.time()-_t0:.1f}초")
             if res.status_code == 429:
                 wait = 60 * (attempt + 1)
                 print(f"  Rate limit 429 — {wait}초 대기 후 재시도 ({attempt+1}/3)")
@@ -668,7 +675,10 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             content = payload.get("content", [])
             if not content:
                 raise ValueError("Claude 응답 content 비어있음")
-            raw = content[0].get("text", "").strip()
+            raw = "\n".join(
+                blk.get("text", "") for blk in content
+                if blk.get("type") == "text"
+            ).strip()
             if not raw:
                 raise ValueError("Claude 응답 text 비어있음")
             raw = raw.replace("```json", "").replace("```", "").strip()
@@ -687,8 +697,9 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                     grades = json.loads(repaired)
                     print(f"  JSON repair 적용됨 (배치 {offset//50+1})")
             except json.JSONDecodeError as je:
-                # salvage 대신 명시적 에러 — retry 루프가 처리
                 raise ValueError(f"JSON 파싱 실패: {je}") from je
+            if not isinstance(grades, list):
+                raise ValueError(f"grades가 list가 아님: {type(grades)}")
             grade_map = {g["id"]: g for g in grades}
             result = []
             for i, article in enumerate(batch):
@@ -806,61 +817,6 @@ def dedup_deterministic(articles: list) -> list:
     return result
 
 
-def dedup_by_title(articles: list) -> list:
-    """배치 경계 걸친 중복 기사 제거 — Claude API로 최종 중복 제거"""
-    if not articles:
-        return []
-
-    numbered = "\n".join([f"{i+1}. {a['title']}" for i, a in enumerate(articles)])
-    prompt = f"""아래 뉴스 제목 목록에서 중복 기사를 제거하세요.
-
-[중복 판단 기준 — 아래 중 하나라도 해당하면 중복]
-1. 동일 기업명 + 동일 사건유형 (예: 한화솔루션 유상증자, 동전주 상장폐지, 신용융자 급증)
-2. 제목 핵심 내용이 80% 이상 동일
-3. 동일 정책·제도 변경을 여러 언론사가 보도한 경우 (예: 동전주 상장폐지 7월 시행 관련 기사 다수)
-4. 동일 인물·기업의 동일 사건을 다른 각도로 보도한 경우
-
-중복이면 id가 가장 작은 것(먼저 나온 것) 1건만 남기고 나머지는 제거하세요.
-
-반드시 JSON 배열만 반환하세요. 마크다운 코드블록 없이 순수 JSON만.
-형식: [{{"id": 유지할id}}, ...] — 유지할 기사 id만 포함
-
-뉴스 목록:
-{numbered}"""
-
-    try:
-        res = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": CLAUDE_MODEL,
-                "max_tokens": 1000,
-                "temperature": 0.0,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=60,
-        )
-        res.raise_for_status()
-        payload = res.json()
-        content = payload.get("content", [])
-        raw = content[0].get("text", "").strip() if content else ""
-        if not raw:
-            return articles
-        raw = raw.replace("```json", "").replace("```", "").strip()
-        start_idx = raw.find("[")
-        end_idx = raw.rfind("]") + 1
-        raw = raw[start_idx:end_idx]
-        keep_ids = {item["id"] for item in json.loads(raw)}
-        return [a for i, a in enumerate(articles) if (i + 1) in keep_ids]
-    except Exception as e:
-        print(f"중복 제거 오류: {e} — 중복 제거 생략")
-        return articles
-
-
 # 등급별 최대 노출 건수
 GRADE_LIMITS = {"긴급": 2, "주의": 3, "참고": 5}
 
@@ -906,6 +862,16 @@ def regrade_by_score(articles: list) -> list:
                      key=lambda x: x["_risk_score"], reverse=True)
 
     result = []
+
+    # confidence 낮은 긴급 선제 강등 (0.85 미만 → 주의)
+    for a in urgent[:]:
+        conf = a.get("_ai_confidence") or 0
+        if conf < 0.85:
+            a["grade"] = "주의"
+            a["customer_notice"] = None
+            urgent.remove(a)
+            caution.append(a)
+            print(f"  [confidence 강등] 긴급→주의 (conf={conf:.2f}): {a['title'][:30]}")
 
     # 긴급 — 상위 2건 유지, 나머지 주의로 강등
     for i, a in enumerate(urgent):
@@ -1200,7 +1166,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
   }}
 </style>
 </head>
-<body style="margin:0;padding:0;background:#f4f6f9;font-family:'맑은 고딕',Arial,sans-serif;">
+<body style="margin:0;padding:0;background:#f4f6f9;font-family:'Apple SD Gothic Neo','맑은 고딕',Arial,sans-serif;">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f6f9;">
 <tr><td align="center" class="outer" style="padding:16px;">
 <table width="640" cellpadding="0" cellspacing="0" border="0" class="main" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
@@ -1322,7 +1288,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
 def build_empty_html(now) -> str:
     return f"""<html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background:#f4f6f9;font-family:'맑은 고딕',Arial,sans-serif;">
+<body style="margin:0;padding:0;background:#f4f6f9;font-family:'Apple SD Gothic Neo','맑은 고딕',Arial,sans-serif;">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f6f9;">
 <tr><td align="center" class="outer" style="padding:16px;">
 <table width="640" cellpadding="0" cellspacing="0" border="0" class="main" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
@@ -1462,9 +1428,12 @@ def send_email_no_result(subject: str, html_body: str):
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.ehlo()
             server.login(EMAIL_SENDER, EMAIL_PASSWORD)
             server.sendmail(EMAIL_SENDER, [receiver], msg.as_string())
         print(f"  결과없음 메일 발송 완료 → {receiver}")
+    except smtplib.SMTPAuthenticationError as e:
+        print(f"  결과없음 메일 인증 실패 (앱 비밀번호 확인 필요): {e}")
     except smtplib.SMTPException as e:
         print(f"  결과없음 메일 발송 실패 (SMTP): {e}")
     except Exception as e:
@@ -1479,10 +1448,15 @@ def send_email(subject: str, html_body: str):
     for attempt in range(3):
         try:
             with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                server.ehlo()
                 server.login(EMAIL_SENDER, EMAIL_PASSWORD)
                 server.sendmail(EMAIL_SENDER, EMAIL_RECEIVERS, msg.as_string())
             print("이메일 발송 완료")
             return
+        except smtplib.SMTPAuthenticationError as e:
+            # 인증 실패 — 재시도 무의미, 즉시 중단
+            print(f"이메일 인증 실패 (비밀번호/앱 비밀번호 확인 필요): {e}")
+            raise
         except smtplib.SMTPException as e:
             wait = 10 * (2 ** attempt)
             print(f"이메일 발송 실패 (SMTP, {attempt+1}/3): {e} — {wait}초 후 재시도")
@@ -1700,6 +1674,10 @@ def main():
 
     def generate_action_and_notice(article):
         if article.get("grade") != "긴급":
+            return
+        # body 크롤링 실패 시 고객안내 생성 금지 — hallucination 방지
+        if article.get("_body_failed") and not article.get("entity"):
+            print(f"  본문 실패+entity 없음 — 고객안내 생성 스킵: {article.get('title','')[:30]}")
             return
         body_text = article.get("body", "")
         entity    = article.get("entity", "")
