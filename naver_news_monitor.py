@@ -1212,11 +1212,9 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:12px;">
         <tr>
           <td valign="middle">
-            <p style="margin:0 0 2px 0;font-size:18px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇</p>
+            <p style="margin:0 0 4px 0;font-size:18px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇</p>
+            <p style="margin:0 0 3px 0;font-size:10px;color:#c8d8f0;">Powered by Claude AI</p>
             <p style="margin:0;font-size:12px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (KST)</p>
-          </td>
-          <td align="right" valign="middle" width="90" style="padding-left:8px;">
-            <span style="font-size:9px;color:#c8d8f0;padding:3px 7px;background:#5a7abf;border-radius:2px;display:inline-block;text-align:center;line-height:1.5;">Powered by<br>Claude AI</span>
           </td>
         </tr>
       </table>
