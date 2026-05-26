@@ -465,6 +465,9 @@ EXCLUDE_PATTERNS = [
     "데스크에서", "editorial", "논설",
     # 경고·전망성 제목
     "경고음", "경고등", "빨간불", "황신호", "신호탄", "뇌관",
+    # 시리즈·연재 기사
+    "(完)", "(완)", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩",
+    "현직이 푸는", "전문가가 보는", "기자가 간다",
     # 선거·정치·공약
     "후보", "공약", "선거", "의원", "시장 출마", "국회의원", "당선",
     # 부동산·개발·활용 기사 (회생 기업 부지 재개발 등)
@@ -544,6 +547,10 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 ❌ relevant:false | "신용융자 36조 역대 최대…전문가 경고" → 통계 보도, 반대매매 확정 아님
 ❌ relevant:false | "코스피 8천 돌파 후 빚투 경고등…신용융자 36조 사상 최대" → 잔고 통계 보도, 실제 반대매매 발생 아님
 ❌ relevant:false | "도 의원 후보, 폐점한 홈플러스 복합문화플랫폼으로" → 선거 공약 기사, 증권사 익스포저와 무관
+❌ relevant:false | "HL D&I 주가 신바람…건설주 정책 기대감에 매수" → 기사 주인공이 HL D&I, 태양건설은 본문 언급만, 직접 리스크 없음
+❌ relevant:false | "현직이 푸는 사모펀드 환매중단 사태 3(完)" → 연재 칼럼, 직접 손실 사건 아님
+❌ relevant:false | "세제 40% 공제 내세운 국민성장펀드…광풍 뒤 숨은 리스크" → 리스크 우려·분석, 직접 손실 미확정
+❌ relevant:false | "[롯데건설 PF 점검] 홈플러스 후순위 1조 시한폭탄" → 시리즈 기획, 이미 알려진 사건 반복 분석
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [등급 기준] — relevant:true인 경우만 적용
@@ -555,11 +562,13 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
   - 반대매매 역대 최대 등 실제 수치 확정
   - 100억 이상 채무 미상환·디폴트 선언
 
-주의 (모니터링 필요):
+주의 (모니터링 필요) — 아래 조건 모두 충족해야 함:
+  - 구체적 기업명 + 구체적 금액이 기사에 명시된 경우만
   - 회생·부도·상폐 가능성 처음 언급 (신청 전 단계)
-  - 금융당국 조사·검사 예고·착수
-  - 신용등급 강등 경고(Negative Watch)
-  - PF·채권 부실 징후 첫 보도
+  - 금융당국 조사·검사 예고·착수 (구체적 대상 명시)
+  - 신용등급 강등 경고(Negative Watch) 신규 발생
+  - PF·채권 부실 징후 첫 보도 (기존 알려진 사건 반복 아닌 것)
+  ※ 이미 알려진 사건의 반복 보도·심층 분석·칼럼은 주의에서도 제외
 
 참고 (업황 파악용):
   - 직접 손실 없으나 모니터링 필요한 동향
@@ -795,74 +804,87 @@ def dedup_by_title(articles: list) -> list:
         return articles
 
 
-def regrade_urgent(articles: list) -> list:
-    """긴급 3건 초과 시 중요도 판단 후 주의로 강등"""
-    urgent = [a for a in articles if a.get("grade") == "긴급"]
-    others = [a for a in articles if a.get("grade") != "긴급"]
+# 등급별 최대 노출 건수
+GRADE_LIMITS = {"긴급": 2, "주의": 3, "참고": 5}
 
-    if len(urgent) <= 3:
-        return articles
+# 리스크 점수 계산 — 키워드 우선순위 가중치
+RISK_PRIORITY = {
+    "한국투자증권": 2.0,               # 당사 직접 언급 최우선
+    "MTS": 1.8, "HTS": 1.8,           # 당사 시스템 장애
+    "전산장애": 1.8, "전산사고": 1.8,
+    "상장폐지": 1.5, "파산": 1.5,     # 확정 사건
+    "부도": 1.5, "거래정지": 1.5,
+    "반대매매": 1.4, "강제청산": 1.4, # 실제 발생
+    "기업회생": 1.3, "워크아웃": 1.2, # 절차 진행
+}
 
-    print(f"  긴급 {len(urgent)}건 → 상위 3건 선별 중...")
+def calc_risk_score(article: dict) -> float:
+    """리스크 점수 = confidence × 키워드 가중치 + 익스포저 보정"""
+    conf  = article.get("_ai_confidence") or 0.5
+    title = article.get("title", "") + article.get("reason", "")
+    # 가장 높은 키워드 가중치 적용
+    kw_weight = max(
+        [v for k, v in RISK_PRIORITY.items() if k in title],
+        default=1.0
+    )
+    # 익스포저 있으면 +0.1 보정
+    exp_boost = 0.1 if article.get("_has_exposure") else 0
+    return round(conf * kw_weight + exp_boost, 4)
 
-    numbered = "\n".join([f"{i+1}. {a['title']}" for i, a in enumerate(urgent)])
-    prompt = f"""아래 긴급 리스크 기사들의 중요도를 판단하여 상위 3건만 선별하세요.
+def regrade_by_score(articles: list) -> list:
+    """등급별 상한 초과 시 리스크 점수 기반으로 하위 등급 강등
+    긴급 → 최대 2건 (초과분 주의로 강등)
+    주의 → 최대 3건 (초과분 참고로 강등)
+    참고 → 최대 5건 (초과분 제거)
+    점수 = confidence × 키워드 가중치 + 익스포저 보정
+    """
+    # 등급별 분리 + 리스크 점수 내림차순 정렬
+    for a in articles:
+        a["_risk_score"] = calc_risk_score(a)
 
-중요도 우선순위:
-1. 부도·파산·회생·상폐 확정 또는 신청
-2. 증권사 직접 제재·손실 발생 확정
-3. 기초자산(리츠·펀드) 부실·상폐 신청
-4. 위 해당 없는 나머지 (주의로 강등)
+    urgent  = sorted([a for a in articles if a.get("grade") == "긴급"],
+                     key=lambda x: x["_risk_score"], reverse=True)
+    caution = sorted([a for a in articles if a.get("grade") == "주의"],
+                     key=lambda x: x["_risk_score"], reverse=True)
+    ref     = sorted([a for a in articles if a.get("grade") == "참고"],
+                     key=lambda x: x["_risk_score"], reverse=True)
 
-반드시 JSON 배열만 반환하세요. 마크다운 코드블록 없이 순수 JSON만.
-형식: [{{"id": 유지할id}}, ...] — 긴급 유지할 상위 3건 id만 포함
+    result = []
 
-뉴스 목록:
-{numbered}"""
+    # 긴급 — 상위 2건 유지, 나머지 주의로 강등
+    for i, a in enumerate(urgent):
+        if i < GRADE_LIMITS["긴급"]:
+            result.append(a)
+        else:
+            a["grade"] = "주의"
+            a["customer_notice"] = None
+            caution.append(a)
+            print(f"  [강등] 긴급→주의: {a['title'][:35]}")
 
-    try:
-        res = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 200,
-                "temperature": 0.0,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=15,
-        )
-        res.raise_for_status()
-        payload = res.json()
-        content = payload.get("content", [])
-        raw = content[0].get("text", "").strip() if content else ""
-        if not raw:
-            return articles
-        raw = raw.replace("```json", "").replace("```", "").strip()
-        start_idx = raw.find("[")
-        end_idx = raw.rfind("]") + 1
-        raw = raw[start_idx:end_idx]
-        keep_ids = {item["id"] for item in json.loads(raw)}
+    # 주의 — 상위 3건 유지, 나머지 참고로 강등
+    caution_sorted = sorted(caution, key=lambda x: x.get("_ai_confidence") or 0, reverse=True)
+    for i, a in enumerate(caution_sorted):
+        if i < GRADE_LIMITS["주의"]:
+            result.append(a)
+        else:
+            a["grade"] = "참고"
+            ref.append(a)
+            print(f"  [강등] 주의→참고: {a['title'][:35]}")
 
-        result = []
-        for i, a in enumerate(urgent):
-            if (i + 1) in keep_ids:
-                result.append(a)
-            else:
-                a["grade"] = "주의"
-                a["customer_notice"] = None  # 주의로 강등 시 고객 안내 문구 제거
-                result.append(a)
+    # 참고 — 상위 5건만 유지
+    ref_sorted = sorted(ref, key=lambda x: x.get("_ai_confidence") or 0, reverse=True)
+    for i, a in enumerate(ref_sorted):
+        if i < GRADE_LIMITS["참고"]:
+            result.append(a)
+        else:
+            print(f"  [제외] 참고 초과: {a['title'][:35]}")
 
-        print(f"  긴급 유지 {len(keep_ids)}건 / 주의 강등 {len(urgent)-len(keep_ids)}건")
-        return result + others
+    urgent_cnt  = sum(1 for a in result if a.get("grade") == "긴급")
+    caution_cnt = sum(1 for a in result if a.get("grade") == "주의")
+    ref_cnt     = sum(1 for a in result if a.get("grade") == "참고")
+    print(f"  등급 조정 완료 → 긴급 {urgent_cnt}건 / 주의 {caution_cnt}건 / 참고 {ref_cnt}건")
 
-    except Exception as e:
-        print(f"  긴급 강등 오류: {e} — 원본 유지")
-        return articles
+    return result
 
 
 def ai_filter_and_grade(articles: list) -> list:
@@ -890,7 +912,7 @@ def ai_filter_and_grade(articles: list) -> list:
             print(f"  {len(result)}건 이하 — Claude dedup 스킵")
 
     # 긴급 3건 초과 시 중요도 판단 후 주의로 강등
-    result = regrade_urgent(result)
+    result = regrade_by_score(result)
 
     return result
 
