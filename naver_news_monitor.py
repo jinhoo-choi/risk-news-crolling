@@ -896,66 +896,57 @@ def ai_filter_and_grade(articles: list) -> list:
 
 
 def build_exposure_html(entity: str, exposure_data: list, ref_date: str) -> str:
-    """익스포저 현황 HTML 생성 — 매칭 없으면 빈 문자열
-    종목유형 '여신'은 별도 섹션으로 보유현황 아래에 표시
-    """
+    """익스포저 현황 HTML 생성 — 보유현황/여신 각각 독립 행으로 같은 레벨 표시"""
     rows = find_exposure(entity, exposure_data)
     if not rows:
         return ""
-    date_label = f" (기준일: {ref_date})" if ref_date else ""
+    date_label = f"기준일: {ref_date}" if ref_date else ""
 
-    # 보유현황(주식·펀드 등)과 여신 분리
     stock_rows = [r for r in rows if r.get("종목유형","") != "여신"]
     loan_rows  = [r for r in rows if r.get("종목유형","") == "여신"]
 
-    # 보유현황 HTML
-    stock_html = "".join([
-        f'<div style="font-size:13px;color:#1e293b;margin-bottom:3px;">'
-        f'<span style="font-weight:bold;">{r.get("종목명","")}</span>'
-        f' ({r.get("종목유형","")}) : '
-        f'{float(str(r.get("잔고(억)","0")).replace(",","")):,.1f}억원'
-        f' / {int(float(str(r.get("고객수","0")).replace(",",""))):,}명</div>'
-        for r in stock_rows
-    ]) if stock_rows else ""
+    def _fmt_row(r, show_type=True):
+        잔고 = float(str(r.get("잔고(억)","0")).replace(",",""))
+        고객 = int(float(str(r.get("고객수","0")).replace(",","")))
+        type_str = f' <span style="color:#94a3b8;font-size:11px;">({r.get("종목유형","")})</span>' if show_type else ''
+        return (
+            f'<div style="font-size:13px;color:#1e293b;margin-bottom:2px;">'
+            f'<span style="font-weight:bold;">{r.get("종목명","")}</span>{type_str}'
+            f' &nbsp;{잔고:,.1f}억원 / {고객:,}명</div>'
+        )
 
-    # 여신 잔고 HTML
-    loan_html = ""
-    if loan_rows:
-        loan_items = "".join([
-            f'<div style="font-size:13px;color:#1e293b;margin-bottom:3px;">'
-            f'<span style="font-weight:bold;">{r.get("종목명","")}</span>'
-            f' : {float(str(r.get("잔고(억)","0")).replace(",","")):,.1f}억원'
-            f' / {int(float(str(r.get("고객수","0")).replace(",",""))):,}명</div>'
-            for r in loan_rows
-        ])
-        loan_html = f'''
-        <div style="margin-top:8px;padding-top:8px;border-top:1px dashed #f5c6c6;">
-          <p style="margin:0 0 4px 0;font-size:11px;font-weight:bold;color:#c0392b;letter-spacing:0.3px;">뱅키스 여신 잔고{date_label}</p>
-          {loan_items}
-        </div>'''
+    result = ""
 
-    # 보유현황만 있는 경우 / 둘 다 있는 경우 / 여신만 있는 경우 처리
-    if not stock_rows and loan_rows:
-        # 여신만 있는 경우 — 보유현황 헤더 없이 여신만 표시
-        content_html = f'''
-        <p style="margin:0 0 4px 0;font-size:11px;font-weight:bold;color:#c0392b;letter-spacing:0.3px;">뱅키스 여신 잔고{date_label}</p>
-        {"".join([
-            f'<div style="font-size:13px;color:#1e293b;margin-bottom:3px;">'
-            f'<span style="font-weight:bold;">{r.get("종목명","")}</span>'
-            f' : {float(str(r.get("잔고(억)","0")).replace(",","")):,.1f}억원'
-            f' / {int(float(str(r.get("고객수","0")).replace(",",""))):,}명</div>'
-            for r in loan_rows
-        ])}'''
-    else:
-        content_html = f'''
-        <p style="margin:0 0 4px 0;font-size:11px;font-weight:bold;color:#c0392b;letter-spacing:0.3px;">뱅키스 고객 보유현황{date_label}</p>
-        {stock_html}{loan_html}'''
-
-    return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#fff8f8" style="background:#fff8f8;border-left:3px solid #c0392b;">
-      <tr><td bgcolor="#fff8f8" style="padding:10px 16px;background:#fff8f8;">
-        {content_html}
+    if stock_rows:
+        result += f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-left:4px solid #c0392b;background:#ffffff;">
+      <tr><td style="padding:10px 14px;">
+        <p style="margin:0 0 2px 0;font-size:10px;font-weight:bold;color:#1e293b;letter-spacing:0.5px;">뱅키스 고객 보유현황
+          <span style="font-weight:400;color:#94a3b8;">{date_label}</span></p>
+        <div style="margin-top:5px;">{"".join([_fmt_row(r) for r in stock_rows])}</div>
       </td></tr>
     </table>'''
+
+    if loan_rows:
+        # 여신 잔고 헤더에 종목명 포함 (종목명이 하나면 헤더에, 여럿이면 각 행에)
+        if len(loan_rows) == 1:
+            loan_name = loan_rows[0].get("종목명", "")
+            loan_header = f'{loan_name} 여신 잔고'
+            loan_잔고 = float(str(loan_rows[0].get("잔고(억)","0")).replace(",",""))
+            loan_고객 = int(float(str(loan_rows[0].get("고객수","0")).replace(",","")))
+            loan_body = f'<div style="font-size:13px;color:#1e293b;margin-top:5px;">{loan_잔고:,.1f}억원 / {loan_고객:,}명</div>'
+        else:
+            loan_header = '여신 잔고'
+            loan_body = f'<div style="margin-top:5px;">{"".join([_fmt_row(r, show_type=False) for r in loan_rows])}</div>'
+
+        result += f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-left:4px solid #c0392b;background:#ffffff;margin-top:1px;">
+      <tr><td style="padding:10px 14px;">
+        <p style="margin:0 0 2px 0;font-size:10px;font-weight:bold;color:#1e293b;letter-spacing:0.5px;">{loan_header}
+          <span style="font-weight:400;color:#94a3b8;">{date_label}</span></p>
+        {loan_body}
+      </td></tr>
+    </table>'''
+
+    return result
 
 
 def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '', exposure_data: dict = None, ref_date: str = '', competitor_notices: list = None, today_str: str = ''):
@@ -1007,14 +998,14 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 # AI 키워드 뱃지
                 badges = ""
                 if a.get("keyword"):
-                    badges += f'<span style="display:inline-block;font-size:10px;color:#3b5491;background:#e8f0fe;padding:2px 7px;margin-right:4px;margin-bottom:6px;">{a["keyword"]}</span>'
+                    badges += f'<span style="display:inline-block;font-size:10px;color:#3b5491;background:#e8f0fe;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;">{a["keyword"]}</span>'
                 if a.get("entity") and a.get("entity") != a.get("keyword"):
-                    badges += f'<span style="display:inline-block;font-size:10px;color:#64748b;background:#f1f5f9;padding:2px 7px;margin-right:4px;margin-bottom:6px;">{a["entity"]}</span>'
+                    badges += f'<span style="display:inline-block;font-size:10px;color:#64748b;background:#f1f5f9;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;">{a["entity"]}</span>'
 
                 if grade == "주의":
                     # 주의 압축 카드 — 제목 + 대응방안만
                     rows += f'''
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:6px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:10px;">
           <tr>
             <td style="padding:10px 18px;">
               {f"<p style='margin:0 0 4px 0;'>{badges}</p>" if badges else ""}
@@ -1025,7 +1016,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                   <td align="right" style="font-size:11px;color:#94a3b8;">{a.get("pub_str","")}</td>
                 </tr>
               </table>
-              {f'<p style="margin:0 0 2px 0;font-size:11px;font-weight:bold;color:{gs["label_color"]};">대응방안</p><p style="margin:0;font-size:13px;color:#1e293b;line-height:1.5;">{a["action"]}</p>' if a.get("action") else ""}
+              {f'<div style="margin-top:8px;padding:8px 10px;background:#fff0ee;border-left:3px solid #e57373;"><p style="margin:0 0 2px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{a["action"]}</p></div>' if a.get("action") else ""}
               {build_exposure_html(a.get("entity",""), exposure_data or {}, ref_date)}
             </td>
           </tr>
@@ -1033,8 +1024,8 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 else:
                     # 긴급 풀카드 — A안 통합 박스
                     exposure_html = build_exposure_html(a.get("entity",""), exposure_data or {}, ref_date)
-                    action_row = f'<tr><td bgcolor="#fff8f8" style="padding:10px 18px;border-bottom:1px dashed {gs["card_border"]};background:#fff8f8;"><p style="margin:0 0 3px 0;font-size:11px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.3px;">대응방안</p><p style="margin:0;font-size:13px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
-                    exposure_row = f'<tr><td style="padding:10px 18px;border-bottom:1px dashed {gs["card_border"]};">{exposure_html}</td></tr>' if exposure_html else ""
+                    action_row = f'<tr><td bgcolor="#fff0ee" style="padding:10px 18px;border-bottom:2px solid {gs["card_border"]};background:#fff0ee;"><p style="margin:0 0 3px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
+                    exposure_row = f'<tr><td style="padding:0;border-bottom:1px solid {gs["card_border"]};">{exposure_html}</td></tr>' if exposure_html else ""
                     notice_text = (a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice","")
                     notice_row = f'<tr><td bgcolor="#eff6ff" style="padding:10px 16px;background:#eff6ff;border-top:1px solid #f5c6c6;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#1d4ed8;">고객케어 안내 추천 문구</span></p><p style="margin:0;font-size:12px;color:#1e3a6e;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
                     bottom_box = f'<tr><td bgcolor="#fff8f8" style="background:#fff8f8;border-top:1px solid {gs["card_border"]};padding:0;"><table width="100%" cellpadding="0" cellspacing="0" border="0">{action_row}{exposure_row}{notice_row}</table></td></tr>' if (action_row or exposure_row or notice_row) else ""
@@ -1094,7 +1085,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
     .desc-p {{ font-size: 12px !important; }}
     .action-p {{ font-size: 13px !important; }}
     .dash-num {{ font-size: 20px !important; }}
-    .grade-header-right {{ display: none !important; }}
+    .grade-header-right {{ font-size: 10px !important; white-space: normal !important; }}
     .ref-date {{ display: none !important; }}
   }}
 </style>
