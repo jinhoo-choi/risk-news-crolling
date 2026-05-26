@@ -1045,7 +1045,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
     GRADE_STYLE = {
         "긴급": {"header_bg":"#fdf0ef","border_left":"#e57373","label_color":"#c0392b","card_bg":"#fff8f8","card_border":"#f5c6c6"},
         "주의": {"header_bg":"#fefce8","border_left":"#f0b429","label_color":"#b7791f","card_bg":"#fffdf0","card_border":"#f5e09a"},
-        "참고": {"header_bg":"#f0faf4","border_left":"#48bb78","label_color":"#276749","card_bg":"#f8fff9","card_border":"#b2dfca"},
+        "참고": {"header_bg":"#f8fafc","border_left":"#94a3b8","label_color":"#475569","card_bg":"#f8fbff","card_border":"#cbd5e1"},
     }
     rows = ""
     GRADE_LIMIT = {"긴급": 999, "주의": 5, "참고": 999}  # 긴급 전건, 주의 5건, 참고 전건
@@ -1073,7 +1073,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         for a in display_items:
             if grade == "참고":
                 rows += f'''
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-left:1px solid {gs["card_border"]};border-right:1px solid {gs["card_border"]};border-bottom:1px solid {gs["card_border"]};background:#fafafa;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;border-left:3px solid #cbd5e1;background:#f8fbff;">
           <tr>
             <td style="padding:7px 16px;font-size:13px;word-break:keep-all;">
               <a href="{_esc(a['url'])}" style="color:#475569;text-decoration:none;line-height:1.5;">{_esc(a['title'])}</a>
@@ -1090,23 +1090,25 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     badges += f'<span style="display:inline-block;font-size:10px;color:#64748b;background:#f1f5f9;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;">{a["entity"]}</span>'
 
                 if grade == "주의":
-                    # 주의 압축 카드 — 제목 + 대응방안만
+                    # 주의 카드 — 긴급과 동일한 행 구조로 정렬
+                    c_exp_html = build_exposure_html(a.get("entity",""), exposure_data or {}, ref_date)
+                    c_action_row = f'<tr><td style="padding:10px 18px;background:#fff0ee;border-top:1px solid {gs["card_border"]};border-bottom:1px solid {gs["card_border"]};border-left:4px solid #c0392b;"><p style="margin:0 0 3px 0;font-size:10px;font-weight:700;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
+                    c_exp_row   = f'<tr><td style="padding:0;">{c_exp_html}</td></tr>' if c_exp_html else ""
                     rows += f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:10px;">
           <tr>
             <td style="padding:10px 18px;">
               {f"<p style='margin:0 0 4px 0;'>{badges}</p>" if badges else ""}
               <a href="{a['url']}" class="title-link caution-title" style="font-weight:bold;font-size:14px;text-decoration:none;color:#1e3a6e;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
-              <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 6px 0;">
+              <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 0 0;">
                 <tr>
                   <td style="font-size:11px;"><a href="{a['url']}" style="color:#3b5491;text-decoration:none;">↗ 기사 보기</a></td>
                   <td align="right" style="font-size:11px;color:#94a3b8;">{a.get("pub_str","")}</td>
                 </tr>
               </table>
-              {f'<div style="margin-top:8px;padding:8px 10px;background:#fff0ee;border-left:3px solid #e57373;"><p style="margin:0 0 2px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{a["action"]}</p></div>' if a.get("action") else ""}
-              {(lambda eh: (a.__setitem__("_has_exposure", True) or eh) if eh else "")(build_exposure_html(a.get("entity",""), exposure_data or {}, ref_date))}
             </td>
           </tr>
+          {c_action_row}{c_exp_row}
         </table>'''
                 else:
                     # 긴급 풀카드 B-4 — 리스크점수 + 뱃지 강화 + 좌측 6px
@@ -1114,22 +1116,27 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     if exposure_html:
                         a["_has_exposure"] = True
                     risk_score = a.get("_risk_score", "")
-                    risk_score_html = f'<div style="text-align:right;"><div style="font-size:9px;color:#94a3b8;margin-bottom:1px;">리스크 점수</div><div style="font-size:13px;font-weight:700;color:#c0392b;">{risk_score:.2f}</div></div>' if risk_score else ""
-                    # 긴급 뱃지 — 흰 글씨 빨간 배경으로 강화
-                    urgent_badges = ""
+                    risk_score_html = f'<div style="text-align:right;"><div style="font-size:9px;color:#94a3b8;margin-bottom:1px;">리스크 점수</div><div style="font-size:13px;font-weight:700;color:#3b5491;">{risk_score:.2f}</div></div>' if risk_score else ""
+                    # 순위 배지 (긴급 카드 내 순서)
+                    urgent_idx = [i for i,x in enumerate(display_items) if x.get("grade")=="긴급"].index(display_items.index(a)) + 1 if a in display_items else 0
+                    rank_badge = f'<span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;background:#c0392b;color:#fff;font-size:10px;font-weight:700;border-radius:50%;margin-right:6px;vertical-align:middle;">#{urgent_idx}</span>' if urgent_idx else ""
+                    exp_badge = ""  # 익스포저 배지 제거
+                    # 긴급 뱃지 — 다크그레이 (빨간 집중은 대응방안 좌측선만)
+                    urgent_badges = rank_badge
                     if a.get("keyword"):
-                        urgent_badges += f'<span style="font-size:11px;background:#c0392b;color:#fff;padding:3px 9px;border-radius:3px;margin-right:5px;font-weight:700;letter-spacing:0.3px;">{a["keyword"]}</span>'
+                        urgent_badges += f'<span style="font-size:11px;background:#1e293b;color:#fff;padding:3px 9px;border-radius:3px;margin-right:5px;font-weight:700;letter-spacing:0.3px;">{a["keyword"]}</span>'
                     if a.get("entity") and a.get("entity") != a.get("keyword"):
                         urgent_badges += f'<span style="font-size:10px;background:#f1f5f9;color:#475569;padding:2px 7px;border-radius:3px;font-weight:600;">{a["entity"]}</span>'
+                    urgent_badges += exp_badge
                     action_row = f'<tr><td bgcolor="#fff0ee" style="padding:10px 18px;border-bottom:2px solid {gs["card_border"]};background:#fff0ee;border-left:4px solid #c0392b;"><p style="margin:0 0 3px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
                     exposure_row = f'<tr><td style="padding:0;border-bottom:1px solid {gs["card_border"]};">{exposure_html}</td></tr>' if exposure_html else ""
                     notice_text = (a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice","")
                     notice_row = f'<tr><td bgcolor="#eff6ff" style="padding:10px 16px;background:#eff6ff;border-top:1px solid #f5c6c6;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#1d4ed8;">고객케어 안내 추천 문구</span></p><p style="margin:0;font-size:12px;color:#1e3a6e;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
                     bottom_box = f'<tr><td bgcolor="#fff8f8" style="background:#fff8f8;border-top:1px solid {gs["card_border"]};padding:0;"><table width="100%" cellpadding="0" cellspacing="0" border="0">{action_row}{exposure_row}{notice_row}</table></td></tr>' if (action_row or exposure_row or notice_row) else ""
                     rows += f'''
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;border-left:6px solid #c0392b;background:{gs["card_bg"]};margin-bottom:10px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:10px;">
           <tr>
-            <td bgcolor="#fff8f8" style="padding:12px 16px;background:#fff8f8;border-bottom:1px solid #f5c6c6;">
+            <td bgcolor="#fff8f8" style="padding:14px 18px;background:#fff8f8;border-bottom:1px solid #f5c6c6;">
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:8px;">
                 <tr>
                   <td>{f"{urgent_badges}" if urgent_badges else ""}</td>
@@ -1139,7 +1146,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
               <a href="{a['url']}" class="title-link" style="font-weight:700;font-size:15px;text-decoration:none;color:#1e293b;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:5px 0 8px 0;">
                 <tr>
-                  <td style="font-size:12px;"><a href="{a['url']}" style="color:#c0392b;text-decoration:none;font-weight:600;">↗ 기사 보기</a></td>
+                  <td style="font-size:12px;"><a href="{a['url']}" style="color:#3b5491;text-decoration:none;font-weight:500;">↗ 기사 보기</a></td>
                   <td align="right" style="font-size:11px;color:#94a3b8;">{a.get("pub_str","")}</td>
                 </tr>
               </table>
