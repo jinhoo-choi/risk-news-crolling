@@ -71,7 +71,7 @@ jobs:
             pip-${{ runner.os }}-
 
       - name: 라이브러리 설치
-        run: pip install requests beautifulsoup4 pandas rapidfuzz
+        run: pip install requests beautifulsoup4 pandas rapidfuzz json-repair
 
       - name: 뉴스 크롤링 & AI 필터링 & 이메일 발송
         env:
