@@ -42,6 +42,10 @@ SEEN_FILE = "seen_news.json"
 EXPOSURE_FILE = "exposure_data.csv"
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
+# 중복 제거 유사도 임계값 — 운영 중 조정 가능
+TITLE_SIM_THRESHOLD = 0.92  # 제목 유사도 (연합뉴스 재인용 대응)
+DESC_SIM_THRESHOLD  = 0.76  # 본문 요약 유사도 (언론사 copy 대응)
+
 # ─────────────────────────────────────────────
 
 
@@ -149,7 +153,7 @@ def build_summary_html(ai_summary: str) -> str:
             return ""
         content_html = "<br>".join(items) if items else ""
         return f"""<div style="margin-bottom:10px;">
-          <p style="margin:0 0 3px 0;font-size:11px;font-weight:700;color:#3b5491;letter-spacing:0.3px;">{label}</p>
+          <p style="margin:0 0 3px 0;font-size:11px;font-weight:700;color:#334155;letter-spacing:0.3px;">{label}</p>
           <p style="margin:0;font-size:12px;color:#334155;line-height:1.7;">{content_html}</p>
         </div>"""
 
@@ -165,7 +169,7 @@ def build_summary_html(ai_summary: str) -> str:
 
     rows_html += flush_row(current_label, current_items)
 
-    return f"""<p style="margin:0 0 10px 0;font-size:13px;font-weight:bold;color:#3b5491;letter-spacing:0.3px;">AI 분석 요약</p>
+    return f"""<p style="margin:0 0 10px 0;font-size:13px;font-weight:bold;color:#334155;letter-spacing:0.3px;">AI 분석 요약</p>
       <div>{rows_html}</div>"""
 
 
@@ -476,7 +480,7 @@ TITLE_ONLY_PATTERNS = [
     "목표달성", "수주", "계약체결", "MOU", "협약",
     "순매수", "순매도", "외국인매수", "외국인매도", "거래대금",
     "부고", "인사", "승진", "선임", "취임", "퇴임",
-    "경고음", "경고등", "빨간불", "황신호", "신호탄", "뇌관",
+    "경고음", "빨간불", "신호탄",  # 경고등·황신호·뇌관은 실제 리스크 기사에 등장 가능해 제외
     "(完)", "(완)", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩",
     "현직이 푸는", "전문가가 보는", "기자가 간다",
     "후보", "공약", "선거", "시의원", "구의원", "도의원", "국회의원", "시장 출마", "당선",
@@ -548,7 +552,11 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 5. 반대매매 실제 급증·역대 최대 등 수치 확정 또는 신용융자 한도 전면 중단 시행
 6. 한국투자증권이 직접 언급된 기사로 고객 피해·법적 제재·금전 손실 발생
 
-위 6가지 중 하나에도 해당하지 않으면 무조건 relevant:false.
+7. 직접 손실은 미확정이나 증권사 익스포저 확대 가능성이 높은 조기징후
+   (감사의견 거절 예상·차환 실패 우려·PF 만기 연장 실패·대규모 미청약·대주주 횡령 배임 의혹)
+   → relevant:true 가능, grade는 반드시 "참고"
+
+위 7가지 중 하나에도 해당하지 않으면 무조건 relevant:false.
 모호하거나 확신이 없으면 relevant:false.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -579,6 +587,8 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 ❌ relevant:false | "현직이 푸는 사모펀드 환매중단 사태 3(完)" → 연재 칼럼, 직접 손실 사건 아님
 ❌ relevant:false | "세제 40% 공제 내세운 국민성장펀드…광풍 뒤 숨은 리스크" → 리스크 우려·분석, 직접 손실 미확정
 ❌ relevant:false | "[롯데건설 PF 점검] 홈플러스 후순위 1조 시한폭탄" → 시리즈 기획, 이미 알려진 사건 반복 분석
+✅ relevant:true  | 참고 | "OO건설 ABCP 차환 실패 우려…만기 3주 앞두고 미매각" → 기준7 (차환 실패 조기징후)
+✅ relevant:true  | 참고 | "XX리츠 감사의견 거절 가능성…내달 감사보고서 제출" → 기준7 (감사의견 거절 조기징후)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [등급 기준] — relevant:true인 경우만 적용
@@ -598,8 +608,9 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
   - PF·채권 부실 징후 첫 보도 (기존 알려진 사건 반복 아닌 것)
   ※ 이미 알려진 사건의 반복 보도·심층 분석·칼럼은 주의에서도 제외
 
-참고 (업황 파악용):
+참고 (업황 파악용 + 조기징후):
   - 직접 손실 없으나 모니터링 필요한 동향
+  - 손실 미확정이나 증권사 익스포저 확대 가능성 있는 조기징후 (기준7 해당)
 
 
 [매우 중요 — 핵심 주제 판단]
@@ -785,7 +796,7 @@ def dedup_deterministic(articles: list) -> list:
         # 1단계: 제목 유사도 (0.95 이상) + 동일 entity 조건 결합
         #         entity 다른 기사는 유사도 높아도 제거하지 않음
         for existing_norm, existing_entity in zip(seen_norms, seen_entities):
-            if _ratio(title_norm, existing_norm) >= 0.95:
+            if _ratio(title_norm, existing_norm) >= TITLE_SIM_THRESHOLD:
                 if not entity or not existing_entity or entity == existing_entity:
                     matched = True
                     break
@@ -794,7 +805,7 @@ def dedup_deterministic(articles: list) -> list:
         if not matched and combo and combo in seen_combos:
             existing_desc = seen_combos[combo]
             if desc_norm and existing_desc:
-                if _ratio(desc_norm, existing_desc) >= 0.70:
+                if _ratio(desc_norm, existing_desc) >= DESC_SIM_THRESHOLD - 0.06:
                     matched = True
             else:
                 matched = True
@@ -802,7 +813,7 @@ def dedup_deterministic(articles: list) -> list:
         # 3단계: desc 유사도 (0.80 이상)
         if not matched and desc_norm and len(desc_norm) > 20:
             for existing_desc in seen_descs:
-                if _ratio(desc_norm, existing_desc) >= 0.80:
+                if _ratio(desc_norm, existing_desc) >= DESC_SIM_THRESHOLD:
                     matched = True
                     break
 
@@ -1006,9 +1017,9 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         sections[a["grade"]].append(a)
 
     GRADE_STYLE = {
-        "긴급": {"header_bg":"#fdf0ef","border_left":"#e57373","label_color":"#c0392b","card_bg":"#fff8f8","card_border":"#f5c6c6"},
-        "주의": {"header_bg":"#fefce8","border_left":"#f0b429","label_color":"#b7791f","card_bg":"#fffdf0","card_border":"#f5e09a"},
-        "참고": {"header_bg":"#f8fafc","border_left":"#94a3b8","label_color":"#475569","card_bg":"#f8fbff","card_border":"#cbd5e1"},
+        "긴급": {"header_bg":"#fafafa","border_left":"#ef4444","label_color":"#dc2626","card_bg":"#ffffff","card_border":"#fecaca"},
+        "주의": {"header_bg":"#fafafa","border_left":"#f59e0b","label_color":"#b45309","card_bg":"#ffffff","card_border":"#fde68a"},
+        "참고": {"header_bg":"#f8fafc","border_left":"#94a3b8","label_color":"#475569","card_bg":"#f8fafc","card_border":"#e2e8f0"},
     }
     rows = ""
     GRADE_LIMIT = {"긴급": 999, "주의": 5, "참고": 999}  # 긴급 전건, 주의 5건, 참고 전건
@@ -1036,12 +1047,12 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         for a in display_items:
             if grade == "참고":
                 rows += f'''
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;border-left:3px solid #cbd5e1;background:#f8fbff;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:#f8fbff;">
           <tr>
-            <td style="padding:7px 16px;font-size:13px;word-break:keep-all;">
-              <a href="{_esc(a['url'])}" style="color:#475569;text-decoration:none;line-height:1.5;">{_esc(a['title'])}</a>
+            <td style="padding:5px 14px;font-size:12px;word-break:keep-all;color:#64748b;">
+              · <a href="{_esc(a['url'])}" style="color:#64748b;text-decoration:none;">{_esc(a['title'][:55])}{"..." if len(a['title'])>55 else ""}</a>
+              <span style="font-size:10px;color:#94a3b8;margin-left:6px;">{a.get("pub_str","").split("(")[0].strip() if a.get("pub_str") else ""}</span>
             </td>
-            <td align="right" valign="middle" style="padding:7px 16px 7px 4px;font-size:11px;color:#94a3b8;white-space:nowrap;">{a.get("pub_str","")}</td>
           </tr>
         </table>'''
             else:
@@ -1055,17 +1066,17 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 if grade == "주의":
                     # 주의 카드 — 긴급과 동일한 구조
                     c_exp_html = build_exposure_html(a.get("entity",""), exposure_data or {}, ref_date, border_color=gs["border_left"])
-                    c_action_row = f'<tr><td style="padding:10px 18px;background:#fff0ee;border-top:1px solid {gs["card_border"]};border-bottom:1px solid {gs["card_border"]};border-left:4px solid {gs["border_left"]};"><p style="margin:0 0 3px 0;font-size:10px;font-weight:700;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
+                    c_action_row = f'<tr><td style="padding:8px 14px;background:#fff0ee;border-top:1px solid {gs["card_border"]};border-bottom:1px solid {gs["card_border"]};border-left:4px solid {gs["border_left"]};"><p style="margin:0 0 3px 0;font-size:10px;font-weight:700;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
                     c_exp_row   = f'<tr><td style="padding:0;">{c_exp_html}</td></tr>' if c_exp_html else ""
                     rows += f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:10px;">
           <tr>
-            <td style="padding:10px 18px;border-bottom:1px solid {gs["card_border"]};">
+            <td style="padding:10px 14px;border-bottom:1px solid {gs["card_border"]};">
               {f"<p style='margin:0 0 4px 0;'>{badges}</p>" if badges else ""}
-              <a href="{a['url']}" class="title-link caution-title" style="font-weight:bold;font-size:14px;text-decoration:none;color:#1e3a6e;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
+              <a href="{a['url']}" class="title-link caution-title" style="font-weight:bold;font-size:14px;text-decoration:none;color:#1e293b;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 0 0;">
                 <tr>
-                  <td style="font-size:11px;"><a href="{a['url']}" style="color:#3b5491;text-decoration:none;">↗ 기사 보기</a></td>
+                  <td style="font-size:11px;"><a href="{a['url']}" style="color:#475569;text-decoration:none;">↗ 기사 보기</a></td>
                   <td align="right" style="font-size:11px;color:#94a3b8;">{a.get("pub_str","")}</td>
                 </tr>
               </table>
@@ -1080,30 +1091,33 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                         a["_has_exposure"] = True
                     risk_score = a.get("_risk_score", "")
                     if risk_score:
-                        bar_pct = int(risk_score * 10)  # 10점 만점 → %
+                        filled = int(risk_score)        # 채워진 블록 수 (0~10)
+                        empty  = 10 - filled
+                        bar_str = "█" * filled + "░" * empty
                         risk_score_html = (
-                            f'<div style="text-align:right;min-width:80px;">'
-                            f'<div style="font-size:9px;color:#94a3b8;margin-bottom:3px;">리스크 점수</div>'
-                            f'<div style="font-size:13px;font-weight:700;color:#c0392b;margin-bottom:4px;">{risk_score:.1f} <span style="font-size:9px;color:#94a3b8;font-weight:400;">/ 10</span></div>'
-                            f'<div style="background:#fee2e2;border-radius:2px;height:3px;width:80px;">'
-                            f'<div style="background:#c0392b;height:3px;border-radius:2px;width:{bar_pct}%;"></div>'
-                            f'</div></div>'
+                            f'<div style="text-align:right;min-width:90px;">'
+                            f'<div style="font-size:9px;color:#94a3b8;margin-bottom:2px;">리스크 점수</div>'
+                            f'<div style="font-size:13px;font-weight:700;color:#c0392b;margin-bottom:2px;">{risk_score:.1f}<span style="font-size:9px;color:#94a3b8;font-weight:400;"> / 10</span></div>'
+                            f'<div style="font-size:9px;color:#c0392b;letter-spacing:1px;font-family:monospace;">{bar_str}</div>'
+                            f'</div>'
                         )
                     else:
                         risk_score_html = ""
-                    # B. rank badge 제거 / C. keyword badge 제거 — entity만 표시
+                    # keyword + entity 뱃지
                     urgent_badges = ""
-                    if a.get("entity"):
-                        urgent_badges = f'<span style="font-size:10px;background:#f1f5f9;color:#475569;padding:2px 7px;border-radius:3px;font-weight:600;">{a["entity"]}</span>'
-                    action_row = f'<tr><td bgcolor="#fff0ee" style="padding:10px 18px;border-bottom:2px solid {gs["card_border"]};background:#fff0ee;border-left:4px solid #c0392b;"><p style="margin:0 0 3px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
+                    if a.get("keyword"):
+                        urgent_badges += f'<span style="font-size:10px;background:#e8f0fe;color:#3b5491;padding:2px 7px;border-radius:3px;margin-right:4px;font-weight:600;">{a["keyword"]}</span>'
+                    if a.get("entity") and a.get("entity") != a.get("keyword"):
+                        urgent_badges += f'<span style="font-size:10px;background:#f1f5f9;color:#475569;padding:2px 7px;border-radius:3px;font-weight:600;">{a["entity"]}</span>'
+                    action_row = f'<tr><td bgcolor="#fef2f2" style="padding:8px 14px;border-bottom:1px solid {gs["card_border"]};background:#fef2f2;border-left:4px solid #ef4444;"><p style="margin:0 0 3px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
                     exposure_row = f'<tr><td style="padding:0;border-bottom:1px solid {gs["card_border"]};">{exposure_html}</td></tr>' if exposure_html else ""
                     notice_text = (a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice","")
-                    notice_row = f'<tr><td bgcolor="#eff6ff" style="padding:10px 16px;background:#eff6ff;border-top:1px solid #f5c6c6;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#1d4ed8;">고객케어 안내 추천 문구</span></p><p style="margin:0;font-size:12px;color:#1e3a6e;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
+                    notice_row = f'<tr><td bgcolor="#f8fafc" style="padding:8px 14px;background:#f8fafc;border-top:1px solid #e2e8f0;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#334155;">고객케어 안내 추천 문구</span></p><p style="margin:0;font-size:12px;color:#334155;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
                     bottom_box = f'<tr><td bgcolor="#fff8f8" style="background:#fff8f8;border-top:1px solid {gs["card_border"]};padding:0;"><table width="100%" cellpadding="0" cellspacing="0" border="0">{action_row}{exposure_row}{notice_row}</table></td></tr>' if (action_row or exposure_row or notice_row) else ""
                     rows += f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:10px;">
           <tr>
-            <td bgcolor="#fff8f8" style="padding:14px 18px;background:#fff8f8;border-bottom:1px solid #f5c6c6;">
+            <td bgcolor="#fff8f8" style="padding:10px 14px;background:#fff8f8;border-bottom:1px solid #f5c6c6;">
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:8px;">
                 <tr>
                   <td>{f"{urgent_badges}" if urgent_badges else ""}</td>
@@ -1113,11 +1127,11 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
               <a href="{a['url']}" class="title-link" style="font-weight:700;font-size:15px;text-decoration:none;color:#1e293b;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:5px 0 8px 0;">
                 <tr>
-                  <td style="font-size:12px;"><a href="{a['url']}" style="color:#3b5491;text-decoration:none;font-weight:500;">↗ 기사 보기</a></td>
+                  <td style="font-size:12px;"><a href="{a['url']}" style="color:#475569;text-decoration:none;font-weight:500;">↗ 기사 보기</a></td>
                   <td align="right" style="font-size:11px;color:#94a3b8;">{a.get("pub_str","")}</td>
                 </tr>
               </table>
-              {f'<p style="margin:0;font-size:12px;color:#64748b;line-height:1.6;word-break:keep-all;">{_esc(a["desc"])}</p>' if a.get("desc") else ""}
+              {f'<p style="margin:0;font-size:11px;color:#94a3b8;line-height:1.6;word-break:keep-all;">{_esc(a["desc"])}</p>' if a.get("desc") else ""}
             </td>
           </tr>
           {bottom_box}
@@ -1166,21 +1180,21 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
   }}
 </style>
 </head>
-<body style="margin:0;padding:0;background:#f4f6f9;font-family:'Apple SD Gothic Neo','맑은 고딕',Arial,sans-serif;">
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f6f9;">
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:'Apple SD Gothic Neo','Malgun Gothic',Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f1f5f9;">
 <tr><td align="center" class="outer" style="padding:16px;">
 <table width="640" cellpadding="0" cellspacing="0" border="0" class="main" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
 
   <!-- 헤더 H-3 -->
   <tr>
-    <td class="header-td" style="background:#3b5491;padding:18px 26px 14px;">
+    <td class="header-td" style="background:#1e293b;padding:18px 26px 14px;">
       <!-- 타이틀 -->
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:12px;">
         <tr>
           <td valign="middle">
             <p style="margin:0 0 4px 0;font-size:18px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇</p>
-            <p style="margin:0 0 3px 0;font-size:10px;color:#c8d8f0;">Powered by Claude AI</p>
-            <p style="margin:0;font-size:12px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (KST)</p>
+            <p style="margin:0 0 3px 0;font-size:10px;color:#cbd5e1;">Powered by Claude AI</p>
+            <p style="margin:0;font-size:12px;color:#cbd5e1;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (KST)</p>
           </td>
         </tr>
       </table>
@@ -1188,44 +1202,44 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
       <div style="margin-bottom:12px;">
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:4px;">
           <tr>
-            <td style="font-size:11px;color:#c8d8f0;">수집 {total_count}건</td>
+            <td style="font-size:11px;color:#cbd5e1;">수집 {total_count}건</td>
             <td align="right" style="font-size:11px;color:#6ee7b7;font-weight:600;">{len(articles)}건 선별 ({round((1 - len(articles)/total_count)*100) if total_count else 0}% 필터링)</td>
           </tr>
         </table>
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#1e3370;border-radius:3px;overflow:hidden;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0f172a;border-radius:3px;overflow:hidden;">
           <tr>
-            <td width="{max(1, round(len(sections["긴급"])/total_count*100)) if total_count else 1}%" style="background:#ff6b6b;padding:3px 0;"></td>
-            <td width="{max(1, round(len(sections["주의"])/total_count*100)) if total_count else 1}%" style="background:#fbbf24;padding:3px 0;"></td>
-            <td width="{max(1, round(len(sections["참고"])/total_count*100)) if total_count else 1}%" style="background:#6ee7b7;padding:3px 0;"></td>
+            <td width="{max(1, round(len(sections["긴급"])/total_count*100)) if total_count else 1}%" style="background:#ef4444;padding:3px 0;"></td>
+            <td width="{max(1, round(len(sections["주의"])/total_count*100)) if total_count else 1}%" style="background:#f59e0b;padding:3px 0;"></td>
+            <td width="{max(1, round(len(sections["참고"])/total_count*100)) if total_count else 1}%" style="background:#94a3b8;padding:3px 0;"></td>
             <td style="background:#1e3370;padding:3px 0;"></td>
           </tr>
         </table>
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:4px;">
           <tr>
-            <td style="font-size:10px;color:#ff6b6b;">■ 긴급 {len(sections["긴급"])}</td>
-            <td style="font-size:10px;color:#fbbf24;">■ 주의 {len(sections["주의"])}</td>
-            <td style="font-size:10px;color:#6ee7b7;">■ 참고 {len(sections["참고"])}</td>
-            <td align="right" style="font-size:10px;color:#4a6099;">■ 필터링 {total_count - len(articles)}</td>
+            <td style="font-size:10px;color:#ef4444;">■ 긴급 {len(sections["긴급"])}</td>
+            <td style="font-size:10px;color:#f59e0b;">■ 주의 {len(sections["주의"])}</td>
+            <td style="font-size:10px;color:#94a3b8;">■ 참고 {len(sections["참고"])}</td>
+            <td align="right" style="font-size:10px;color:#475569;">■ 필터링 {total_count - len(articles)}</td>
           </tr>
         </table>
       </div>
       <!-- 대시보드 -->
-      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#2d4278;">
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0f172a;">
         <tr>
-          <td width="33%" align="center" style="padding:10px 8px;border-right:1px solid #4a6099;">
-            <p class="dash-num" style="margin:0 0 1px 0;font-size:26px;font-weight:bold;color:#ff6b6b;">{len(sections['긴급'])}</p>
-            <p style="margin:0 0 2px 0;font-size:12px;color:#d0dcf0;">긴급</p>
-            <p style="margin:0;font-size:10px;color:#7a9abf;">당일 확인</p>
+          <td width="33%" align="center" style="padding:10px 0;border-right:1px solid #1e3a5f;">
+            <p class="dash-num" style="margin:0 0 1px 0;font-size:26px;font-weight:bold;color:#ef4444;min-width:32px;display:block;">{len(sections['긴급'])}</p>
+            <p style="margin:0 0 2px 0;font-size:12px;color:#cbd5e1;">긴급</p>
+            <p style="margin:0;font-size:10px;color:#64748b;">당일 확인</p>
           </td>
-          <td width="33%" align="center" style="padding:10px 8px;border-right:1px solid #4a6099;">
-            <p class="dash-num" style="margin:0 0 1px 0;font-size:26px;font-weight:bold;color:#fbbf24;">{len(sections['주의'])}</p>
-            <p style="margin:0 0 2px 0;font-size:12px;color:#d0dcf0;">주의</p>
-            <p style="margin:0;font-size:10px;color:#7a9abf;">모니터링</p>
+          <td width="33%" align="center" style="padding:10px 0;border-right:1px solid #1e3a5f;">
+            <p class="dash-num" style="margin:0 0 1px 0;font-size:26px;font-weight:bold;color:#f59e0b;min-width:32px;display:block;">{len(sections['주의'])}</p>
+            <p style="margin:0 0 2px 0;font-size:12px;color:#cbd5e1;">주의</p>
+            <p style="margin:0;font-size:10px;color:#64748b;">모니터링</p>
           </td>
-          <td width="34%" align="center" style="padding:10px 8px;">
-            <p class="dash-num" style="margin:0 0 1px 0;font-size:26px;font-weight:bold;color:#6ee7b7;">{len(sections['참고'])}</p>
-            <p style="margin:0 0 2px 0;font-size:12px;color:#d0dcf0;">참고</p>
-            <p style="margin:0;font-size:10px;color:#7a9abf;">파악용</p>
+          <td width="34%" align="center" style="padding:10px 0;">
+            <p class="dash-num" style="margin:0 0 1px 0;font-size:26px;font-weight:bold;color:#94a3b8;min-width:32px;display:block;">{len(sections['참고'])}</p>
+            <p style="margin:0 0 2px 0;font-size:12px;color:#cbd5e1;">참고</p>
+            <p style="margin:0;font-size:10px;color:#64748b;">파악용</p>
           </td>
         </tr>
       </table>
@@ -1233,7 +1247,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
   </tr>
 
   <!-- AI 분석 요약 -->
-  {('<tr><td class="summary-td" style="padding:14px 22px;border-bottom:1px solid #e2e8f0;background:#f8fbff;">' + build_summary_html(ai_summary) + '</td></tr>') if ai_summary else ""}
+  {('<tr><td class="summary-td" style="padding:14px 22px;border-bottom:1px solid #e2e8f0;background:#f8fafc;">' + build_summary_html(ai_summary) + '</td></tr>') if ai_summary else ""}
 
   <!-- 경쟁사 특이사항 -->
   {('<tr><td>' + build_competitor_html(competitor_notices or [], today_str) + '</td></tr>') if competitor_notices else ""}
@@ -1288,8 +1302,8 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
 def build_empty_html(now) -> str:
     return f"""<html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background:#f4f6f9;font-family:'Apple SD Gothic Neo','맑은 고딕',Arial,sans-serif;">
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f6f9;">
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:'Apple SD Gothic Neo','Malgun Gothic',Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f1f5f9;">
 <tr><td align="center" class="outer" style="padding:16px;">
 <table width="640" cellpadding="0" cellspacing="0" border="0" class="main" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
   <tr>
@@ -1297,7 +1311,7 @@ def build_empty_html(now) -> str:
       <p style="margin:0 0 6px 0;font-size:20px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇
         <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">Powered by Claude AI</span>
       </p>
-      <p style="margin:0;font-size:14px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</p>
+      <p style="margin:0;font-size:14px;color:#cbd5e1;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</p>
     </td>
   </tr>
   <tr>
@@ -1613,14 +1627,14 @@ def main():
         # ④ 이전 실행 발송 기사와 제목 유사도 (0.88 이상) — 다음 절차 기사는 제외
         if not matched and t_norm and not is_next_stage(a.get("title",""), a.get("desc","")):
             for prev_t in prev_title_norms:
-                if _sim(t_norm, prev_t) >= 0.90:
+                if _sim(t_norm, prev_t) >= TITLE_SIM_THRESHOLD - 0.02:
                     matched = True; reason = "이전 실행 발송 기사와 제목 유사"
                     break
 
         # ⑤ 이전 실행 발송 기사와 desc 유사도 (0.80 이상) — 다음 절차 기사는 제외
         if not matched and d_norm and len(d_norm) > 20 and not is_next_stage(a.get("title",""), a.get("desc","")):
             for prev_d in prev_desc_norms:
-                if _sim(d_norm, prev_d) >= 0.82:
+                if _sim(d_norm, prev_d) >= DESC_SIM_THRESHOLD:
                     matched = True; reason = "이전 실행 발송 기사와 내용 유사"
                     break
 
@@ -1675,9 +1689,9 @@ def main():
     def generate_action_and_notice(article):
         if article.get("grade") != "긴급":
             return
-        # body 크롤링 실패 시 고객안내 생성 금지 — hallucination 방지
-        if article.get("_body_failed") and not article.get("entity"):
-            print(f"  본문 실패+entity 없음 — 고객안내 생성 스킵: {article.get('title','')[:30]}")
+        # body 크롤링 실패 시 고객안내 생성 금지 — 금융권 민원·분쟁 리스크
+        if article.get("_body_failed"):
+            print(f"  본문 크롤링 실패 — 고객안내 생성 스킵 (hallucination 방지): {article.get('title','')[:30]}")
             return
         body_text = article.get("body", "")
         entity    = article.get("entity", "")
