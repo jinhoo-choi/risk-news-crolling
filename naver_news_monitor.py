@@ -4,6 +4,8 @@ GitHub Actions 전용 버전 / 네이버 검색 API 사용
 """
 
 import requests
+import re
+import random
 from html import escape as _esc
 from bs4 import BeautifulSoup
 import smtplib
@@ -29,9 +31,16 @@ NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
 NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
 KEYWORDS = ["부실 리스크", "신용 리스크", "유동성 리스크", "디폴트 리스크", "기업회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "반대매매 급증", "신용등급 강등", "PF 부실", "미매각", "신용융자", "발행어음", "서킷브레이커", "한국투자증권오류", "한국투자증권 장애", "한국투자증권 접속불가"]
-MAX_NEWS_PER_KEYWORD = 1000  # 최근 6시간 기사 수집 (cutoff_kst 필터로 제한됨)
+MAX_NEWS_PER_KEYWORD = 300   # 네이버 API 페이지 제한 (100건×3페이지)
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
+]
 SEEN_FILE = "seen_news.json"
 EXPOSURE_FILE = "exposure_data.csv"
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 # ─────────────────────────────────────────────
 
@@ -421,10 +430,19 @@ def crawl_naver_news(keyword: str) -> list:
 
 
 def fetch_article_body(url: str) -> str:
-    """기사 본문 크롤링 — 실패 시 빈 문자열 반환"""
+    """기사 본문 크롤링 — Session + 헤더 강화로 WAF 대응"""
     try:
-        res = requests.get(url, timeout=8, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(max_retries=2)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        res = session.get(url, timeout=12, headers={
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Referer": "https://search.naver.com/",
+            "Connection": "keep-alive",
         })
         res.raise_for_status()
         soup = BeautifulSoup(res.text, "html.parser")
@@ -445,52 +463,59 @@ def fetch_article_body(url: str) -> str:
 # ─────────────────────────────────────────────
 # 하드 제외 패턴 — AI 호출 전 사전 필터
 # ─────────────────────────────────────────────
-EXCLUDE_PATTERNS = [
-    # 시황·분석
-    "시황", "마감", "장마감", "마켓", "전망", "분석", "리포트", "보고서",
-    "추천", "목표가", "목표주가", "투자의견", "매수", "매도", "중립",
-    "브리핑", "뉴스브리핑", "이모저모", "소식",
-    # 기획·연재
-    "인터뷰", "기획", "특집", "르포", "칼럼", "오피니언", "사설",
+# 제목에서만 체크 — 오탐 위험 낮은 강력 패턴
+TITLE_ONLY_PATTERNS = [
+    "시황", "마감", "장마감", "마켓",
+    "목표가", "목표주가", "투자의견", "매수", "매도", "중립",
+    "브리핑", "뉴스브리핑", "이모저모",
     "특징주", "투자전략", "포트폴리오",
-    # 호재
     "신고가", "급등", "상한가", "흑자전환", "실적개선", "호실적",
     "목표달성", "수주", "계약체결", "MOU", "협약",
-    # 수급·통계
     "순매수", "순매도", "외국인매수", "외국인매도", "거래대금",
-    # 기타
     "부고", "인사", "승진", "선임", "취임", "퇴임",
-    # 칼럼·기자 의견
-    "기자수첩", "기자의 눈", "기자노트", "취재후기", "현장에서",
-    "데스크에서", "editorial", "논설",
-    # 경고·전망성 제목
     "경고음", "경고등", "빨간불", "황신호", "신호탄", "뇌관",
-    # 시리즈·연재 기사
     "(完)", "(완)", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩",
     "현직이 푸는", "전문가가 보는", "기자가 간다",
-    # 선거·정치·공약
-    "후보", "공약", "선거", "의원", "시장 출마", "국회의원", "당선",
-    # 부동산·개발·활용 기사 (회생 기업 부지 재개발 등)
+    "후보", "공약", "선거", "시의원", "구의원", "도의원", "국회의원", "시장 출마", "당선",
     "복합문화", "재개발", "부지 활용", "도시재생", "리모델링",
+]
+
+# 제목+desc 모두 체크 — 비교적 안전한 패턴만
+TEXT_PATTERNS = [
+    "전망", "분석", "리포트", "보고서", "추천",
+    "인터뷰", "기획", "특집", "르포", "칼럼", "오피니언", "사설", "논설",
+    "소식",
+]
+
+# desc에서만 체크하면 오탐 위험 — 기자수첩 등은 제목에만 적용
+TITLE_ONLY_PATTERNS += [
+    "기자수첩", "기자의 눈", "기자노트", "취재후기", "현장에서", "데스크에서",
 ]
 
 EXCLUDE_TITLE_RE_PATTERNS = [
     r"\[단독\].*인터뷰",
     r"\[기획\]",
     r"\[특집\]",
-    r"①|②|③|④|⑤",       # 연재 기사
-    r"^\d+위\s",           # 순위 기사
+    r"①|②|③|④|⑤",
+    r"^\d+위\s",
 ]
 
 def is_hard_excluded(title: str, desc: str = "") -> tuple:
     """하드 제외 패턴 매칭 — (excluded: bool, reason: str) 반환
-    제목 + desc 함께 적용 — 본문 첫 문단까지 커버
+    TITLE_ONLY_PATTERNS: 제목만 검사 (오탐 방지)
+    TEXT_PATTERNS: 제목+desc 검사 (안전한 패턴만)
     """
     import re as _re
+    # 제목 전용 패턴
+    for pat in TITLE_ONLY_PATTERNS:
+        if pat in title:
+            return True, pat
+    # 제목+desc 패턴 (보수적)
     text = title + " " + (desc or "")
-    for pat in EXCLUDE_PATTERNS:
+    for pat in TEXT_PATTERNS:
         if pat in text:
             return True, pat
+    # 정규식 패턴 (제목만)
     for pat in EXCLUDE_TITLE_RE_PATTERNS:
         if _re.search(pat, title):
             return True, pat
@@ -605,12 +630,14 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
   - 리츠·펀드 부실: 기초자산 담보가치 및 선순위 채권 현황 확인
   (relevant=false면 null)
 - entity: 기사의 핵심 기업명 또는 종목명을 공식 명칭 기준으로 1개 추출 (예: 태영건설, 홈플러스, 제이알글로벌리츠, 한화솔루션). 금감원·금융위 등 기관명은 제외하고 기업·종목명만 추출. (relevant=false면 null)
+- event_type: 사건 유형을 아래 중 1개로 분류. (relevant=false면 null)
+  상장폐지 / 거래정지 / 기업회생 / 파산부도 / PF부실 / 신용등급강등 / 반대매매 / 금감원제재 / 시스템장애 / 발행어음부실 / 기타리스크
 반환 형식 예시 (긴급/주의/참고/제외 각 1건):
 [
-  {{"id":1,"relevant":true,"grade":"긴급","reason":"리츠 기초자산 회생신청·손실 확정","confidence":0.97,"action":"해당 리츠 보유 고객 전수 파악 및 금일 내 평가손 산출","entity":"제이알글로벌리츠"}},
-  {{"id":2,"relevant":true,"grade":"주의","reason":"PF 부실 징후·손실 미확정 단계","confidence":0.82,"action":"주 1회 PF 잔액 추이 점검, 연체 발생 시 즉시 대응","entity":"태영건설"}},
-  {{"id":3,"relevant":true,"grade":"참고","reason":"업계 발행어음 증가 동향","confidence":0.71,"action":"동종업계 발행어음 만기 구조 비교, 자사 유동성 비율 점검","entity":"미래에셋증권"}},
-  {{"id":4,"relevant":false,"grade":null,"reason":null,"confidence":0.12,"action":null,"entity":null}}
+  {{"id":1,"relevant":true,"grade":"긴급","reason":"리츠 기초자산 회생신청·손실 확정","confidence":0.97,"action":"해당 리츠 보유 고객 전수 파악 및 금일 내 평가손 산출","entity":"제이알글로벌리츠","event_type":"기업회생"}},
+  {{"id":2,"relevant":true,"grade":"주의","reason":"PF 부실 징후·손실 미확정 단계","confidence":0.82,"action":"주 1회 PF 잔액 추이 점검, 연체 발생 시 즉시 대응","entity":"태영건설","event_type":"PF부실"}},
+  {{"id":3,"relevant":true,"grade":"참고","reason":"업계 발행어음 증가 동향","confidence":0.71,"action":"동종업계 발행어음 만기 구조 비교, 자사 유동성 비율 점검","entity":"미래에셋증권","event_type":"발행어음부실"}},
+  {{"id":4,"relevant":false,"grade":null,"reason":null,"confidence":0.12,"action":null,"entity":null,"event_type":null}}
 ]
 
 뉴스 목록:
@@ -626,12 +653,12 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                     "content-type": "application/json",
                 },
                 json={
-                    "model": "claude-haiku-4-5-20251001",
+                    "model": CLAUDE_MODEL,
                     "max_tokens": 4000,
                     "temperature": 0.0,
                     "messages": [{"role": "user", "content": prompt}],
                 },
-                timeout=30,
+                timeout=60,
             )
             if res.status_code == 429:
                 wait = 60 * (attempt + 1)
@@ -648,12 +675,19 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 raise ValueError("Claude 응답 text 비어있음")
             raw = raw.replace("```json", "").replace("```", "").strip()
             start_idx = raw.find("[")
-            end_idx = raw.rfind("]") + 1
-            if start_idx == -1 or end_idx == 0:
+            end_idx   = raw.rfind("]") + 1
+            if start_idx == -1 or end_idx <= 0:
                 raise ValueError("JSON 배열을 찾을 수 없음")
             raw = raw[start_idx:end_idx]
             try:
-                grades = json.loads(raw)
+                try:
+                    grades = json.loads(raw)
+                except json.JSONDecodeError:
+                    # trailing comma, 설명문 등 Claude 응답 불완전 시 repair
+                    from json_repair import repair_json
+                    repaired = repair_json(raw)
+                    grades = json.loads(repaired)
+                    print(f"  JSON repair 적용됨 (배치 {offset//50+1})")
             except json.JSONDecodeError as je:
                 # salvage 대신 명시적 에러 — retry 루프가 처리
                 raise ValueError(f"JSON 파싱 실패: {je}") from je
@@ -663,10 +697,11 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 info = grade_map.get(i + offset + 1, {})
                 article["_ai_confidence"] = info.get("confidence", None)
                 if info.get("relevant") and info.get("grade"):
-                    article["grade"]  = info["grade"]
-                    article["reason"] = info.get("reason", "")
-                    article["action"] = info.get("action", "")
-                    article["entity"] = info.get("entity", "")
+                    article["grade"]      = info["grade"]
+                    article["reason"]     = info.get("reason", "")
+                    article["action"]     = info.get("action", "")
+                    article["entity"]     = info.get("entity", "")
+                    article["event_type"] = info.get("event_type", "")
                     result.append(article)
             return result
         except Exception as e:
@@ -703,10 +738,21 @@ def dedup_deterministic(articles: list) -> list:
         t = _re.sub(r"[^가-힣a-zA-Z0-9]", "", t)      # 특수문자·공백 제거
         return t.strip()
 
-    seen_norms   = []
-    seen_combos  = {}
-    seen_descs   = []
+    seen_norms    = []
+    seen_entities = []   # entity 조건 결합용
+    seen_combos   = {}
+    seen_descs    = []
     result = []
+
+    # 사건 진행 단계 키워드 — dedup 예외 처리용
+    _NEXT_STAGE = {
+        "가처분","효력정지","집행정지","이의신청","항고","판결",
+        "보류","재개","재상장","거래재개","상장유지",
+        "파산선고","청산","폐업","회생인가","회생계획",
+        "배당","변제","채무조정","추가제재","과징금","검찰고발",
+    }
+    def _is_next_stage_det(title: str) -> bool:
+        return any(kw in title for kw in _NEXT_STAGE)
 
     for a in articles:
         title_norm = normalize(a.get("title", ""))
@@ -715,13 +761,25 @@ def dedup_deterministic(articles: list) -> list:
         keyword    = a.get("keyword", "").strip()
         combo      = (entity, keyword) if entity else None
 
+        # 사건 진행 단계 기사 — 유사도 검사 스킵
+        if _is_next_stage_det(a.get("title", "")):
+            seen_norms.append(title_norm)
+            seen_entities.append(entity)
+            seen_descs.append(desc_norm)
+            if combo:
+                seen_combos[combo] = desc_norm
+            result.append(a)
+            continue
+
         matched = False
 
-        # 1단계: 제목 유사도 (0.93 이상 — 다른 기사 잘못 제거 방지)
-        for existing in seen_norms:
-            if _ratio(title_norm, existing) >= 0.93:
-                matched = True
-                break
+        # 1단계: 제목 유사도 (0.95 이상) + 동일 entity 조건 결합
+        #         entity 다른 기사는 유사도 높아도 제거하지 않음
+        for existing_norm, existing_entity in zip(seen_norms, seen_entities):
+            if _ratio(title_norm, existing_norm) >= 0.95:
+                if not entity or not existing_entity or entity == existing_entity:
+                    matched = True
+                    break
 
         # 2단계: 기업명 + 키워드 동일 조합
         if not matched and combo and combo in seen_combos:
@@ -741,6 +799,7 @@ def dedup_deterministic(articles: list) -> list:
 
         if not matched:
             seen_norms.append(title_norm)
+            seen_entities.append(entity)
             seen_descs.append(desc_norm)
             if combo:
                 seen_combos[combo] = desc_norm
@@ -780,12 +839,12 @@ def dedup_by_title(articles: list) -> list:
                 "content-type": "application/json",
             },
             json={
-                "model": "claude-haiku-4-5-20251001",
+                "model": CLAUDE_MODEL,
                 "max_tokens": 1000,
                 "temperature": 0.0,
                 "messages": [{"role": "user", "content": prompt}],
             },
-            timeout=30,
+            timeout=60,
         )
         res.raise_for_status()
         payload = res.json()
@@ -820,7 +879,7 @@ RISK_PRIORITY = {
 
 def calc_risk_score(article: dict) -> float:
     """리스크 점수 = confidence × 키워드 가중치 + 익스포저 보정"""
-    conf  = article.get("_ai_confidence") or 0.5
+    conf  = article.get("_ai_confidence") or 0.3  # 미반환 시 보수적 기본값
     title = article.get("title", "") + article.get("reason", "")
     # 가장 높은 키워드 가중치 적용
     kw_weight = max(
@@ -862,7 +921,7 @@ def regrade_by_score(articles: list) -> list:
             print(f"  [강등] 긴급→주의: {a['title'][:35]}")
 
     # 주의 — 상위 3건 유지, 나머지 참고로 강등
-    caution_sorted = sorted(caution, key=lambda x: x.get("_ai_confidence") or 0, reverse=True)
+    caution_sorted = sorted(caution, key=lambda x: x.get("_risk_score") or 0, reverse=True)
     for i, a in enumerate(caution_sorted):
         if i < GRADE_LIMITS["주의"]:
             result.append(a)
@@ -872,7 +931,7 @@ def regrade_by_score(articles: list) -> list:
             print(f"  [강등] 주의→참고: {a['title'][:35]}")
 
     # 참고 — 상위 5건만 유지
-    ref_sorted = sorted(ref, key=lambda x: x.get("_ai_confidence") or 0, reverse=True)
+    ref_sorted = sorted(ref, key=lambda x: x.get("_risk_score") or 0, reverse=True)
     for i, a in enumerate(ref_sorted):
         if i < GRADE_LIMITS["참고"]:
             result.append(a)
@@ -893,23 +952,28 @@ def ai_filter_and_grade(articles: list) -> list:
         return []
     result = []
     batch_size = 50
+    ai_fail_count = 0
+    MAX_AI_FAILS = 3  # circuit breaker — 연속 3회 실패 시 중단
     for i in range(0, len(articles), batch_size):
+        if ai_fail_count >= MAX_AI_FAILS:
+            print(f"  ⚠️ AI 연속 {MAX_AI_FAILS}회 실패 — circuit breaker 작동, 필터링 중단")
+            break
         batch = articles[i:i+batch_size]
         print(f"  배치 {i//batch_size+1}/{-(-len(articles)//batch_size)} 처리 중... ({len(batch)}건)")
-        result.extend(ai_filter_batch(batch, offset=i))
-        # rate limit 없으면 딜레이 없이 진행
+        batch_result = ai_filter_batch(batch, offset=i)
+        if not batch_result and batch:  # 배치 결과 없으면 실패 카운트
+            ai_fail_count += 1
+            print(f"  배치 실패 ({ai_fail_count}/{MAX_AI_FAILS})")
+        else:
+            ai_fail_count = 0  # 성공 시 초기화
+            result.extend(batch_result)
         if i + batch_size < len(articles):
-            time.sleep(1)  # 최소 1초만 대기
+            time.sleep(1)
 
     if len(result) > 1:
         print(f"  중복 제거 중... (필터링 후 {len(result)}건)")
         result = dedup_deterministic(result)
-        print(f"  1차 dedup 후 {len(result)}건")
-        if len(result) >= 10:
-            result = dedup_by_title(result)
-            print(f"  최종 중복 제거 후 {len(result)}건")
-        else:
-            print(f"  {len(result)}건 이하 — Claude dedup 스킵")
+        print(f"  dedup 후 {len(result)}건")
 
     # 긴급 3건 초과 시 중요도 판단 후 주의로 강등
     result = regrade_by_score(result)
@@ -1039,7 +1103,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 </tr>
               </table>
               {f'<div style="margin-top:8px;padding:8px 10px;background:#fff0ee;border-left:3px solid #e57373;"><p style="margin:0 0 2px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{a["action"]}</p></div>' if a.get("action") else ""}
-              {build_exposure_html(a.get("entity",""), exposure_data or {}, ref_date)}
+              {(lambda eh: (a.__setitem__("_has_exposure", True) or eh) if eh else "")(build_exposure_html(a.get("entity",""), exposure_data or {}, ref_date))}
             </td>
           </tr>
         </table>'''
@@ -1340,7 +1404,7 @@ def main():
     seen_urls       = load_seen_urls()
     seen_combos     = load_seen_combos()   # 실행 간 중복 사건 방지
     seen_context    = load_seen_context()  # 이전 실행 발송 기사 맥락 (title/desc norms)
-    new_seen_this_run = set()  # 이번 실행에서 신규 수집한 URL만 별도 관리
+    sent_urls = set()  # 실제 발송된 기사 URL만 저장 (크롤링 단계 X)
     new_combos_this_run = set()  # 이번 실행에서 발송된 (entity, keyword) 조합
     raw_articles    = []
 
@@ -1369,22 +1433,22 @@ def main():
             try:
                 keyword, articles = future.result()
                 new = []
+                crawl_seen = set()
                 for article in articles:
-                    if article["url"] not in seen_urls:
+                    if article["url"] not in crawl_seen and article["url"] not in seen_urls:
                         new.append(article)
-                        seen_urls.add(article["url"])
-                        new_seen_this_run.add(article["url"])
+                        crawl_seen.add(article["url"])
                 raw_articles.extend(new)
                 print(f"  [{keyword}] 신규 {len(new)}건")
             except Exception as e:
-                print(f"  크롤링 오류: {e}")
+                print(f"  크롤링 오류 [{futures[future]}]: {e}")
 
     if not raw_articles:
         print("신규 뉴스 없음 — 결과 없음 메일 발송 (특정인만)")
         now = datetime.now(timezone(timedelta(hours=9)))
         subject = f"[리스크 탐지] {now_str_full} 기준 — 신규 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
-        save_seen_urls(new_seen_this_run)
+        save_seen_urls(set())
         return
 
     # 하드 제외룰 적용 — AI 호출 전 사전 필터
@@ -1405,10 +1469,20 @@ def main():
     print(f"\nAI 필터링 중... (총 {len(raw_articles)}건)")
     filtered = ai_filter_and_grade(raw_articles)
     ai_filtered_articles = list(filtered)  # 로그용 AI 통과 기사 저장
+    # exposure_data 먼저 로드 — _has_exposure 플래그 설정 + regrade_by_score 보정용
+    exposure_data = load_exposure_data()
+    for _a in filtered:
+        if find_exposure(_a.get("entity",""), exposure_data):
+            _a["_has_exposure"] = True
     # 실행 간 중복 사건 필터 — combo + 맥락(title/desc) 기반
     import unicodedata as _ud
     import re as _re2
-    from difflib import SequenceMatcher as _SM
+    try:
+        from rapidfuzz import fuzz as _rfuzz
+        def _sim(a, b): return _rfuzz.ratio(a, b) / 100.0
+    except ImportError:
+        from difflib import SequenceMatcher as _SM2
+        def _sim(a, b): return _SM2(None, a, b).ratio()
 
     def _norm(text):
         t = _ud.normalize("NFKC", text or "")
@@ -1433,7 +1507,8 @@ def main():
 
     before_combo = len(filtered)
     filtered_final = []
-    seen_keywords_this_run = set()
+    # seen_keywords_this_run 제거 — 동일 키워드 내 다른 사건 누락 방지
+    # (금양 상폐 + 이화전기 상폐가 같은 "상장폐지" 키워드라도 둘 다 통과해야 함)
     prev_title_norms = seen_context.get("title_norms", [])
     prev_desc_norms  = seen_context.get("desc_norms",  [])
     new_title_norms  = []
@@ -1442,7 +1517,10 @@ def main():
     for a in filtered:
         entity   = a.get("entity", "").strip()
         keyword  = a.get("keyword", "").strip()
-        combo    = (entity, keyword) if entity and keyword else None
+        event_type = a.get("event_type", "").strip()
+        # event_type 있으면 (entity, event_type) — 더 정밀한 사건 구분
+        # 없으면 (entity, keyword) fallback
+        combo    = (entity, event_type) if entity and event_type else                    (entity, keyword) if entity and keyword else None
         kw_only  = ("", keyword) if keyword else None
         t_norm   = _norm(a.get("title", ""))
         d_norm   = _norm(a.get("desc",  ""))
@@ -1460,21 +1538,17 @@ def main():
         if not matched and not entity and kw_only and kw_only in seen_combos:
             matched = True; reason = "동일 키워드 이미 발송"
 
-        # ③ 이번 실행 내 동일 keyword 중복
-        if not matched and keyword and keyword in seen_keywords_this_run:
-            matched = True; reason = "이번 실행 내 동일 키워드 중복"
-
         # ④ 이전 실행 발송 기사와 제목 유사도 (0.88 이상) — 다음 절차 기사는 제외
         if not matched and t_norm and not is_next_stage(a.get("title",""), a.get("desc","")):
             for prev_t in prev_title_norms:
-                if _SM(None, t_norm, prev_t).ratio() >= 0.88:
+                if _sim(t_norm, prev_t) >= 0.90:
                     matched = True; reason = "이전 실행 발송 기사와 제목 유사"
                     break
 
         # ⑤ 이전 실행 발송 기사와 desc 유사도 (0.80 이상) — 다음 절차 기사는 제외
         if not matched and d_norm and len(d_norm) > 20 and not is_next_stage(a.get("title",""), a.get("desc","")):
             for prev_d in prev_desc_norms:
-                if _SM(None, d_norm, prev_d).ratio() >= 0.80:
+                if _sim(d_norm, prev_d) >= 0.82:
                     matched = True; reason = "이전 실행 발송 기사와 내용 유사"
                     break
 
@@ -1483,8 +1557,6 @@ def main():
             continue
 
         filtered_final.append(a)
-        if keyword:
-            seen_keywords_this_run.add(keyword)
         new_title_norms.append(t_norm)
         new_desc_norms.append(d_norm)
 
@@ -1498,10 +1570,9 @@ def main():
         now = datetime.now(timezone(timedelta(hours=9)))
         subject = f"[리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
-        save_seen_urls(new_seen_this_run)
+        save_seen_urls(set())
         return
 
-    exposure_data = load_exposure_data()  # regenerate_action에서 참조하므로 먼저 로드
     print("  본문 크롤링 중... (긴급·주의만)")
     def crawl_body(article):
         # 참고 등급은 본문 불필요 — 속도 개선
@@ -1509,8 +1580,13 @@ def main():
             article["body"] = ""
             return article
         body = fetch_article_body(article["url"])
-        # 본문 크롤링 실패(WAF 차단 등) 시 desc로 fallback
-        article["body"] = body if body else article.get("desc", "")
+        if body:
+            article["body"] = body
+            article["_body_failed"] = False
+        else:
+            # 본문 크롤링 실패 — desc fallback + 플래그 설정
+            article["body"] = article.get("desc", "")
+            article["_body_failed"] = True
         return article
 
     with ThreadPoolExecutor(max_workers=3) as executor:
@@ -1518,8 +1594,8 @@ def main():
         for future in as_completed(futures):
             try:
                 future.result()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  본문 크롤링 오류: {e}")
     # 긴급: action + LMS 통합 생성 (API 2회→1회, 비용 절감)
     # 주의: 1차 AI action 유지
     print("  대응방안·고객안내 생성 중... (긴급만)")
@@ -1545,7 +1621,7 @@ def main():
                     "content-type": "application/json",
                 },
                 json={
-                    "model": "claude-haiku-4-5-20251001",
+                    "model": CLAUDE_MODEL,
                     "max_tokens": 500,
                     "temperature": 0.0,
                     "messages": [{"role": "user", "content": f"""한국투자증권 eBiz본부 리스크 담당자입니다.
@@ -1595,7 +1671,7 @@ def main():
 - 기업명: {entity}
 - 등급: {article['grade']}
 - 제목: {article['title']}
-- 본문: {body_text[:400]}
+- 본문: {body_text[:400]}{" (※ 본문 크롤링 실패 — 제목·요약 기반만 사용, 추측 금지)" if article.get("_body_failed") else ""}
 {f"- eBiz 익스포저: {exp_str}" if exp_str else ""}"""}],
                 },
                 timeout=20,
@@ -1611,16 +1687,16 @@ def main():
                 article["action"] = result["action"]
             if result.get("customer_notice"):
                 article["customer_notice"] = result["customer_notice"]
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  대응방안 생성 오류 ({article.get('title','')[:20]}): {e}")
 
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(generate_action_and_notice, a) for a in filtered]
         for future in as_completed(futures):
             try:
                 future.result()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  대응방안 ThreadPool 오류: {e}")
 
     now = datetime.now(timezone(timedelta(hours=9)))
     today_str = now.strftime("%m월 %d일")
@@ -1637,16 +1713,10 @@ def main():
         ref_date = ""
         print("  익스포저 데이터 없음 — CSV 파일 미확인")
 
-    urgent_count = len([a for a in filtered if a.get("grade") == "긴급"])
     subject = f"[리스크 탐지] {now_str_full} 기준"
     total_count = len(raw_articles) + len(hard_excluded_articles)  # 하드제외 포함 전체 수집 기준
 
     # AI 전체 요약 생성
-    grade_summary = []
-    if len([a for a in filtered if a["grade"]=="긴급"]) > 0:
-        grade_summary.append(f"긴급 {len([a for a in filtered if a['grade']=='긴급'])}건")
-    if len([a for a in filtered if a["grade"]=="주의"]) > 0:
-        grade_summary.append(f"주의 {len([a for a in filtered if a['grade']=='주의'])}건")
     # AI에게 오늘 리스크 성격 요약 요청
     urgent_cnt = len([a for a in filtered if a["grade"]=="긴급"])
     caution_cnt = len([a for a in filtered if a["grade"]=="주의"])
@@ -1664,7 +1734,7 @@ def main():
                     "content-type": "application/json",
                 },
                 json={
-                    "model": "claude-haiku-4-5-20251001",
+                    "model": CLAUDE_MODEL,
                     "max_tokens": 400,
                     "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.\n\n▸ 리스크 성격\n(오늘 전반적인 리스크 흐름을 30자 이내 한 문장)\n\n▸ 주요 포인트\n(담당자가 주목할 핵심 사항을 · 로 구분, 항목당 30자 이내, 최대 3개)\n\n반드시 짧고 핵심만. 문장 늘이지 말 것.\n\n{filtered_titles}"}],
                 },
@@ -1677,13 +1747,18 @@ def main():
     html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary, exposure_data=exposure_data, ref_date=ref_date, competitor_notices=competitor_notices, today_str=today_str)
     send_email(subject, html)
 
-    # 발송된 기사의 (entity, keyword) 조합 저장 — 실행 간 중복 사건 방지
+    # 발송된 기사의 URL + (entity, keyword) 조합 저장
     for a in filtered:
-        entity  = a.get("entity", "").strip()
-        keyword = a.get("keyword", "").strip()
-        if keyword:
-            new_combos_this_run.add((entity, keyword))  # entity 없어도 keyword만으로 저장
-    save_seen_urls(new_seen_this_run, new_combos_this_run,
+        sent_urls.add(a.get("url", ""))   # 실제 발송 URL만 seen 처리
+        entity     = a.get("entity", "").strip()
+        keyword    = a.get("keyword", "").strip()
+        event_type = a.get("event_type", "").strip()
+        # event_type 기반 combo 저장 — 동일 기업 다른 사건 유형 구분
+        if event_type and entity:
+            new_combos_this_run.add((entity, event_type))
+        elif keyword:
+            new_combos_this_run.add((entity, keyword))
+    save_seen_urls(sent_urls, new_combos_this_run,
                    title_norms=new_title_norms, desc_norms=new_desc_norms)
     # 필터링 로그 저장 (튜닝·역추적용)
     save_filter_log(raw_articles, hard_excluded_articles,
