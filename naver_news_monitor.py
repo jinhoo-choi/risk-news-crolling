@@ -203,7 +203,7 @@ def load_seen_urls() -> set:
     now = datetime.now(kst)
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(7)
+        for i in range(24)
     }
     if os.path.exists(SEEN_FILE):
         try:
@@ -230,7 +230,7 @@ def load_seen_combos() -> set:
     now = datetime.now(kst)
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(7)
+        for i in range(24)
     }
     if os.path.exists(SEEN_FILE):
         try:
@@ -256,7 +256,7 @@ def load_seen_context() -> dict:
     now = datetime.now(kst)
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(7)
+        for i in range(24)
     }
     title_norms = []
     desc_norms  = []
@@ -283,7 +283,7 @@ def save_seen_urls(seen: set, combos: set = None, title_norms: list = None, desc
     current_key = now.strftime("%Y-%m-%d %H")
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(7)
+        for i in range(24)
     }
     existing = {}
     if os.path.exists(SEEN_FILE):
@@ -896,19 +896,64 @@ def ai_filter_and_grade(articles: list) -> list:
 
 
 def build_exposure_html(entity: str, exposure_data: list, ref_date: str) -> str:
-    """익스포저 현황 HTML 생성 — 매칭 없으면 빈 문자열"""
+    """익스포저 현황 HTML 생성 — 매칭 없으면 빈 문자열
+    종목유형 '여신'은 별도 섹션으로 보유현황 아래에 표시
+    """
     rows = find_exposure(entity, exposure_data)
     if not rows:
         return ""
     date_label = f" (기준일: {ref_date})" if ref_date else ""
-    items_html = "".join([
-        f'<div style="font-size:13px;color:#1e293b;margin-bottom:3px;"><span style="font-weight:bold;">{row.get("종목명","")}</span> ({row.get("종목유형","")}) : {float(str(row.get("잔고(억)","0")).replace(",","")):,.1f}억원 / {int(float(str(row.get("고객수","0")).replace(",",""))):,}명</div>'
-        for row in rows
-    ])
+
+    # 보유현황(주식·펀드 등)과 여신 분리
+    stock_rows = [r for r in rows if r.get("종목유형","") != "여신"]
+    loan_rows  = [r for r in rows if r.get("종목유형","") == "여신"]
+
+    # 보유현황 HTML
+    stock_html = "".join([
+        f'<div style="font-size:13px;color:#1e293b;margin-bottom:3px;">'
+        f'<span style="font-weight:bold;">{r.get("종목명","")}</span>'
+        f' ({r.get("종목유형","")}) : '
+        f'{float(str(r.get("잔고(억)","0")).replace(",","")):,.1f}억원'
+        f' / {int(float(str(r.get("고객수","0")).replace(",",""))):,}명</div>'
+        for r in stock_rows
+    ]) if stock_rows else ""
+
+    # 여신 잔고 HTML
+    loan_html = ""
+    if loan_rows:
+        loan_items = "".join([
+            f'<div style="font-size:13px;color:#1e293b;margin-bottom:3px;">'
+            f'<span style="font-weight:bold;">{r.get("종목명","")}</span>'
+            f' : {float(str(r.get("잔고(억)","0")).replace(",","")):,.1f}억원'
+            f' / {int(float(str(r.get("고객수","0")).replace(",",""))):,}명</div>'
+            for r in loan_rows
+        ])
+        loan_html = f'''
+        <div style="margin-top:8px;padding-top:8px;border-top:1px dashed #f5c6c6;">
+          <p style="margin:0 0 4px 0;font-size:11px;font-weight:bold;color:#c0392b;letter-spacing:0.3px;">뱅키스 여신 잔고{date_label}</p>
+          {loan_items}
+        </div>'''
+
+    # 보유현황만 있는 경우 / 둘 다 있는 경우 / 여신만 있는 경우 처리
+    if not stock_rows and loan_rows:
+        # 여신만 있는 경우 — 보유현황 헤더 없이 여신만 표시
+        content_html = f'''
+        <p style="margin:0 0 4px 0;font-size:11px;font-weight:bold;color:#c0392b;letter-spacing:0.3px;">뱅키스 여신 잔고{date_label}</p>
+        {"".join([
+            f'<div style="font-size:13px;color:#1e293b;margin-bottom:3px;">'
+            f'<span style="font-weight:bold;">{r.get("종목명","")}</span>'
+            f' : {float(str(r.get("잔고(억)","0")).replace(",","")):,.1f}억원'
+            f' / {int(float(str(r.get("고객수","0")).replace(",",""))):,}명</div>'
+            for r in loan_rows
+        ])}'''
+    else:
+        content_html = f'''
+        <p style="margin:0 0 4px 0;font-size:11px;font-weight:bold;color:#c0392b;letter-spacing:0.3px;">뱅키스 고객 보유현황{date_label}</p>
+        {stock_html}{loan_html}'''
+
     return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#fff8f8" style="background:#fff8f8;border-left:3px solid #c0392b;">
       <tr><td bgcolor="#fff8f8" style="padding:10px 16px;background:#fff8f8;">
-        <p style="margin:0 0 4px 0;font-size:11px;font-weight:bold;color:#c0392b;letter-spacing:0.3px;">뱅키스 고객 보유현황{date_label}</p>
-        {items_html}
+        {content_html}
       </td></tr>
     </table>'''
 
@@ -1324,7 +1369,6 @@ def main():
     if not raw_articles:
         print("신규 뉴스 없음 — 결과 없음 메일 발송 (특정인만)")
         now = datetime.now(timezone(timedelta(hours=9)))
-        now_str = now.strftime("%m월%d일 %H시")
         subject = f"[리스크 탐지] {now_str_full} 기준 — 신규 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
         save_seen_urls(new_seen_this_run)
@@ -1359,6 +1403,21 @@ def main():
         t = _re2.sub(r"[^가-힣a-zA-Z0-9]", "", t)
         return t.strip()
 
+    # 사건 진행 단계 키워드 — 루프 밖에 선언 (매 기사마다 재생성 방지)
+    NEXT_STAGE_KEYWORDS = [
+        "가처분", "효력정지", "집행정지", "이의신청", "항고", "재항고",
+        "취하", "철회", "기각", "인용", "판결",
+        "보류", "재개", "재상장", "거래재개", "상장유지",
+        "파산선고", "청산", "폐업", "법정관리", "회생인가", "회생계획",
+        "배당", "변제", "채무조정", "출자전환",
+        "추가제재", "과징금", "검찰고발", "수사착수",
+        "확정판결", "최종확정", "선고확정",
+    ]
+
+    def is_next_stage(title: str, desc: str) -> bool:
+        text = (title or "") + (desc or "")
+        return any(kw in text for kw in NEXT_STAGE_KEYWORDS)
+
     before_combo = len(filtered)
     filtered_final = []
     seen_keywords_this_run = set()
@@ -1376,21 +1435,6 @@ def main():
         d_norm   = _norm(a.get("desc",  ""))
         matched  = False
         reason   = ""
-
-        # 사건 진행 단계 키워드 — 이게 포함된 기사는 중복이어도 통과
-        NEXT_STAGE_KEYWORDS = [
-            "가처분", "효력정지", "집행정지", "이의신청", "항고", "재항고",
-            "취하", "철회", "기각", "인용", "결정", "확정", "판결",
-            "보류", "유예", "연장", "조건부", "승인",
-            "재개", "재상장", "거래재개", "상장유지",
-            "파산선고", "청산", "폐업", "법정관리", "회생인가", "회생계획",
-            "배당", "변제", "채무조정", "출자전환",
-            "추가제재", "과징금", "검찰고발", "수사착수",
-        ]
-
-        def is_next_stage(title: str, desc: str) -> bool:
-            text = (title or "") + (desc or "")
-            return any(kw in text for kw in NEXT_STAGE_KEYWORDS)
 
         # ① 7시간 내 이미 발송된 (entity+keyword) 조합
         if combo and combo in seen_combos:
@@ -1439,7 +1483,6 @@ def main():
     if not filtered:
         print("AI 필터링 결과 없음 — 결과 없음 메일 발송 (특정인만)")
         now = datetime.now(timezone(timedelta(hours=9)))
-        now_str = now.strftime("%m월%d일 %H시")
         subject = f"[리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
         save_seen_urls(new_seen_this_run)
@@ -1568,7 +1611,6 @@ def main():
 
     now = datetime.now(timezone(timedelta(hours=9)))
     today_str = now.strftime("%m월 %d일")
-    now_str_full = now.strftime("%m월 %d일 %H시 %M분")
     # exposure_data는 본문 크롤링 전에 이미 로드됨
     competitor_notices = load_competitor_notices()
     if competitor_notices:
@@ -1582,10 +1624,9 @@ def main():
         ref_date = ""
         print("  익스포저 데이터 없음 — CSV 파일 미확인")
 
-    now_str = now.strftime("%m월%d일 %H시")
     urgent_count = len([a for a in filtered if a.get("grade") == "긴급"])
     subject = f"[리스크 탐지] {now_str_full} 기준"
-    total_count = len(raw_articles)
+    total_count = len(raw_articles) + len(hard_excluded_articles)  # 하드제외 포함 전체 수집 기준
 
     # AI 전체 요약 생성
     grade_summary = []
