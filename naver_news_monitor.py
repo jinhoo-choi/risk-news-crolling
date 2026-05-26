@@ -878,17 +878,16 @@ RISK_PRIORITY = {
 }
 
 def calc_risk_score(article: dict) -> float:
-    """리스크 점수 = confidence × 키워드 가중치 + 익스포저 보정"""
+    """리스크 점수 = (confidence × 키워드 가중치 + 익스포저 보정) × 5 → 10점 만점"""
     conf  = article.get("_ai_confidence") or 0.3  # 미반환 시 보수적 기본값
     title = article.get("title", "") + article.get("reason", "")
-    # 가장 높은 키워드 가중치 적용
     kw_weight = max(
         [v for k, v in RISK_PRIORITY.items() if k in title],
         default=1.0
     )
-    # 익스포저 있으면 +0.1 보정
     exp_boost = 0.1 if article.get("_has_exposure") else 0
-    return round(conf * kw_weight + exp_boost, 4)
+    raw = conf * kw_weight + exp_boost
+    return round(min(raw * 5, 10.0), 1)  # 10점 만점, 소수점 1자리
 
 def regrade_by_score(articles: list) -> list:
     """등급별 상한 초과 시 리스크 점수 기반으로 하위 등급 강등
@@ -1116,18 +1115,22 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     if exposure_html:
                         a["_has_exposure"] = True
                     risk_score = a.get("_risk_score", "")
-                    risk_score_html = f'<div style="text-align:right;"><div style="font-size:9px;color:#94a3b8;margin-bottom:1px;">리스크 점수</div><div style="font-size:13px;font-weight:700;color:#3b5491;">{risk_score:.2f}</div></div>' if risk_score else ""
-                    # 순위 배지 (긴급 카드 내 순서)
-                    urgent_idx = [i for i,x in enumerate(display_items) if x.get("grade")=="긴급"].index(display_items.index(a)) + 1 if a in display_items else 0
-                    rank_badge = f'<span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;background:#c0392b;color:#fff;font-size:10px;font-weight:700;border-radius:50%;margin-right:6px;vertical-align:middle;">#{urgent_idx}</span>' if urgent_idx else ""
-                    exp_badge = ""  # 익스포저 배지 제거
-                    # 긴급 뱃지 — 다크그레이 (빨간 집중은 대응방안 좌측선만)
-                    urgent_badges = rank_badge
-                    if a.get("keyword"):
-                        urgent_badges += f'<span style="font-size:11px;background:#1e293b;color:#fff;padding:3px 9px;border-radius:3px;margin-right:5px;font-weight:700;letter-spacing:0.3px;">{a["keyword"]}</span>'
-                    if a.get("entity") and a.get("entity") != a.get("keyword"):
-                        urgent_badges += f'<span style="font-size:10px;background:#f1f5f9;color:#475569;padding:2px 7px;border-radius:3px;font-weight:600;">{a["entity"]}</span>'
-                    urgent_badges += exp_badge
+                    if risk_score:
+                        bar_pct = int(risk_score * 10)  # 10점 만점 → %
+                        risk_score_html = (
+                            f'<div style="text-align:right;min-width:80px;">'
+                            f'<div style="font-size:9px;color:#94a3b8;margin-bottom:3px;">리스크 점수</div>'
+                            f'<div style="font-size:13px;font-weight:700;color:#c0392b;margin-bottom:4px;">{risk_score:.1f} <span style="font-size:9px;color:#94a3b8;font-weight:400;">/ 10</span></div>'
+                            f'<div style="background:#fee2e2;border-radius:2px;height:3px;width:80px;">'
+                            f'<div style="background:#c0392b;height:3px;border-radius:2px;width:{bar_pct}%;"></div>'
+                            f'</div></div>'
+                        )
+                    else:
+                        risk_score_html = ""
+                    # B. rank badge 제거 / C. keyword badge 제거 — entity만 표시
+                    urgent_badges = ""
+                    if a.get("entity"):
+                        urgent_badges = f'<span style="font-size:10px;background:#f1f5f9;color:#475569;padding:2px 7px;border-radius:3px;font-weight:600;">{a["entity"]}</span>'
                     action_row = f'<tr><td bgcolor="#fff0ee" style="padding:10px 18px;border-bottom:2px solid {gs["card_border"]};background:#fff0ee;border-left:4px solid #c0392b;"><p style="margin:0 0 3px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
                     exposure_row = f'<tr><td style="padding:0;border-bottom:1px solid {gs["card_border"]};">{exposure_html}</td></tr>' if exposure_html else ""
                     notice_text = (a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice","")
@@ -1281,9 +1284,34 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
     <td class="footer-td" style="padding:14px 22px;background:#fff;border-top:1px solid #e2e8f0;">
       <p style="margin:0;font-size:12px;color:#94a3b8;line-height:2.0;">
         본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
-        담당자<br>
-        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
-        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
+        담당자&nbsp;&nbsp;(정) 최진후 차장&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
+      </p>
+      <!-- 리스크 점수 기준표 -->
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
+        <tr>
+          <td style="font-size:11px;font-weight:700;color:#475569;padding-bottom:6px;" colspan="2">리스크 점수 산정 기준 (10점 만점)</td>
+        </tr>
+        <tr>
+          <td style="font-size:10px;padding:2px 0;color:#c0392b;font-weight:600;width:80px;">8.0 ~ 10.0</td>
+          <td style="font-size:10px;padding:2px 0;color:#64748b;">당사 직접 언급 · MTS 장애 · 시스템 사고</td>
+        </tr>
+        <tr>
+          <td style="font-size:10px;padding:2px 0;color:#c0392b;font-weight:600;">6.5 ~ 8.0</td>
+          <td style="font-size:10px;padding:2px 0;color:#64748b;">상장폐지 · 파산 · 부도 확정</td>
+        </tr>
+        <tr>
+          <td style="font-size:10px;padding:2px 0;color:#b7791f;font-weight:600;">5.0 ~ 6.5</td>
+          <td style="font-size:10px;padding:2px 0;color:#64748b;">기업회생 · 반대매매 실제 발생</td>
+        </tr>
+        <tr>
+          <td style="font-size:10px;padding:2px 0;color:#64748b;">~ 5.0</td>
+          <td style="font-size:10px;padding:2px 0;color:#64748b;">워크아웃 · 참고 동향</td>
+        </tr>
+        <tr>
+          <td style="font-size:10px;padding:6px 0 0 0;color:#94a3b8;" colspan="2">점수 = AI 확신도 × 리스크 유형 가중치 + 당사 익스포저 보정 (×5 환산)</td>
+        </tr>
+      </table>
+      <p style="display:none;">
       </p>
     </td>
   </tr>
@@ -1320,9 +1348,34 @@ def build_empty_html(now) -> str:
     <td style="padding:14px 22px;border-top:1px solid #e2e8f0;">
       <p style="margin:0;font-size:12px;color:#94a3b8;line-height:2.0;">
         본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
-        담당자<br>
-        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(정) 최진후 차장<br>
-        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
+        담당자&nbsp;&nbsp;(정) 최진후 차장&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
+      </p>
+      <!-- 리스크 점수 기준표 -->
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
+        <tr>
+          <td style="font-size:11px;font-weight:700;color:#475569;padding-bottom:6px;" colspan="2">리스크 점수 산정 기준 (10점 만점)</td>
+        </tr>
+        <tr>
+          <td style="font-size:10px;padding:2px 0;color:#c0392b;font-weight:600;width:80px;">8.0 ~ 10.0</td>
+          <td style="font-size:10px;padding:2px 0;color:#64748b;">당사 직접 언급 · MTS 장애 · 시스템 사고</td>
+        </tr>
+        <tr>
+          <td style="font-size:10px;padding:2px 0;color:#c0392b;font-weight:600;">6.5 ~ 8.0</td>
+          <td style="font-size:10px;padding:2px 0;color:#64748b;">상장폐지 · 파산 · 부도 확정</td>
+        </tr>
+        <tr>
+          <td style="font-size:10px;padding:2px 0;color:#b7791f;font-weight:600;">5.0 ~ 6.5</td>
+          <td style="font-size:10px;padding:2px 0;color:#64748b;">기업회생 · 반대매매 실제 발생</td>
+        </tr>
+        <tr>
+          <td style="font-size:10px;padding:2px 0;color:#64748b;">~ 5.0</td>
+          <td style="font-size:10px;padding:2px 0;color:#64748b;">워크아웃 · 참고 동향</td>
+        </tr>
+        <tr>
+          <td style="font-size:10px;padding:6px 0 0 0;color:#94a3b8;" colspan="2">점수 = AI 확신도 × 리스크 유형 가중치 + 당사 익스포저 보정 (×5 환산)</td>
+        </tr>
+      </table>
+      <p style="display:none;">
       </p>
     </td>
   </tr>
