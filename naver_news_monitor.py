@@ -1059,13 +1059,14 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         display_items = items[:limit]
         extra_items = items[limit:]
         rows += f'''
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;border:1px solid {gs["card_border"]};border-bottom:none;background:{gs["header_bg"]};border-left:4px solid {gs["border_left"]};">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;border:1px solid {gs["card_border"]};border-bottom:none;background:{gs["header_bg"]};border-top:{f'4px solid {gs["border_left"]}' if grade == '긴급' else f'1px solid {gs["card_border"]}'};border-left:{f'6px solid {gs["border_left"]}' if grade == '긴급' else f'4px solid {gs["border_left"]}'};">
           <tr>
             <td style="padding:10px 14px;">
-              <span style="font-size:15px;font-weight:bold;color:{gs["label_color"]};">{grade} · {len(items)}건</span>
+              <span style="font-size:15px;font-weight:bold;color:{gs["label_color"]};">{grade}</span>
+              <span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;background:{gs["border_left"]};color:#fff;font-size:11px;font-weight:700;border-radius:50%;margin-left:6px;vertical-align:middle;">{len(items)}</span>
             </td>
             <td align="right" class="grade-header-right" style="padding:10px 14px;white-space:nowrap;">
-              <span style="font-size:11px;color:#94a3b8;">{GRADE_DESC[grade]}</span>
+              <span style="font-size:10px;{'background:#fee2e2;color:#c0392b;padding:2px 10px;border-radius:10px;font-weight:600;' if grade == '긴급' else 'color:#94a3b8;'}">{GRADE_DESC[grade]}</span>
             </td>
           </tr>
         </table>'''
@@ -1108,22 +1109,37 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
           </tr>
         </table>'''
                 else:
-                    # 긴급 풀카드 — A안 통합 박스
+                    # 긴급 풀카드 B-4 — 리스크점수 + 뱃지 강화 + 좌측 6px
                     exposure_html = build_exposure_html(a.get("entity",""), exposure_data or {}, ref_date)
-                    action_row = f'<tr><td bgcolor="#fff0ee" style="padding:10px 18px;border-bottom:2px solid {gs["card_border"]};background:#fff0ee;"><p style="margin:0 0 3px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
+                    if exposure_html:
+                        a["_has_exposure"] = True
+                    risk_score = a.get("_risk_score", "")
+                    risk_score_html = f'<div style="text-align:right;"><div style="font-size:9px;color:#94a3b8;margin-bottom:1px;">리스크 점수</div><div style="font-size:13px;font-weight:700;color:#c0392b;">{risk_score:.2f}</div></div>' if risk_score else ""
+                    # 긴급 뱃지 — 흰 글씨 빨간 배경으로 강화
+                    urgent_badges = ""
+                    if a.get("keyword"):
+                        urgent_badges += f'<span style="font-size:11px;background:#c0392b;color:#fff;padding:3px 9px;border-radius:3px;margin-right:5px;font-weight:700;letter-spacing:0.3px;">{a["keyword"]}</span>'
+                    if a.get("entity") and a.get("entity") != a.get("keyword"):
+                        urgent_badges += f'<span style="font-size:10px;background:#f1f5f9;color:#475569;padding:2px 7px;border-radius:3px;font-weight:600;">{a["entity"]}</span>'
+                    action_row = f'<tr><td bgcolor="#fff0ee" style="padding:10px 18px;border-bottom:2px solid {gs["card_border"]};background:#fff0ee;border-left:4px solid #c0392b;"><p style="margin:0 0 3px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
                     exposure_row = f'<tr><td style="padding:0;border-bottom:1px solid {gs["card_border"]};">{exposure_html}</td></tr>' if exposure_html else ""
                     notice_text = (a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice","")
                     notice_row = f'<tr><td bgcolor="#eff6ff" style="padding:10px 16px;background:#eff6ff;border-top:1px solid #f5c6c6;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#1d4ed8;">고객케어 안내 추천 문구</span></p><p style="margin:0;font-size:12px;color:#1e3a6e;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
                     bottom_box = f'<tr><td bgcolor="#fff8f8" style="background:#fff8f8;border-top:1px solid {gs["card_border"]};padding:0;"><table width="100%" cellpadding="0" cellspacing="0" border="0">{action_row}{exposure_row}{notice_row}</table></td></tr>' if (action_row or exposure_row or notice_row) else ""
                     rows += f'''
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:10px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;border-left:6px solid #c0392b;background:{gs["card_bg"]};margin-bottom:10px;">
           <tr>
             <td bgcolor="#fff8f8" style="padding:12px 16px;background:#fff8f8;border-bottom:1px solid #f5c6c6;">
-              {f"<p style='margin:0 0 8px 0;'>{badges}</p>" if badges else ""}
-              <a href="{a['url']}" class="title-link" style="font-weight:bold;font-size:15px;text-decoration:none;color:#1e3a6e;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
+              <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:8px;">
+                <tr>
+                  <td>{f"{urgent_badges}" if urgent_badges else ""}</td>
+                  <td align="right" valign="top">{risk_score_html}</td>
+                </tr>
+              </table>
+              <a href="{a['url']}" class="title-link" style="font-weight:700;font-size:15px;text-decoration:none;color:#1e293b;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:5px 0 8px 0;">
                 <tr>
-                  <td style="font-size:12px;"><a href="{a['url']}" style="color:#3b5491;text-decoration:none;">↗ 기사 보기</a></td>
+                  <td style="font-size:12px;"><a href="{a['url']}" style="color:#c0392b;text-decoration:none;font-weight:600;">↗ 기사 보기</a></td>
                   <td align="right" style="font-size:11px;color:#94a3b8;">{a.get("pub_str","")}</td>
                 </tr>
               </table>
@@ -1181,35 +1197,63 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
 <tr><td align="center" class="outer" style="padding:16px;">
 <table width="640" cellpadding="0" cellspacing="0" border="0" class="main" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
 
-  <!-- 헤더 -->
+  <!-- 헤더 H-3 -->
   <tr>
-    <td class="header-td" style="background:#3b5491;padding:22px 26px;">
-      <table width="100%" cellpadding="0" cellspacing="0" border="0">
+    <td class="header-td" style="background:#3b5491;padding:18px 26px 14px;">
+      <!-- 타이틀 -->
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:12px;">
         <tr>
           <td>
-            <p style="margin:0 0 4px 0;font-size:20px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇
-              <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">Powered by Claude AI</span>
-            </p>
-            <p style="margin:0 0 14px 0;font-size:13px;color:#c8d8f0;">
-              {now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 · 수집 {total_count}건 → {len(articles)}건 선별 ({round((1 - len(articles)/total_count)*100) if total_count else 0}% 필터링)
-            </p>
-            <!-- 대시보드 -->
-            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#2d4278;">
-              <tr>
-                <td align="center" style="padding:12px 8px;border-right:1px solid #4a6099;">
-                  <p class="dash-num" style="margin:0 0 2px 0;font-size:22px;font-weight:bold;color:#ff6b6b;">{len(sections['긴급'])}</p>
-                  <p style="margin:0;font-size:12px;color:#d0dcf0;">긴급</p>
-                </td>
-                <td align="center" style="padding:12px 8px;border-right:1px solid #4a6099;">
-                  <p class="dash-num" style="margin:0 0 2px 0;font-size:22px;font-weight:bold;color:#fbbf24;">{len(sections['주의'])}</p>
-                  <p style="margin:0;font-size:12px;color:#d0dcf0;">주의</p>
-                </td>
-                <td align="center" style="padding:12px 8px;">
-                  <p class="dash-num" style="margin:0 0 2px 0;font-size:22px;font-weight:bold;color:#6ee7b7;">{len(sections['참고'])}</p>
-                  <p style="margin:0;font-size:12px;color:#d0dcf0;">참고</p>
-                </td>
-              </tr>
-            </table>
+            <p style="margin:0 0 3px 0;font-size:18px;font-weight:bold;color:#ffffff;">eBiz본부 리스크 탐지봇</p>
+            <p style="margin:0;font-size:12px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (KST)</p>
+          </td>
+          <td align="right" valign="top">
+            <span style="font-size:10px;color:#c8d8f0;padding:2px 8px;background:#5a7abf;border-radius:2px;white-space:nowrap;">Powered by Claude AI</span>
+          </td>
+        </tr>
+      </table>
+      <!-- 필터링 통계 바 -->
+      <div style="margin-bottom:12px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:4px;">
+          <tr>
+            <td style="font-size:11px;color:#c8d8f0;">수집 {total_count}건</td>
+            <td align="right" style="font-size:11px;color:#6ee7b7;font-weight:600;">{len(articles)}건 선별 ({round((1 - len(articles)/total_count)*100) if total_count else 0}% 필터링)</td>
+          </tr>
+        </table>
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#1e3370;border-radius:3px;overflow:hidden;">
+          <tr>
+            <td width="{max(1, round(len(sections["긴급"])/total_count*100)) if total_count else 1}%" style="background:#ff6b6b;padding:3px 0;"></td>
+            <td width="{max(1, round(len(sections["주의"])/total_count*100)) if total_count else 1}%" style="background:#fbbf24;padding:3px 0;"></td>
+            <td width="{max(1, round(len(sections["참고"])/total_count*100)) if total_count else 1}%" style="background:#6ee7b7;padding:3px 0;"></td>
+            <td style="background:#1e3370;padding:3px 0;"></td>
+          </tr>
+        </table>
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:4px;">
+          <tr>
+            <td style="font-size:10px;color:#ff6b6b;">■ 긴급 {len(sections["긴급"])}</td>
+            <td style="font-size:10px;color:#fbbf24;">■ 주의 {len(sections["주의"])}</td>
+            <td style="font-size:10px;color:#6ee7b7;">■ 참고 {len(sections["참고"])}</td>
+            <td align="right" style="font-size:10px;color:#4a6099;">■ 필터링 {total_count - len(articles)}</td>
+          </tr>
+        </table>
+      </div>
+      <!-- 대시보드 -->
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#2d4278;">
+        <tr>
+          <td align="center" style="padding:10px 8px;border-right:1px solid #4a6099;">
+            <p class="dash-num" style="margin:0 0 1px 0;font-size:26px;font-weight:bold;color:#ff6b6b;">{len(sections['긴급'])}</p>
+            <p style="margin:0 0 2px 0;font-size:12px;color:#d0dcf0;">긴급</p>
+            <p style="margin:0;font-size:10px;color:#7a9abf;">당일 확인</p>
+          </td>
+          <td align="center" style="padding:10px 8px;border-right:1px solid #4a6099;">
+            <p class="dash-num" style="margin:0 0 1px 0;font-size:26px;font-weight:bold;color:#fbbf24;">{len(sections['주의'])}</p>
+            <p style="margin:0 0 2px 0;font-size:12px;color:#d0dcf0;">주의</p>
+            <p style="margin:0;font-size:10px;color:#7a9abf;">모니터링</p>
+          </td>
+          <td align="center" style="padding:10px 8px;">
+            <p class="dash-num" style="margin:0 0 1px 0;font-size:26px;font-weight:bold;color:#6ee7b7;">{len(sections['참고'])}</p>
+            <p style="margin:0 0 2px 0;font-size:12px;color:#d0dcf0;">참고</p>
+            <p style="margin:0;font-size:10px;color:#7a9abf;">파악용</p>
           </td>
         </tr>
       </table>
