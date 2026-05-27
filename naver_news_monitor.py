@@ -1345,11 +1345,9 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
           </td>
         </tr>
       </table>
+      {f'<p style="margin:6px 0 0 0;font-size:11px;color:#c8d8f0;text-align:center;letter-spacing:0.2px;">💡 {ai_summary}</p>' if ai_summary else ""}
     </td>
   </tr>
-
-  <!-- AI 분석 요약 -->
-  {('<tr><td class="summary-td" style="padding:14px 22px;border-bottom:1px solid #e2e8f0;background:#f8fafc;">' + build_summary_html(ai_summary) + '</td></tr>') if ai_summary else ""}
 
   <!-- 경쟁사 특이사항 -->
   {('<tr><td>' + build_competitor_html(competitor_notices or [], today_str) + '</td></tr>') if competitor_notices else ""}
@@ -2032,8 +2030,8 @@ def main():
                 },
                 json={
                     "model": CLAUDE_MODEL,
-                    "max_tokens": 400,
-                    "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 증권사 리스크 담당자를 위해 아래 형식으로 작성하세요.\n\n▸ 리스크 성격\n(오늘 전반적인 리스크 흐름을 30자 이내 한 문장)\n\n▸ 주요 포인트\n(담당자가 주목할 핵심 사항을 · 로 구분, 항목당 30자 이내, 최대 3개)\n\n반드시 짧고 핵심만. 문장 늘이지 말 것.\n\n{filtered_titles}"}],
+                    "max_tokens": 80,
+                    "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 오늘의 리스크 흐름을 30자 이내 한 문장으로만 작성하세요.\n문장 외 다른 내용 일절 금지. 예: '삼부토건 상폐 심의·홈플러스 회생 갈림길 동시 부각'\n\n{filtered_titles}"}],
                 },
                 timeout=15,
             )
