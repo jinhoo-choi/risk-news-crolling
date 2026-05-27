@@ -479,6 +479,10 @@ TITLE_ONLY_PATTERNS = [
     "신고가", "급등", "상한가", "흑자전환", "실적개선", "호실적",
     "목표달성", "수주", "계약체결", "MOU", "협약",
     "순매수", "순매도", "외국인매수", "외국인매도", "거래대금",
+    "당기순익", "당기순이익", "영업이익", "순이익", "실적",
+    "1분기", "2분기", "3분기", "4분기",  # 분기 실적 기사
+    "성장세", "성장률", "증가율", "전년比", "전년비",
+    "보험사", "은행권", "저축은행", "캐피탈",  # 업계 통계 기사
     "부고", "인사", "승진", "선임", "취임", "퇴임",
     "경고음", "빨간불", "신호탄",  # 경고등·황신호·뇌관은 실제 리스크 기사에 등장 가능해 제외
     "(完)", "(완)", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩",
@@ -497,6 +501,9 @@ TEXT_PATTERNS = [
 # desc에서만 체크하면 오탐 위험 — 기자수첩 등은 제목에만 적용
 TITLE_ONLY_PATTERNS += [
     "기자수첩", "기자의 눈", "기자노트", "취재후기", "현장에서", "데스크에서",
+    "잡아낸", "변호사", "법률가", "판사", "검사", "사례로 보는", "이야기",
+    "하고 싶으면", "하려면", "하는 법", "Q&A", "궁금증",
+    "갑질", "피해자", "제보",  # 제보·피해 사례 기사
 ]
 
 EXCLUDE_TITLE_RE_PATTERNS = [
@@ -584,7 +591,11 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 ❌ relevant:false | "코스피 8천 돌파 후 빚투 경고등…신용융자 36조 사상 최대" → 잔고 통계 보도, 실제 반대매매 발생 아님
 ❌ relevant:false | "도 의원 후보, 폐점한 홈플러스 복합문화플랫폼으로" → 선거 공약 기사, 증권사 익스포저와 무관
 ❌ relevant:false | "HL D&I 주가 신바람…건설주 정책 기대감에 매수" → 기사 주인공이 HL D&I, 태양건설은 본문 언급만, 직접 리스크 없음
+❌ relevant:false | "갑질 잡아낸 변호사…금융당국도 놀란" → 변호사 인터뷰 기사, 본문 내 K사 사례는 설명 목적, 기사 핵심 주제가 리스크 아님
+❌ relevant:false | "사례로 보는 PF 부실…전문가 조언" → 기획·해설 기사, 가상 사례 포함, 실제 확정 사건 아님
 ❌ relevant:false | "현직이 푸는 사모펀드 환매중단 사태 3(完)" → 연재 칼럼, 직접 손실 사건 아님
+❌ relevant:false | "1분기 보험사 당기순익 4.5조…본업 성장세 둔화" → 업계 실적 통계 기사, 본문 내 홈플러스 언급은 부수적, 기사 핵심이 리스크 아님
+❌ relevant:false | "은행권 2분기 순이익 전망…PF 리스크 변수" → 업계 실적 전망 기사, 확정 사건 없음
 ❌ relevant:false | "세제 40% 공제 내세운 국민성장펀드…광풍 뒤 숨은 리스크" → 리스크 우려·분석, 직접 손실 미확정
 ❌ relevant:false | "[롯데건설 PF 점검] 홈플러스 후순위 1조 시한폭탄" → 시리즈 기획, 이미 알려진 사건 반복 분석
 ✅ relevant:true  | 참고 | "OO건설 ABCP 차환 실패 우려…만기 3주 앞두고 미매각" → 기준7 (차환 실패 조기징후)
@@ -615,6 +626,12 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 
 [매우 중요 — 핵심 주제 판단]
 기사의 핵심 주제·제목의 중심이 리스크가 아니면 relevant:false.
+본문에 리스크 사례·키워드가 등장해도 아래 경우는 반드시 relevant:false:
+- 변호사·판사·전문가 인터뷰 또는 조언 기사
+- 피해 사례 소개 기획 기사 (K사, A씨 등 익명 사례 포함)
+- 제목이 질문형·방법론형 ("~하려면", "~하는 법", "Q&A")
+- 갑질·민원·제보 중심 기사
+- 업계 전체 실적·통계 기사 (분기순익, 성장률 등) — 본문에 특정 기업 리스크 언급 있어도 기사 주제가 실적이면 false
 본문 일부에 리스크 단어가 있어도 기사 주제가 호재·실적·전망·성과이면 제외.
 제목 주인공이 리스크 상황이 아닌데 본문에 타 기업 리스크가 언급된 경우도 제외.
 
@@ -1037,7 +1054,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
           <tr>
             <td style="padding:10px 14px;">
               <span style="font-size:15px;font-weight:bold;color:{gs["label_color"]};">{grade}</span>
-              <span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;background:{gs["border_left"]};color:#fff;font-size:11px;font-weight:700;border-radius:50%;margin-left:6px;vertical-align:middle;">{len(items)}</span>
+              <span style="display:inline-block;width:20px;height:20px;line-height:20px;text-align:center;background:{gs["border_left"]};color:#fff;font-size:11px;font-weight:700;border-radius:50%;margin-left:6px;vertical-align:middle;">{len(items)}</span>
             </td>
             <td align="right" class="grade-header-right" style="padding:10px 14px;white-space:nowrap;">
               <span style="font-size:10px;{'background:#fee2e2;color:#c0392b;padding:2px 10px;border-radius:10px;font-weight:600;' if grade == '긴급' else 'color:#94a3b8;'}">{GRADE_DESC[grade]}</span>
@@ -1046,12 +1063,19 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         </table>'''
         for a in display_items:
             if grade == "참고":
+                r_risk = a.get("_risk_score", "")
+                if r_risk:
+                    r_filled = int(r_risk)
+                    r_bar = "█" * r_filled + "░" * (10 - r_filled)
+                    r_score_html = f'<span style="font-size:9px;color:#94a3b8;font-family:monospace;margin-left:6px;">{r_risk:.1f} {r_bar}</span>'
+                else:
+                    r_score_html = ""
                 rows += f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:#f8fbff;">
           <tr>
-            <td style="padding:5px 14px;font-size:12px;word-break:keep-all;color:#64748b;">
-              · <a href="{_esc(a['url'])}" style="color:#64748b;text-decoration:none;">{_esc(a['title'][:55])}{"..." if len(a['title'])>55 else ""}</a>
-              <span style="font-size:10px;color:#94a3b8;margin-left:6px;">{a.get("pub_str","").split("(")[0].strip() if a.get("pub_str") else ""}</span>
+            <td style="padding:5px 14px;font-size:12px;word-break:keep-all;color:#7a9abf;">
+              · <a href="{_esc(a['url'])}" style="color:#7a9abf;text-decoration:none;">{_esc(a['title'][:55])}{"..." if len(a['title'])>55 else ""}</a>
+              <span style="font-size:10px;color:#94a3b8;margin-left:6px;">{a.get("pub_str","").split("(")[0].strip() if a.get("pub_str") else ""}</span>{r_score_html}
             </td>
           </tr>
         </table>'''
@@ -1061,22 +1085,40 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 if a.get("keyword"):
                     badges += f'<span style="display:inline-block;font-size:10px;color:#3b5491;background:#e8f0fe;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;">{a["keyword"]}</span>'
                 if a.get("entity") and a.get("entity") != a.get("keyword"):
-                    badges += f'<span style="display:inline-block;font-size:10px;color:#64748b;background:#f1f5f9;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;">{a["entity"]}</span>'
+                    badges += f'<span style="display:inline-block;font-size:10px;color:#7a9abf;background:#f1f5f9;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;">{a["entity"]}</span>'
 
                 if grade == "주의":
-                    # 주의 카드 — 긴급과 동일한 구조
+                    # 주의 카드 — 리스크 점수 (황색 톤)
                     c_exp_html = build_exposure_html(a.get("entity",""), exposure_data or {}, ref_date, border_color=gs["border_left"])
                     c_action_row = f'<tr><td style="padding:8px 14px;background:#fff0ee;border-top:1px solid {gs["card_border"]};border-bottom:1px solid {gs["card_border"]};border-left:4px solid {gs["border_left"]};"><p style="margin:0 0 3px 0;font-size:10px;font-weight:700;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
                     c_exp_row   = f'<tr><td style="padding:0;">{c_exp_html}</td></tr>' if c_exp_html else ""
+                    c_risk = a.get("_risk_score", "")
+                    if c_risk:
+                        c_filled = int(c_risk)
+                        c_bar = "█" * c_filled + "░" * (10 - c_filled)
+                        c_score_html = (
+                            f'<div style="text-align:right;min-width:90px;">'
+                            f'<div style="font-size:9px;color:#94a3b8;margin-bottom:2px;">리스크 점수</div>'
+                            f'<div style="font-size:13px;font-weight:700;color:#b45309;margin-bottom:2px;">{c_risk:.1f}<span style="font-size:9px;color:#94a3b8;font-weight:400;"> / 10</span></div>'
+                            f'<div style="font-size:9px;color:#f59e0b;letter-spacing:1px;font-family:monospace;">{c_bar}</div>'
+                            f'</div>'
+                        )
+                    else:
+                        c_score_html = ""
                     rows += f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:10px;">
           <tr>
             <td style="padding:10px 14px;border-bottom:1px solid {gs["card_border"]};">
-              {f"<p style='margin:0 0 4px 0;'>{badges}</p>" if badges else ""}
+              <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:{f'6px' if badges else '0'};">
+                <tr>
+                  <td>{badges}</td>
+                  <td align="right" valign="top">{c_score_html}</td>
+                </tr>
+              </table>
               <a href="{a['url']}" class="title-link caution-title" style="font-weight:bold;font-size:14px;text-decoration:none;color:#1e293b;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 0 0;">
                 <tr>
-                  <td style="font-size:11px;"><a href="{a['url']}" style="color:#475569;text-decoration:none;">↗ 기사 보기</a></td>
+                  <td style="font-size:11px;"><a href="{a['url']}" style="color:#4a6099;text-decoration:none;">↗ 기사 보기</a></td>
                   <td align="right" style="font-size:11px;color:#94a3b8;">{a.get("pub_str","")}</td>
                 </tr>
               </table>
@@ -1108,7 +1150,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     if a.get("keyword"):
                         urgent_badges += f'<span style="font-size:10px;background:#e8f0fe;color:#3b5491;padding:2px 7px;border-radius:3px;margin-right:4px;font-weight:600;">{a["keyword"]}</span>'
                     if a.get("entity") and a.get("entity") != a.get("keyword"):
-                        urgent_badges += f'<span style="font-size:10px;background:#f1f5f9;color:#475569;padding:2px 7px;border-radius:3px;font-weight:600;">{a["entity"]}</span>'
+                        urgent_badges += f'<span style="font-size:10px;background:#f1f5f9;color:#4a6099;padding:2px 7px;border-radius:3px;font-weight:600;">{a["entity"]}</span>'
                     action_row = f'<tr><td bgcolor="#fef2f2" style="padding:8px 14px;border-bottom:1px solid {gs["card_border"]};background:#fef2f2;border-left:4px solid #ef4444;"><p style="margin:0 0 3px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
                     exposure_row = f'<tr><td style="padding:0;border-bottom:1px solid {gs["card_border"]};">{exposure_html}</td></tr>' if exposure_html else ""
                     notice_text = (a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice","")
@@ -1127,7 +1169,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
               <a href="{a['url']}" class="title-link" style="font-weight:700;font-size:15px;text-decoration:none;color:#1e293b;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:5px 0 8px 0;">
                 <tr>
-                  <td style="font-size:12px;"><a href="{a['url']}" style="color:#475569;text-decoration:none;font-weight:500;">↗ 기사 보기</a></td>
+                  <td style="font-size:12px;"><a href="{a['url']}" style="color:#4a6099;text-decoration:none;font-weight:500;">↗ 기사 보기</a></td>
                   <td align="right" style="font-size:11px;color:#94a3b8;">{a.get("pub_str","")}</td>
                 </tr>
               </table>
@@ -1139,8 +1181,8 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         if extra_items:
             extra_rows = "".join([f'''
             <tr>
-              <td style="padding:4px 0;font-size:13px;color:#475569;border-bottom:1px solid #f0f0f0;">
-                <a href="{e['url']}" style="color:#475569;text-decoration:none;">{e['title'][:60]}{"..." if len(e['title']) > 60 else ""}</a>
+              <td style="padding:4px 0;font-size:13px;color:#4a6099;border-bottom:1px solid #f0f0f0;">
+                <a href="{e['url']}" style="color:#4a6099;text-decoration:none;">{e['title'][:60]}{"..." if len(e['title']) > 60 else ""}</a>
                 {f'<span style="font-size:11px;color:#94a3b8;margin-left:6px;">{e["pub_str"]}</span>' if e.get("pub_str") else ""}
               </td>
             </tr>''' for e in extra_items])
@@ -1148,7 +1190,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:#fafafa;margin-bottom:10px;">
           <tr>
             <td style="padding:10px 16px 4px 16px;">
-              <p style="margin:0 0 8px 0;font-size:12px;font-weight:bold;color:#64748b;">추가 {len(extra_items)}건</p>
+              <p style="margin:0 0 8px 0;font-size:12px;font-weight:bold;color:#7a9abf;">추가 {len(extra_items)}건</p>
               <table width="100%" cellpadding="0" cellspacing="0" border="0">
                 {extra_rows}
               </table>
@@ -1187,14 +1229,14 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
 
   <!-- 헤더 H-3 -->
   <tr>
-    <td class="header-td" style="background:#1e293b;padding:18px 26px 14px;">
+    <td class="header-td" style="background:#3b5491;padding:18px 26px 14px;">
       <!-- 타이틀 -->
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:12px;">
         <tr>
           <td valign="middle">
             <p style="margin:0 0 4px 0;font-size:18px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇</p>
-            <p style="margin:0 0 3px 0;font-size:10px;color:#cbd5e1;">Powered by Claude AI</p>
-            <p style="margin:0;font-size:12px;color:#cbd5e1;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (KST)</p>
+            <p style="margin:0 0 3px 0;font-size:10px;color:#c8d8f0;">Powered by Claude AI</p>
+            <p style="margin:0;font-size:12px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (KST)</p>
           </td>
         </tr>
       </table>
@@ -1202,11 +1244,11 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
       <div style="margin-bottom:12px;">
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:4px;">
           <tr>
-            <td style="font-size:11px;color:#cbd5e1;">수집 {total_count}건</td>
+            <td style="font-size:11px;color:#c8d8f0;">수집 {total_count}건</td>
             <td align="right" style="font-size:11px;color:#6ee7b7;font-weight:600;">{len(articles)}건 선별 ({round((1 - len(articles)/total_count)*100) if total_count else 0}% 필터링)</td>
           </tr>
         </table>
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0f172a;border-radius:3px;overflow:hidden;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#1e3370;border-radius:3px;overflow:hidden;">
           <tr>
             <td width="{max(1, round(len(sections["긴급"])/total_count*100)) if total_count else 1}%" style="background:#ef4444;padding:3px 0;"></td>
             <td width="{max(1, round(len(sections["주의"])/total_count*100)) if total_count else 1}%" style="background:#f59e0b;padding:3px 0;"></td>
@@ -1219,27 +1261,27 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
             <td style="font-size:10px;color:#ef4444;">■ 긴급 {len(sections["긴급"])}</td>
             <td style="font-size:10px;color:#f59e0b;">■ 주의 {len(sections["주의"])}</td>
             <td style="font-size:10px;color:#94a3b8;">■ 참고 {len(sections["참고"])}</td>
-            <td align="right" style="font-size:10px;color:#475569;">■ 필터링 {total_count - len(articles)}</td>
+            <td align="right" style="font-size:10px;color:#4a6099;">■ 필터링 {total_count - len(articles)}</td>
           </tr>
         </table>
       </div>
       <!-- 대시보드 -->
-      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0f172a;">
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#2d4278;">
         <tr>
-          <td width="33%" align="center" style="padding:10px 0;border-right:1px solid #1e3a5f;">
+          <td width="33%" align="center" style="padding:10px 0;border-right:1px solid #4a6099;">
             <p class="dash-num" style="margin:0 0 1px 0;font-size:26px;font-weight:bold;color:#ef4444;min-width:32px;display:block;">{len(sections['긴급'])}</p>
-            <p style="margin:0 0 2px 0;font-size:12px;color:#cbd5e1;">긴급</p>
-            <p style="margin:0;font-size:10px;color:#64748b;">당일 확인</p>
+            <p style="margin:0 0 2px 0;font-size:12px;color:#c8d8f0;">긴급</p>
+            <p style="margin:0;font-size:10px;color:#7a9abf;">당일 확인</p>
           </td>
-          <td width="33%" align="center" style="padding:10px 0;border-right:1px solid #1e3a5f;">
+          <td width="33%" align="center" style="padding:10px 0;border-right:1px solid #4a6099;">
             <p class="dash-num" style="margin:0 0 1px 0;font-size:26px;font-weight:bold;color:#f59e0b;min-width:32px;display:block;">{len(sections['주의'])}</p>
-            <p style="margin:0 0 2px 0;font-size:12px;color:#cbd5e1;">주의</p>
-            <p style="margin:0;font-size:10px;color:#64748b;">모니터링</p>
+            <p style="margin:0 0 2px 0;font-size:12px;color:#c8d8f0;">주의</p>
+            <p style="margin:0;font-size:10px;color:#7a9abf;">모니터링</p>
           </td>
           <td width="34%" align="center" style="padding:10px 0;">
             <p class="dash-num" style="margin:0 0 1px 0;font-size:26px;font-weight:bold;color:#94a3b8;min-width:32px;display:block;">{len(sections['참고'])}</p>
-            <p style="margin:0 0 2px 0;font-size:12px;color:#cbd5e1;">참고</p>
-            <p style="margin:0;font-size:10px;color:#64748b;">파악용</p>
+            <p style="margin:0 0 2px 0;font-size:12px;color:#c8d8f0;">참고</p>
+            <p style="margin:0;font-size:10px;color:#7a9abf;">파악용</p>
           </td>
         </tr>
       </table>
@@ -1266,23 +1308,23 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
       <!-- 리스크 점수 기준표 -->
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
         <tr>
-          <td style="font-size:11px;font-weight:700;color:#475569;padding-bottom:6px;" colspan="2">리스크 점수 산정 기준 (10점 만점)</td>
+          <td style="font-size:11px;font-weight:700;color:#4a6099;padding-bottom:6px;" colspan="2">리스크 점수 산정 기준 (10점 만점)</td>
         </tr>
         <tr>
           <td style="font-size:10px;padding:2px 0;color:#c0392b;font-weight:600;width:80px;">8.0 ~ 10.0</td>
-          <td style="font-size:10px;padding:2px 0;color:#64748b;">당사 직접 언급 · MTS 장애 · 시스템 사고</td>
+          <td style="font-size:10px;padding:2px 0;color:#7a9abf;">당사 직접 언급 · MTS 장애 · 시스템 사고</td>
         </tr>
         <tr>
           <td style="font-size:10px;padding:2px 0;color:#c0392b;font-weight:600;">6.5 ~ 8.0</td>
-          <td style="font-size:10px;padding:2px 0;color:#64748b;">상장폐지 · 파산 · 부도 확정</td>
+          <td style="font-size:10px;padding:2px 0;color:#7a9abf;">상장폐지 · 파산 · 부도 확정</td>
         </tr>
         <tr>
           <td style="font-size:10px;padding:2px 0;color:#b7791f;font-weight:600;">5.0 ~ 6.5</td>
-          <td style="font-size:10px;padding:2px 0;color:#64748b;">기업회생 · 반대매매 실제 발생</td>
+          <td style="font-size:10px;padding:2px 0;color:#7a9abf;">기업회생 · 반대매매 실제 발생</td>
         </tr>
         <tr>
-          <td style="font-size:10px;padding:2px 0;color:#64748b;">~ 5.0</td>
-          <td style="font-size:10px;padding:2px 0;color:#64748b;">워크아웃 · 참고 동향</td>
+          <td style="font-size:10px;padding:2px 0;color:#7a9abf;">~ 5.0</td>
+          <td style="font-size:10px;padding:2px 0;color:#7a9abf;">워크아웃 · 참고 동향</td>
         </tr>
         <tr>
           <td style="font-size:10px;padding:6px 0 0 0;color:#94a3b8;" colspan="2">점수 = AI 확신도 × 리스크 유형 가중치 + 당사 익스포저 보정 (×5 환산)</td>
@@ -1311,12 +1353,12 @@ def build_empty_html(now) -> str:
       <p style="margin:0 0 6px 0;font-size:20px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇
         <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">Powered by Claude AI</span>
       </p>
-      <p style="margin:0;font-size:14px;color:#cbd5e1;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</p>
+      <p style="margin:0;font-size:14px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</p>
     </td>
   </tr>
   <tr>
     <td align="center" style="padding:40px 24px;">
-      <p style="margin:0;font-size:17px;color:#64748b;line-height:1.8;">AI 리스크 탐지 결과<br>해당하는 뉴스가 없습니다.</p>
+      <p style="margin:0;font-size:17px;color:#7a9abf;line-height:1.8;">AI 리스크 탐지 결과<br>해당하는 뉴스가 없습니다.</p>
     </td>
   </tr>
   <tr>
@@ -1329,23 +1371,23 @@ def build_empty_html(now) -> str:
       <!-- 리스크 점수 기준표 -->
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
         <tr>
-          <td style="font-size:11px;font-weight:700;color:#475569;padding-bottom:6px;" colspan="2">리스크 점수 산정 기준 (10점 만점)</td>
+          <td style="font-size:11px;font-weight:700;color:#4a6099;padding-bottom:6px;" colspan="2">리스크 점수 산정 기준 (10점 만점)</td>
         </tr>
         <tr>
           <td style="font-size:10px;padding:2px 0;color:#c0392b;font-weight:600;width:80px;">8.0 ~ 10.0</td>
-          <td style="font-size:10px;padding:2px 0;color:#64748b;">당사 직접 언급 · MTS 장애 · 시스템 사고</td>
+          <td style="font-size:10px;padding:2px 0;color:#7a9abf;">당사 직접 언급 · MTS 장애 · 시스템 사고</td>
         </tr>
         <tr>
           <td style="font-size:10px;padding:2px 0;color:#c0392b;font-weight:600;">6.5 ~ 8.0</td>
-          <td style="font-size:10px;padding:2px 0;color:#64748b;">상장폐지 · 파산 · 부도 확정</td>
+          <td style="font-size:10px;padding:2px 0;color:#7a9abf;">상장폐지 · 파산 · 부도 확정</td>
         </tr>
         <tr>
           <td style="font-size:10px;padding:2px 0;color:#b7791f;font-weight:600;">5.0 ~ 6.5</td>
-          <td style="font-size:10px;padding:2px 0;color:#64748b;">기업회생 · 반대매매 실제 발생</td>
+          <td style="font-size:10px;padding:2px 0;color:#7a9abf;">기업회생 · 반대매매 실제 발생</td>
         </tr>
         <tr>
-          <td style="font-size:10px;padding:2px 0;color:#64748b;">~ 5.0</td>
-          <td style="font-size:10px;padding:2px 0;color:#64748b;">워크아웃 · 참고 동향</td>
+          <td style="font-size:10px;padding:2px 0;color:#7a9abf;">~ 5.0</td>
+          <td style="font-size:10px;padding:2px 0;color:#7a9abf;">워크아웃 · 참고 동향</td>
         </tr>
         <tr>
           <td style="font-size:10px;padding:6px 0 0 0;color:#94a3b8;" colspan="2">점수 = AI 확신도 × 리스크 유형 가중치 + 당사 익스포저 보정 (×5 환산)</td>
