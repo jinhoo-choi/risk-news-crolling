@@ -669,7 +669,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
   (relevant=false면 null)
 - entity: 기사의 핵심 기업명 또는 종목명을 공식 명칭 기준으로 1개 추출 (예: 태영건설, 홈플러스, 제이알글로벌리츠, 한화솔루션). 금감원·금융위 등 기관명은 제외하고 기업·종목명만 추출. (relevant=false면 null)
 - event_type: 사건 유형을 아래 중 1개로 분류. (relevant=false면 null)
-  상장폐지 / 거래정지 / 기업회생 / 파산부도 / PF부실 / 신용등급강등 / 반대매매 / 금감원제재 / 시스템장애 / 발행어음부실 / 기타리스크
+  상장폐지 / 거래정지 / 기업회생 / 파산부도 / PF부실 / 신용등급강등 / 반대매매 / 금감원제재 / 시스템장애 / 발행어음부실 / 유동성위기 / 대규모환매 / 감사의견거절 / 횡령배임 / 차환실패 / 기타리스크
 반환 형식 예시 (긴급/주의/참고/제외 각 1건):
 [
   {{"id":1,"relevant":true,"grade":"긴급","reason":"리츠 기초자산 회생신청·손실 확정","confidence":0.97,"action":"해당 리츠 보유 고객 전수 파악 및 금일 내 평가손 산출","entity":"제이알글로벌리츠","event_type":"기업회생"}},
@@ -898,7 +898,9 @@ def regrade_by_score(articles: list) -> list:
 
     result = []
 
-    # confidence 낮은 긴급 선제 강등 (0.85 미만 → 주의)
+    # confidence 구간별 강등 정책
+    # 긴급: 0.85 미만 → 주의
+    # 주의: 0.60 미만 → 참고 (false positive 억제)
     for a in urgent[:]:
         conf = a.get("_ai_confidence") or 0
         if conf < 0.85:
@@ -907,6 +909,14 @@ def regrade_by_score(articles: list) -> list:
             urgent.remove(a)
             caution.append(a)
             print(f"  [confidence 강등] 긴급→주의 (conf={conf:.2f}): {a['title'][:30]}")
+
+    for a in caution[:]:
+        conf = a.get("_ai_confidence") or 0
+        if conf < 0.60:
+            a["grade"] = "참고"
+            caution.remove(a)
+            ref.append(a)
+            print(f"  [confidence 강등] 주의→참고 (conf={conf:.2f}): {a['title'][:30]}")
 
     # 긴급 — 상위 2건 유지, 나머지 주의로 강등
     for i, a in enumerate(urgent):
@@ -980,7 +990,7 @@ def ai_filter_and_grade(articles: list) -> list:
 
 
 def build_exposure_html(entity: str, exposure_data: list, ref_date: str, border_color: str = "#c0392b") -> str:
-    """익스포저 현황 HTML 생성 — 보유현황/여신 각각 독립 행으로 같은 레벨 표시"""
+    """익스포저 현황 HTML — 옵션B: 통합 헤더 + 보유/여신 태그로 구분"""
     rows = find_exposure(entity, exposure_data)
     if not rows:
         return ""
@@ -992,41 +1002,58 @@ def build_exposure_html(entity: str, exposure_data: list, ref_date: str, border_
     def _fmt_row(r, show_type=True):
         잔고 = float(str(r.get("잔고(억)","0")).replace(",",""))
         고객 = int(float(str(r.get("고객수","0")).replace(",","")))
-        type_str = f' <span style="color:#94a3b8;font-size:11px;">({r.get("종목유형","")})</span>' if show_type else ''
+        type_str = f' <span style="color:#94a3b8;font-size:10px;">({r.get("종목유형","")})</span>' if show_type else ''
         return (
-            f'<div style="font-size:13px;color:#1e293b;margin-bottom:2px;">'
-            f'<span style="font-weight:bold;">{r.get("종목명","")}</span>{type_str}'
-            f' &nbsp;{잔고:,.1f}억원 / {고객:,}명</div>'
+            f'<div style="font-size:12px;color:#1e293b;line-height:1.7;">'
+            f'<span style="font-weight:700;">{r.get("종목명","")}</span>{type_str}'
+            f' {잔고:,.1f}억원 / {고객:,}명</div>'
         )
 
-    result = ""
+    result = ''
+    sections = []
 
     if stock_rows:
-        result += f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-left:4px solid {border_color};background:#ffffff;">
-      <tr><td style="padding:10px 14px;">
-        <p style="margin:0 0 2px 0;font-size:10px;font-weight:bold;color:#1e293b;letter-spacing:0.5px;">뱅키스 고객 보유현황
-          <span style="font-weight:400;color:#94a3b8;">{date_label}</span></p>
-        <div style="margin-top:5px;">{"".join([_fmt_row(r) for r in stock_rows])}</div>
-      </td></tr>
-    </table>'''
+        rows_html = "".join([_fmt_row(r) for r in stock_rows])
+        sections.append(f'''
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:2px;">
+          <tr>
+            <td valign="top" style="padding-top:2px;width:52px;white-space:nowrap;">
+              <span style="font-size:9px;background:#fee2e2;color:#c0392b;padding:1px 6px;border-radius:2px;font-weight:700;">보유현황</span>
+            </td>
+            <td style="padding-left:4px;">{rows_html}</td>
+          </tr>
+        </table>''')
 
     if loan_rows:
-        # 여신 잔고 헤더에 종목명 포함 (종목명이 하나면 헤더에, 여럿이면 각 행에)
         if len(loan_rows) == 1:
-            loan_name = loan_rows[0].get("종목명", "")
-            loan_header = f'{loan_name} 여신 잔고'
             loan_잔고 = float(str(loan_rows[0].get("잔고(억)","0")).replace(",",""))
             loan_고객 = int(float(str(loan_rows[0].get("고객수","0")).replace(",","")))
-            loan_body = f'<div style="font-size:13px;color:#1e293b;margin-top:5px;">{loan_잔고:,.1f}억원 / {loan_고객:,}명</div>'
+            loan_name = loan_rows[0].get("종목명","")
+            loan_html = f'<div style="font-size:12px;color:#1e293b;line-height:1.7;"><span style="font-weight:700;">{loan_name}</span> {loan_잔고:,.1f}억원 / {loan_고객:,}명</div>'
         else:
-            loan_header = '여신 잔고'
-            loan_body = f'<div style="margin-top:5px;">{"".join([_fmt_row(r, show_type=False) for r in loan_rows])}</div>'
+            loan_html = "".join([_fmt_row(r, show_type=False) for r in loan_rows])
 
-        result += f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-left:4px solid {border_color};background:#ffffff;margin-top:1px;">
-      <tr><td style="padding:10px 14px;">
-        <p style="margin:0 0 2px 0;font-size:10px;font-weight:bold;color:#1e293b;letter-spacing:0.5px;">{loan_header}
+        sections.append(f'''
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:2px;">
+          <tr>
+            <td valign="top" style="padding-top:2px;width:52px;white-space:nowrap;">
+              <span style="font-size:9px;background:#fef3c7;color:#b45309;padding:1px 6px;border-radius:2px;font-weight:700;">여신잔고</span>
+            </td>
+            <td style="padding-left:4px;">{loan_html}</td>
+          </tr>
+        </table>''')
+
+    divider = '''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0;">
+      <tr><td style="height:1px;background:#e2e8f0;font-size:0;line-height:0;">&nbsp;</td></tr>
+    </table>'''
+
+    inner = divider.join(sections)
+
+    result = f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
+      <tr><td style="padding:10px 16px;">
+        <p style="margin:0 0 8px 0;font-size:10px;font-weight:700;color:#1e293b;">뱅키스 익스포저
           <span style="font-weight:400;color:#94a3b8;">{date_label}</span></p>
-        {loan_body}
+        {inner}
       </td></tr>
     </table>'''
 
@@ -1074,16 +1101,17 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 if r_risk:
                     r_filled = int(r_risk)
                     r_bar = "█" * r_filled + "░" * (10 - r_filled)
-                    r_score_html = f'<span style="font-size:9px;color:#94a3b8;font-family:monospace;margin-left:6px;">{r_risk:.1f} {r_bar}</span>'
+                    r_score_html = f'<div style="font-size:9px;color:#94a3b8;font-family:monospace;text-align:right;">{r_risk:.1f}<br>{r_bar}</div>'
                 else:
                     r_score_html = ""
                 rows += f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:#f8fbff;">
           <tr>
-            <td style="padding:5px 14px;font-size:12px;word-break:keep-all;color:#7a9abf;">
-              · <a href="{_esc(a['url'])}" style="color:#7a9abf;text-decoration:none;">{_esc(a['title'][:55])}{"..." if len(a['title'])>55 else ""}</a>
-              <span style="font-size:10px;color:#94a3b8;margin-left:6px;">{a.get("pub_str","").split("(")[0].strip() if a.get("pub_str") else ""}</span>{r_score_html}
+            <td style="padding:6px 16px;font-size:12px;word-break:keep-all;color:#7a9abf;">
+              · <a href="{_esc(a['url'])}" style="color:#7a9abf;text-decoration:none;">{_esc(a['title'][:45])}{"..." if len(a['title'])>45 else ""}</a>
+              <span style="font-size:10px;color:#94a3b8;margin-left:4px;">{a.get("pub_str","").split("(")[0].strip() if a.get("pub_str") else ""}</span>
             </td>
+            <td align="right" valign="middle" style="padding:6px 16px 6px 4px;white-space:nowrap;">{r_score_html}</td>
           </tr>
         </table>'''
             else:
@@ -1097,7 +1125,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 if grade == "주의":
                     # 주의 카드 — 리스크 점수 (황색 톤)
                     c_exp_html = build_exposure_html(a.get("entity",""), exposure_data or {}, ref_date, border_color=gs["border_left"])
-                    c_action_row = f'<tr><td style="padding:8px 14px;background:#fff0ee;border-top:1px solid {gs["card_border"]};border-bottom:1px solid {gs["card_border"]};border-left:4px solid {gs["border_left"]};"><p style="margin:0 0 3px 0;font-size:10px;font-weight:700;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
+                    c_action_row = f'<tr><td style="padding:10px 16px;background:#fff0ee;border-top:1px solid {gs["card_border"]};border-bottom:1px solid {gs["card_border"]};"><p style="margin:0 0 3px 0;font-size:10px;font-weight:700;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
                     c_exp_row   = f'<tr><td style="padding:0;">{c_exp_html}</td></tr>' if c_exp_html else ""
                     c_risk = a.get("_risk_score", "")
                     if c_risk:
@@ -1115,7 +1143,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     rows += f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:10px;">
           <tr>
-            <td style="padding:10px 14px;border-bottom:1px solid {gs["card_border"]};">
+            <td style="padding:12px 16px;border-bottom:1px solid {gs["card_border"]};">
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:{f'6px' if badges else '0'};">
                 <tr>
                   <td>{badges}</td>
@@ -1158,15 +1186,17 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                         urgent_badges += f'<span style="font-size:10px;background:#e8f0fe;color:#3b5491;padding:2px 7px;border-radius:3px;margin-right:4px;font-weight:600;">{a["keyword"]}</span>'
                     if a.get("entity") and a.get("entity") != a.get("keyword"):
                         urgent_badges += f'<span style="font-size:10px;background:#f1f5f9;color:#4a6099;padding:2px 7px;border-radius:3px;font-weight:600;">{a["entity"]}</span>'
-                    action_row = f'<tr><td bgcolor="#fef2f2" style="padding:8px 14px;border-bottom:1px solid {gs["card_border"]};background:#fef2f2;border-left:4px solid #ef4444;"><p style="margin:0 0 3px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
-                    exposure_row = f'<tr><td style="padding:0;border-bottom:1px solid {gs["card_border"]};">{exposure_html}</td></tr>' if exposure_html else ""
+                    action_row = f'<tr><td bgcolor="#fef2f2" style="padding:10px 16px;border-bottom:1px solid {gs["card_border"]};background:#fef2f2;"><p style="margin:0 0 3px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{a["action"]}</p></td></tr>' if a.get("action") else ""
+                    exposure_row = f'<tr><td style="padding:0;border-bottom:1px solid {gs["card_border"]};background:#ffffff;">{exposure_html}</td></tr>' if exposure_html else ""
                     notice_text = (a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice","")
-                    notice_row = f'<tr><td bgcolor="#f8fafc" style="padding:8px 14px;background:#f8fafc;border-top:1px solid #e2e8f0;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#334155;">고객케어 안내 추천 문구</span></p><p style="margin:0;font-size:12px;color:#334155;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
+                    notice_row = f'<tr><td bgcolor="#f8fafc" style="padding:10px 16px;background:#f8fafc;border-top:1px solid #e2e8f0;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#334155;">고객케어 안내 추천 문구</span></p><p style="margin:0;font-size:12px;color:#334155;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
                     bottom_box = f'<tr><td bgcolor="#fff8f8" style="background:#fff8f8;border-top:1px solid {gs["card_border"]};padding:0;"><table width="100%" cellpadding="0" cellspacing="0" border="0">{action_row}{exposure_row}{notice_row}</table></td></tr>' if (action_row or exposure_row or notice_row) else ""
+                    is_last = (display_items.index(a) == len([x for x in display_items if x.get("grade")=="긴급"]) - 1 + sum(1 for x in display_items if x.get("grade")!="긴급"))
+                    divider = "" if is_last else f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0;"><tr><td style="padding:0;height:1px;background:#ef4444;font-size:0;line-height:0;">&nbsp;</td></tr></table>'
                     rows += f'''
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:10px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:0;">
           <tr>
-            <td bgcolor="#fff8f8" style="padding:10px 14px;background:#fff8f8;border-bottom:1px solid #f5c6c6;">
+            <td bgcolor="#fff8f8" style="padding:12px 16px;background:#fff8f8;border-bottom:1px solid #f5c6c6;">
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:8px;">
                 <tr>
                   <td>{f"{urgent_badges}" if urgent_badges else ""}</td>
@@ -1242,7 +1272,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         <tr>
           <td valign="middle">
             <p style="margin:0 0 4px 0;font-size:18px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇</p>
-            <p style="margin:0 0 3px 0;font-size:10px;color:#c8d8f0;">Powered by Claude AI</p>
+            <p style="margin:0 0 3px 0;font-size:10px;color:#c8d8f0;text-align:right;">Powered by Claude AI</p>
             <p style="margin:0;font-size:12px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (KST)</p>
           </td>
         </tr>
@@ -1263,14 +1293,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
             <td style="background:#1e3370;padding:3px 0;"></td>
           </tr>
         </table>
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:4px;">
-          <tr>
-            <td style="font-size:10px;color:#ef4444;">■ 긴급 {len(sections["긴급"])}</td>
-            <td style="font-size:10px;color:#f59e0b;">■ 주의 {len(sections["주의"])}</td>
-            <td style="font-size:10px;color:#94a3b8;">■ 참고 {len(sections["참고"])}</td>
-            <td align="right" style="font-size:10px;color:#4a6099;">■ 필터링 {total_count - len(articles)}</td>
-          </tr>
-        </table>
+
       </div>
       <!-- 대시보드 -->
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#2d4278;">
@@ -1302,7 +1325,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
   {('<tr><td>' + build_competitor_html(competitor_notices or [], today_str) + '</td></tr>') if competitor_notices else ""}
 
   <!-- 뉴스 카드 -->
-  <tr><td class="rows-td" style="padding:0 22px 16px 22px;">{rows}</td></tr>
+  <tr><td class="rows-td" style="padding:0 18px 18px 18px;">{rows}</td></tr>
 
   <!-- 푸터 -->
   <tr>
@@ -1766,40 +1789,126 @@ def main():
                     "messages": [{"role": "user", "content": f"""한국투자증권 eBiz본부 리스크 담당자입니다.
 아래 기사를 바탕으로 두 가지를 JSON으로 반환하세요.
 
-1. action: 즉시 취해야 할 실무 조치 (50자 이내, 보고·공유·전달 제외, 실제 행동만)
-   - [확인 대상] + [즉시 조치] + [기한] 포함
-   - 유형별: 회생·파산→담보현황파악, 금감원→컴플라이언스점검, PF→미매각잔액파악, 신용등급강등→평가손산출, 반대매매→담보부족계좌파악, 리츠→기초자산확인
+1. action: 즉시 취해야 할 실무 조치 (100자 이내, 보고·공유·전달 제외, 실제 행동만)
+
+   [대응방안 작성 규칙 — 반드시 준수]
+   - "모니터링", "확인 필요", "파악 예정", "공유" 같은 추상 표현 단독 사용 금지
+   - 실무 담당자가 즉시 실행 가능한 수준으로 구체적으로 작성
+   - 아래 요소 중 최소 3개 이상 반드시 포함:
+     · 우선순위 고객 조건 (고액잔고/신용융자 보유/미수 발생 가능/집중보유/손실률 상위)
+     · 점검 대상 자산·상품명
+     · 실제 산출 항목 (평가손, 담보부족계좌 수, 강제매도 예정 규모 등)
+     · 점검 기한 (금일 내 / 2영업일 내 / 주 1회)
+     · 악화 시 trigger 조건 (거래정지 확정 시 / 추가 하한가 발생 시 / 등급 추가 강등 시)
+
+   - 좋은 예: "삼부토건 신용융자·미수 보유 계좌 우선 추출, 담보부족 가능 고객 금일 내 산출, 거래정지 확정 시 반대매매 영향 재계산"
+   - 나쁜 예: "관련 고객 모니터링 필요" (실행 불가한 일반론 금지)
+
+   - 익스포저 정보가 제공된 경우 규모(대/중/소)에 따라 조치 강도 조정
+     · 대(100억 이상 또는 1만명 이상): 긴급 전수조사 + 금일 내 완료
+     · 중(10억~100억 또는 1천~1만명): 우선순위 파악 + 2영업일 내
+     · 소(10억 미만 또는 1천명 미만): 현황 파악 + 주 1회 모니터링
+   - 아래 카테고리·사건 단계별 조치 기준 적용:
+
+   [상장폐지·거래정지]
+   - 심의 예정: 뱅키스 보유 고객 명수·잔고 긴급 파악 → 심의 결과 실시간 모니터링 → 금일 내 완료
+   - 확정(상폐): 담보계좌·신용계좌 전수 파악 → 강제 매도 예정 수량·손실 금액 산출 → 금일 내 완료
+   - 확정(거래정지): 거래정지 사유·기간 확인 → 보유 고객 영향 범위 파악 → 재개 일정 추적
+   - 거래 재개: 재개 조건 충족 여부 확인 → 고객 안내 필요성 검토 → 익스포저 재산정
+
+   [기업회생·워크아웃·파산·부도]
+   - 회생 신청: 당사 채권·PF·보증 익스포저 전수 파악 → 선순위 여부·담보가치 산출 → 금일 내
+   - 회생 개시: 관리인 선임 여부 확인 → 채권 신고 기한 파악 → 채권단 협의 일정 모니터링
+   - 회생계획 인가: 변제율·분할 상환 일정 확인 → 평가손 산출 → 대손충당금 검토
+   - 워크아웃 신청: 채권단 협의 참여 여부 확인 → 출자전환 가능성 검토 → 주 1회 모니터링
+   - 파산·부도 확정: 청산 절차·배당 예상률 파악 → 전액 손실 가정 평가손 즉시 산출
+
+   [PF부실·미매각·발행어음]
+   - PF 브릿지론 연체: 해당 사업장 브릿지론 잔액·만기 파악 → 차환 가능성 및 손실 시나리오 산출
+   - 본PF 부실: 사업장별 분양률·공정률 확인 → 선순위 담보 대비 익스포저 비율 산출
+   - 미매각 발생: 미매각 잔액·인수 의무 여부 파악 → 차환 실패 시 손실 금액 즉시 산출
+   - 발행어음 부실: 해당 증권사 발행어음 잔액·만기 분포 파악 → 대체 운용 방안 검토
+
+   [신용등급 강등·부실 리스크·디폴트]
+   - 강등 예고(Negative Watch): 익스포저 현황 파악 → 강등 시 트리거 조항 해당 여부 사전 검토
+   - 강등 확정(1노치): 보유 채권 평가손 즉시 산출 → 트리거 조항 발동 여부 확인
+   - 강등 확정(2노치 이상): 전액 회수 불가 시나리오 포함 평가손 산출 → 2영업일 내 완료
+   - 디폴트 우려: 원리금 상환 일정·잔여 담보 가치 확인 → 손실 최대치 시나리오 즉시 산출
+
+   [반대매매·신용융자·유동성 리스크]
+   - 반대매매 급증: 당사 담보부족계좌 수·추가 담보 요구액 파악 → 강제 매도 예정 규모 금일 내 산출
+   - 반대매매 역대 최대: 전일 대비 증가율 파악 → 당사 반대매매 현황 즉시 집계 → 모니터링 강화
+   - 신용융자 잔고 이상: 당사 신용융자 잔고·담보비율 현황 파악 → 주 1회 추이 점검
+   - 유동성 위기: 해당 기업 당사 익스포저 파악 → 만기 도래 채권·어음 집중 모니터링
+
+   [신용 리스크·부실 리스크 조기징후]
+   - 감사의견 거절 예상: 해당 기업 보유 채권·주식 현황 파악 → 상폐 가능성 시나리오 사전 검토
+   - 차환 실패 우려: 만기 일정·차환 계획 파악 → 미차환 시 손실 시나리오 준비
+   - 대주주 횡령·배임: 거래정지·상폐 가능성 검토 → 보유 고객 현황 사전 파악
+
+   [금감원·금융당국 제재·검사]
+   - 당사 직접 제재: 제재 내용·과징금 규모 확인 → 컴플라이언스팀 즉시 공유 → 유사 행위 자체점검
+   - 업계 제재(타사): 유사 영업행위 자체점검 착수 → 내부 규정 준수 현황 점검 → 2영업일 내
+   - 검사 예고: 해당 업무 관련 내부 자료 정비 → 대응 현황 사전 점검
+
+   [한국투자증권 시스템 장애]
+   - MTS·HTS 전면 장애: 장애 범위·영향 고객 수 즉시 파악 → 복구 예상 시점 확인 → 금일 내 완료
+   - 부분 장애·접속 오류: 영향 기능·고객 범위 파악 → 원인 분석 및 재발 방지 조치 확인
+   - 보안 사고: 피해 범위·고객 정보 유출 여부 즉시 확인 → 보안팀 긴급 대응 착수
+
+   [서킷브레이커·시장 급변]
+   - 서킷브레이커 발동: 당사 보유 주식형 자산 평가 현황 파악 → 추가 하락 시 손실 시나리오 준비
+   - 급락 장세: 담보부족 계좌 현황 선제 파악 → 반대매매 연쇄 가능성 모니터링
 
 2. customer_notice: 고객 안내 문구 (5줄 이내)
 
-   [작성 원칙 — 고객 중심]
-   - 고객 입장에서 "나에게 왜 중요한가", "지금 어떻게 해야 하나"가 즉시 이해되도록 작성
-   - 회사 중심(당사, 저희) 표현 대신 고객 중심(고객님의, 고객님께서 보유하신) 표현 사용
-   - 불안 조성 없이 상황을 명확하게 전달하고 행동 방향 제시
-   - 5줄 이내, 짧고 명확하게
+   [어투 원칙 — 공식 회사 문서 기준]
+   - "저희", "당사에" → "당사로", "본사로" 사용
+   - "문의해 주세요" → "문의 바랍니다" 사용
+   - "확인해 보세요" → "확인하시기 바랍니다" 사용
+   - 전반적으로 격식체·공문 톤 유지
+
+   [민원 방지 원칙 — 반드시 준수]
+   - 단정적 표현 절대 금지: "손실 발생 예정", "거래 불가", "원금 손실 확정" 등
+   - 공포 조장 금지: 과도한 경고성 표현, 최악 시나리오 단정 표현
+   - 법적 책임 확정 표현 금지: "당사 귀책", "피해 보상" 등
+   - 과도한 사과 표현 금지
+   - 대신: 가능성·우려 표현 사용 ("영향이 있을 수 있습니다", "변동될 수 있습니다")
+
+   [행동 유도 — 반드시 1개 이상 포함]
+   - 보유 수량 및 주문 가능 상태 확인
+   - 담보비율 점검
+   - 공시 확인 (KIND, 전자공시)
+   - 투자 위험 재점검
+   - 만기·상환 일정 확인
+   예: "금일 심의 결과에 따라 거래 가능 여부가 변동될 수 있으니 보유 수량 및 주문 가능 상태를 확인하시기 바랍니다."
+
+   [긴급도별 톤 — 반드시 구분]
+   - 긴급 등급: "즉시", "금일 내", "즉각" 등 시급성 표현 필수
+     → 첫 줄: "[한국투자증권] 긴급 안내"
+     → 행동 유도 강하게: "즉시 확인하시기 바랍니다", "금일 내 조치를 권고드립니다"
+   - 주의 등급: 가능성·우려 표현으로 차분하게
+     → 첫 줄: "[한국투자증권] 중요 안내"
+     → 행동 유도 완만하게: "모니터링하시기 바랍니다", "점검을 권고드립니다"
+
+   [사건 단계별 맞춤 구조]
+   - 상폐 심의·결정 전: 거래 가능 여부 불확실 → "심의 결과에 따라 거래가 제한될 수 있습니다"
+   - 상폐 확정: 거래 불가 확정 → "현재 해당 종목은 거래가 불가합니다" + 손실 확인 권유
+   - 거래정지: "현재 거래가 일시 정지된 상태입니다" + 재개 여부 모니터링 권유
+   - 기업회생 신청: "법원의 회생 절차가 개시될 예정입니다" + 상환 일정 변경 가능성 안내
+   - 기업회생 인가: "회생계획에 따라 채권 회수율이 조정될 수 있습니다"
+   - 반대매매·신용융자: 담보비율 확인 및 추가 납입 권유
+   - PF·채권 부실: 보유 상품 점검 및 만기 구조 확인 권유
 
    [쉬운 용어 치환 — 반드시 적용]
-   - 담보유지율·담보 유지율 → 담보비율
    - 반대매매 → 강제 매도
-   - 증거금 → 보증금
    - 신용융자 → 신용 대출
-   - 만기 도래 → 만기가 다가옴
    - 기초자산 → 투자 기반 자산
-   - 익스포저 → 투자 규모
    - 채무불이행 → 빚을 갚지 못함
    - 기업회생 → 법원의 회생 절차
    - 유동성 위기 → 현금 부족 위기
    - 상장폐지 → 상장 폐지(거래 불가)
 
-   [유형별 구조]
-   - 회생·파산·상폐: [한국투자증권] 중요 안내
-     → 상황 1줄 + "고객님의 투자에 영향이 있을 수 있습니다" + 확인 권유 + 문의처
-   - ETF·펀드 상폐: [한국투자증권] 보유상품 안내
-     → 상황 1줄 + 고객님이 취해야 할 행동 1줄 + 문의처
-   - 신용융자·반대매매: [한국투자증권] 담보비율 안내
-     → 현재 상황 1줄 + 담보비율 확인 및 대응 권유 1줄 + 문의처
-   - PF·채권·제재: [한국투자증권] 시장 현황 안내
-     → 상황 요약 1줄 + 보유 상품 점검 권유 1줄 + 문의처
    끝에 반드시 "문의: 고객센터 1544-5000" 포함
 
 반드시 JSON만 반환. 마크다운 없이.
