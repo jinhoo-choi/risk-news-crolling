@@ -740,7 +740,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 raise ValueError("Claude 응답 text 비어있음")
             raw = raw.replace("```json", "").replace("```", "").strip()
             import re as _re
-            _match = _re.search(r"\[\s*\{.*?\}\s*\]", raw, _re.S)
+            _match = _re.search(r"\[[\s\S]*\]", raw)
             if not _match:
                 raise ValueError("JSON 배열을 찾을 수 없음 (정규식 불일치)")
             raw = _match.group(0)
@@ -2046,7 +2046,7 @@ def main():
     else:
         print("  경쟁사 신용·대출 특이사항 없음")
     if exposure_data:
-        ref_date = next(iter(exposure_data.values())).get("기준일", "")
+        ref_date = next(iter(exposure_data.values()))[0].get("기준일", "")
         print(f"  익스포저 데이터 로드 완료 ({len(exposure_data)}건, 기준일: {ref_date})")
     else:
         ref_date = ""
