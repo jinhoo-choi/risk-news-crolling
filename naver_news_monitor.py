@@ -50,7 +50,7 @@ DESC_SIM_THRESHOLD  = 0.76  # 본문 요약 유사도 (언론사 copy 대응)
 
 
 def load_exposure_data() -> dict:
-    """CSV에서 eBiz본부 익스포저 데이터 로드 — 종목명 기준 딕셔너리 반환"""
+    """CSV에서 eBiz본부 익스포저 데이터 로드 — {종목명: [row, ...]} 리스트 딕셔너리 반환"""
     if not os.path.exists(EXPOSURE_FILE):
         return {}
     try:
@@ -60,20 +60,20 @@ def load_exposure_data() -> dict:
             for row in reader:
                 name = row.get("종목명", "").strip()
                 if name:
-                    result[name] = row
+                    result.setdefault(name, []).append(row)
             return result
     except Exception:
         return {}
 
 
 def find_exposure(entity: str, exposure_data: dict) -> list:
-    """entity와 종목명 딕셔너리 매칭 — 단어 경계 기반 정밀 매칭"""
+    """entity와 종목명 딕셔너리 매칭 — 단어 경계 기반 정밀 매칭, 동일 종목명의 모든 행 반환"""
     import re
     if not entity or not exposure_data:
         return []
-    # 1) 정확히 일치하면 즉시 반환
+    # 1) 정확히 일치하면 즉시 반환 (모든 유형 포함)
     if entity in exposure_data:
-        return [exposure_data[entity]]
+        return exposure_data[entity]
     # 2) 단어 경계 기반 부분 매칭
     #    앞뒤가 한글/영숫자가 아닌 경우만 허용
     #    예: "화신" → "무궁화신탁" 불일치, "화신" → "화신정공" 일치
@@ -81,12 +81,12 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
     entity_pattern = re.compile(
         r'(?<![가-힣a-zA-Z0-9])' + re.escape(entity) + r'(?![가-힣a-zA-Z0-9])'
     )
-    for name, row in exposure_data.items():
+    for name, rows in exposure_data.items():
         name_pattern = re.compile(
             r'(?<![가-힣a-zA-Z0-9])' + re.escape(name) + r'(?![가-힣a-zA-Z0-9])'
         )
         if entity_pattern.search(name) or name_pattern.search(entity):
-            results.append(row)
+            results.extend(rows)
     return results
 
 
@@ -996,8 +996,12 @@ def build_exposure_html(entity: str, exposure_data: list, ref_date: str, border_
         return ""
     date_label = f"기준일: {ref_date}" if ref_date else ""
 
-    stock_rows = [r for r in rows if r.get("종목유형","") != "여신"]
-    loan_rows  = [r for r in rows if r.get("종목유형","") == "여신"]
+    # 종목유형 분류
+    # 여신잔고: 여신, 신용융자, 신용, 신용공여 → loan_rows
+    # 보유현황: 주식, 펀드, 리츠, 채권 등 나머지 → stock_rows
+    LOAN_TYPES = {"여신", "신용융자", "신용", "신용공여", "신용대출"}
+    stock_rows = [r for r in rows if r.get("종목유형","") not in LOAN_TYPES]
+    loan_rows  = [r for r in rows if r.get("종목유형","") in LOAN_TYPES]
 
     def _fmt_row(r, show_type=True):
         잔고 = float(str(r.get("잔고(억)","0")).replace(",",""))
