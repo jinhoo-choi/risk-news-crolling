@@ -715,11 +715,11 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 },
                 json={
                     "model": CLAUDE_MODEL,
-                    "max_tokens": 1800,
+                    "max_tokens": 4096,
                     "temperature": 0.0,
                     "messages": [{"role": "user", "content": prompt}],
                 },
-                timeout=60,
+                timeout=90,
             )
             print(f"  [AI] 배치 {offset//50+1} 응답 {time.time()-_t0:.1f}초")
             if res.status_code == 429:
@@ -742,6 +742,33 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             _start = raw.find("[")
             _end   = raw.rfind("]")
             if _start == -1 or _end == -1 or _end <= _start:
+                # ] 없이 잘린 경우 — json_repair 복구 시도
+                if _start != -1:
+                    try:
+                        from json_repair import repair_json as _rj
+                        _repaired = _rj(raw[_start:])
+                        grades = json.loads(_repaired)
+                        print(f"  JSON repair(잘린 응답) 적용됨 (배치 {offset//50+1})")
+                        if not isinstance(grades, list):
+                            raise ValueError(f"grades가 list가 아님: {type(grades)}")
+                        grade_map = {g["id"]: g for g in grades}
+                        result = []
+                        for i, article in enumerate(batch):
+                            info = grade_map.get(i + offset + 1, {})
+                            article["_ai_confidence"] = info.get("confidence", None)
+                            if info.get("relevant") and info.get("grade"):
+                                if not info.get("entity", "").strip():
+                                    print(f"  [entity 빈값] relevant 무효화: {article.get('title','')[:30]}")
+                                    continue
+                                article["grade"]      = info["grade"]
+                                article["reason"]     = info.get("reason", "")
+                                article["action"]     = info.get("action", "")
+                                article["entity"]     = info.get("entity", "").strip()
+                                article["event_type"] = info.get("event_type", "")
+                                result.append(article)
+                        return result
+                    except Exception:
+                        pass
                 raise ValueError("JSON 배열을 찾을 수 없음 (정규식 불일치)")
             raw = raw[_start:_end + 1]
             try:
