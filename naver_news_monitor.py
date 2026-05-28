@@ -516,7 +516,7 @@ TITLE_ONLY_PATTERNS = [
 # 주의: "전망", "소식"은 리스크 기사 desc에도 등장할 수 있어 TITLE_ONLY로 이동
 TEXT_PATTERNS = [
     "분석", "리포트", "보고서", "추천",
-    "인터뷰", "기획", "특집", "르포", "칼럼", "오피니언", "사설", "논설",
+    "인터뷰", "기획", "특집", "르포", "칼럼", "오피니언", "논설",  # "사설"은 TITLE_ONLY_PATTERNS에 이미 포함
 ]
 
 # desc에서만 체크하면 오탐 위험 — 기자수첩 등은 제목에만 적용
@@ -1048,7 +1048,7 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
     return result
 
 
-def build_exposure_html(entity: str, exposure_data: list, ref_date: str, border_color: str = "#c0392b") -> str:
+def build_exposure_html(entity: str, exposure_data: dict, ref_date: str, border_color: str = "#c0392b") -> str:
     """익스포저 현황 HTML — 옵션B: 통합 헤더 + 보유/여신 태그로 구분"""
     rows = find_exposure(entity, exposure_data)
     if not rows:
@@ -1175,7 +1175,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
             if grade == "참고":
                 r_risk = a.get("_risk_score", "")
                 if r_risk:
-                    r_filled = int(r_risk)
+                    r_filled = min(int(r_risk), 10)
                     r_bar = "█" * r_filled + "░" * (10 - r_filled)
                     r_score_html = f'<div style="font-size:9px;color:#94a3b8;font-family:monospace;text-align:right;">{r_risk:.1f}<br>{r_bar}</div>'
                 else:
@@ -1205,7 +1205,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     c_exp_row   = f'<tr><td style="padding:0;">{c_exp_html}</td></tr>' if c_exp_html else ""
                     c_risk = a.get("_risk_score", "")
                     if c_risk:
-                        c_filled = int(c_risk)
+                        c_filled = min(int(c_risk), 10)
                         c_bar = "█" * c_filled + "░" * (10 - c_filled)
                         c_score_html = (
                             f'<div style="text-align:right;min-width:90px;">'
@@ -1244,7 +1244,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                         a["_has_exposure"] = True
                     risk_score = a.get("_risk_score", "")
                     if risk_score:
-                        filled = int(risk_score)        # 채워진 블록 수 (0~10)
+                        filled = min(int(risk_score), 10)  # 채워진 블록 수 (0~10)
                         empty  = 10 - filled
                         bar_str = "█" * filled + "░" * empty
                         risk_score_html = (
@@ -2104,27 +2104,24 @@ def main():
     caution_cnt = len([a for a in filtered if a["grade"]=="주의"])
     ref_cnt = len([a for a in filtered if a["grade"]=="참고"])
     filtered_titles = f"[등급 분포] 긴급 {urgent_cnt}건 / 주의 {caution_cnt}건 / 참고 {ref_cnt}건\n\n" + "\n".join([f"- [{a['grade']}] {a['title']}" for a in filtered])
-    if not filtered_titles.strip():
+    try:
+        sum_res = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": CLAUDE_MODEL,
+                "max_tokens": 80,
+                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 오늘의 리스크 흐름을 30자 이내 한 문장으로만 작성하세요.\n문장 외 다른 내용 일절 금지. 예: '삼부토건 상폐 심의·홈플러스 회생 갈림길 동시 부각'\n\n{filtered_titles}"}],
+            },
+            timeout=15,
+        )
+        ai_summary = next((b.get("text","") for b in sum_res.json().get("content",[]) if b.get("type")=="text"), "").strip()
+    except Exception:
         ai_summary = ""
-    else:
-        try:
-            sum_res = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": CLAUDE_MODEL,
-                    "max_tokens": 80,
-                    "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 오늘의 리스크 흐름을 30자 이내 한 문장으로만 작성하세요.\n문장 외 다른 내용 일절 금지. 예: '삼부토건 상폐 심의·홈플러스 회생 갈림길 동시 부각'\n\n{filtered_titles}"}],
-                },
-                timeout=15,
-            )
-            ai_summary = sum_res.json()["content"][0]["text"].strip()
-        except Exception:
-            ai_summary = ""
 
     html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary, exposure_data=exposure_data, ref_date=ref_date, competitor_notices=competitor_notices, today_str=today_str)
     send_email(subject, html)
@@ -2138,7 +2135,7 @@ def main():
         # event_type 기반 combo 저장 — 동일 기업 다른 사건 유형 구분
         if event_type and entity:
             new_combos_this_run.add((entity, event_type))
-        elif keyword:
+        elif keyword and entity:  # entity 없으면 combo 저장 안 함 — 과다 차단 방지
             new_combos_this_run.add((entity, keyword))
     save_seen_urls(sent_urls, new_combos_this_run,
                    title_norms=new_title_norms, desc_norms=new_desc_norms)
