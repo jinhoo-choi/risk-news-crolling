@@ -777,8 +777,9 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
         except Exception as e:
             print(f"AI 필터링 오류: {e}")
             try:
-                print(f"API 응답 상태코드: {res.status_code}")
-                print(f"API 응답 원문: {res.text[:300]}")
+                if 'res' in dir():
+                    print(f"API 응답 상태코드: {res.status_code}")
+                    print(f"API 응답 원문: {res.text[:300]}")
             except:
                 pass
             if attempt < 2:
@@ -1266,7 +1267,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
             </td>
           </tr>
           {bottom_box}
-        </table>'''
+        </table>{divider}'''
         if extra_items:
             extra_rows = "".join([f'''
             <tr>
@@ -1351,9 +1352,9 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         </table>
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#1e3370;border-radius:3px;overflow:hidden;">
           <tr>
-            <td width="{max(1, round(len(sections["긴급"])/max(total_count,1)*100))}%" style="background:#ef4444;padding:3px 0;"></td>
-            <td width="{max(1, round(len(sections["주의"])/max(total_count,1)*100))}%" style="background:#f59e0b;padding:3px 0;"></td>
-            <td width="{max(1, round(len(sections["참고"])/max(total_count,1)*100))}%" style="background:#94a3b8;padding:3px 0;"></td>
+            <td width="{max(1, round(len(sections['긴급'])/max(total_count,1)*100))}%" style="background:#ef4444;padding:3px 0;"></td>
+            <td width="{max(1, round(len(sections['주의'])/max(total_count,1)*100))}%" style="background:#f59e0b;padding:3px 0;"></td>
+            <td width="{max(1, round(len(sections['참고'])/max(total_count,1)*100))}%" style="background:#94a3b8;padding:3px 0;"></td>
             <td style="background:#1e3370;padding:3px 0;"></td>
           </tr>
         </table>
