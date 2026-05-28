@@ -739,11 +739,11 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             if not raw:
                 raise ValueError("Claude 응답 text 비어있음")
             raw = raw.replace("```json", "").replace("```", "").strip()
-            import re as _re
-            _match = _re.search(r"\[[\s\S]*\]", raw)
-            if not _match:
+            _start = raw.find("[")
+            _end   = raw.rfind("]")
+            if _start == -1 or _end == -1 or _end <= _start:
                 raise ValueError("JSON 배열을 찾을 수 없음 (정규식 불일치)")
-            raw = _match.group(0)
+            raw = raw[_start:_end + 1]
             try:
                 try:
                     grades = json.loads(raw)
@@ -943,22 +943,28 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     # confidence 구간별 강등 정책
     # 긴급: 0.85 미만 → 주의
     # 주의: 0.60 미만 → 참고 (false positive 억제)
-    for a in urgent[:]:
+    urgent_keep = []
+    for a in urgent:
         conf = a.get("_ai_confidence") or 0
         if conf < 0.85:
             a["grade"] = "주의"
             a["customer_notice"] = None
-            urgent.remove(a)
             caution.append(a)
             print(f"  [confidence 강등] 긴급→주의 (conf={conf:.2f}): {a['title'][:30]}")
+        else:
+            urgent_keep.append(a)
+    urgent = urgent_keep
 
-    for a in caution[:]:
+    caution_keep = []
+    for a in caution:
         conf = a.get("_ai_confidence") or 0
         if conf < 0.60:
             a["grade"] = "참고"
-            caution.remove(a)
             ref.append(a)
             print(f"  [confidence 강등] 주의→참고 (conf={conf:.2f}): {a['title'][:30]}")
+        else:
+            caution_keep.append(a)
+    caution = caution_keep
 
     # 긴급 — 상위 2건 유지, 나머지 주의로 강등
     for i, a in enumerate(urgent):
@@ -1237,7 +1243,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     notice_text = (a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice","")
                     notice_row = f'<tr><td class="care-td" bgcolor="#f8fafc" style="padding:10px 16px;background:#f8fafc;border-top:1px solid #e2e8f0;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#334155;">고객케어 안내 추천 문구</span></p><p style="margin:0;font-size:12px;color:#334155;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
                     bottom_box = f'<tr><td bgcolor="#fff8f8" style="background:#fff8f8;border-top:1px solid {gs["card_border"]};padding:0;"><table width="100%" cellpadding="0" cellspacing="0" border="0">{action_row}{exposure_row}{notice_row}</table></td></tr>' if (action_row or exposure_row or notice_row) else ""
-                    is_last = (display_items.index(a) == len([x for x in display_items if x.get("grade")=="긴급"]) - 1 + sum(1 for x in display_items if x.get("grade")!="긴급"))
+                    is_last = (display_items.index(a) == len(display_items) - 1)
                     divider = "" if is_last else f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0;"><tr><td style="padding:0;height:1px;background:#ef4444;font-size:0;line-height:0;">&nbsp;</td></tr></table>'
                     rows += f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:0;">
@@ -1324,7 +1330,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
 
   <!-- 헤더 H-3 -->
   <tr>
-    <td class="header-td" class="header-td" style="background:#3b5491;padding:18px 26px 14px;">
+    <td class="header-td" style="background:#3b5491;padding:18px 26px 14px;">
       <!-- 타이틀 -->
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:12px;">
         <tr>
@@ -2021,6 +2027,11 @@ def main():
             if not raw:
                 return
             raw = raw.replace("```json", "").replace("```", "").strip()
+            _s = raw.find("{")
+            _e = raw.rfind("}")
+            if _s == -1 or _e == -1 or _e <= _s:
+                return
+            raw = raw[_s:_e + 1]
             result = json.loads(raw)
             if result.get("action"):
                 article["action"] = result["action"]
@@ -2046,7 +2057,8 @@ def main():
     else:
         print("  경쟁사 신용·대출 특이사항 없음")
     if exposure_data:
-        ref_date = next(iter(exposure_data.values()))[0].get("기준일", "")
+        first_rows = next(iter(exposure_data.values()), None)
+        ref_date = first_rows[0].get("기준일", "") if first_rows else ""
         print(f"  익스포저 데이터 로드 완료 ({len(exposure_data)}건, 기준일: {ref_date})")
     else:
         ref_date = ""
