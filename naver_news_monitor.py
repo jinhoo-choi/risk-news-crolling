@@ -555,7 +555,7 @@ def is_hard_excluded(title: str, desc: str = "") -> tuple:
 
 
 def ai_filter_batch(batch: list, offset: int = 0) -> list:
-    """50건씩 배치로 AI 필터링"""
+    """40건씩 배치로 AI 필터링"""
     if not batch:
         return []
 
@@ -721,7 +721,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 },
                 timeout=60,
             )
-            print(f"  [AI] 배치 {offset//50+1} 응답 {time.time()-_t0:.1f}초")
+            print(f"  [AI] 배치 {offset//40+1} 응답 {time.time()-_t0:.1f}초")
             if res.status_code == 429:
                 wait = 60 * (attempt + 1)
                 print(f"  Rate limit 429 — {wait}초 대기 후 재시도 ({attempt+1}/3)")
@@ -751,7 +751,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 if _bracket == -1:
                     raise ValueError("JSON 배열을 찾을 수 없음 (정규식 불일치)")
                 raw = raw[_bracket:]  # 잘린 채로 repair에 넘김
-                print(f"  ⚠️ JSON 잘림 감지 — json_repair 복원 시도 (배치 {offset//50+1})")
+                print(f"  ⚠️ JSON 잘림 감지 — json_repair 복원 시도 (배치 {offset//40+1})")
             try:
                 try:
                     grades = json.loads(raw)
@@ -760,7 +760,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                     from json_repair import repair_json
                     repaired = repair_json(raw)
                     grades = json.loads(repaired)
-                    print(f"  JSON repair 적용됨 (배치 {offset//50+1})")
+                    print(f"  JSON repair 적용됨 (배치 {offset//40+1})")
             except json.JSONDecodeError as je:
                 raise ValueError(f"JSON 파싱 실패: {je}") from je
             if not isinstance(grades, list):
@@ -799,7 +799,15 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             except:
                 pass
             if attempt < 2:
-                time.sleep(random.uniform(20, 45))
+                # 빠른 실패(빈 응답·파싱 오류)는 즉시 재시도
+                # 429·5xx 서버 오류 또는 타임아웃은 jitter 대기
+                _err_str = str(e).lower()
+                if any(k in _err_str for k in ("429", "500", "502", "503", "timeout", "timed out")):
+                    _wait = random.uniform(20, 45)
+                    print(f"  서버 오류/타임아웃 — {_wait:.0f}초 대기 후 재시도 ({attempt+1}/3)")
+                    time.sleep(_wait)
+                else:
+                    time.sleep(1)  # 빠른 실패: 1초만 대기
                 continue
             return []
     return []
@@ -1019,7 +1027,7 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
     if not articles:
         return []
     result = []
-    batch_size = 50
+    batch_size = 40
     ai_fail_count = 0
     MAX_AI_FAILS = 3  # circuit breaker — 연속 3회 실패 시 중단
     for i in range(0, len(articles), batch_size):
