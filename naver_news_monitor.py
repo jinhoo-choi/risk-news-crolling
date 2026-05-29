@@ -1111,21 +1111,21 @@ def build_exposure_html(entity: str, exposure_data: list, ref_date: str, border_
         all_bond_rows.extend( [r for r in rows if r.get("종목유형","") in BOND_TYPES])
         all_loan_rows.extend( [r for r in rows if r.get("종목유형","") in LOAN_TYPES])
 
+    _NONE_HTML = '<div style="font-size:12px;color:#94a3b8;line-height:1.7;">없음</div>'
+
     sections = []
 
     if is_bond_event:
-        # 채권계열 사건 → 채권잔고만
-        if all_bond_rows:
-            sections.append(_make_section("채권잔고", "#ede9fe", "#5b21b6",
-                "".join([_fmt_row(r, show_type=False) for r in all_bond_rows])))
+        # 채권계열 사건 → 채권잔고 (없으면 없음 표기)
+        sections.append(_make_section("채권잔고", "#ede9fe", "#5b21b6",
+            "".join([_fmt_row(r, show_type=False) for r in all_bond_rows]) if all_bond_rows else _NONE_HTML))
     else:
         # 주식계열 사건 (또는 event_type 미지정) → 주식잔고 + (미지정시 채권잔고) + 여신잔고
-        if all_stock_rows:
-            sections.append(_make_section("주식잔고", "#fee2e2", "#c0392b",
-                "".join([_fmt_row(r, show_type=False) for r in all_stock_rows])))
-        if all_bond_rows and not event_type:
+        sections.append(_make_section("주식잔고", "#fee2e2", "#c0392b",
+            "".join([_fmt_row(r, show_type=False) for r in all_stock_rows]) if all_stock_rows else _NONE_HTML))
+        if not event_type:
             sections.append(_make_section("채권잔고", "#ede9fe", "#5b21b6",
-                "".join([_fmt_row(r, show_type=False) for r in all_bond_rows])))
+                "".join([_fmt_row(r, show_type=False) for r in all_bond_rows]) if all_bond_rows else _NONE_HTML))
         if all_loan_rows:
             if len(all_loan_rows) == 1:
                 loan_잔고 = float(str(all_loan_rows[0].get("잔고(억)","0")).replace(",",""))
@@ -1135,9 +1135,22 @@ def build_exposure_html(entity: str, exposure_data: list, ref_date: str, border_
             else:
                 loan_html = "".join([_fmt_row(r, show_type=False) for r in all_loan_rows])
             sections.append(_make_section("여신잔고", "#fef3c7", "#b45309", loan_html))
+        else:
+            sections.append(_make_section("여신잔고", "#fef3c7", "#b45309", _NONE_HTML))
 
-    if not sections:
-        return ""
+    # 3개 모두 없음 — entity 자체가 CSV에 없는 경우
+    all_none = all(
+        _NONE_HTML in s for s in sections
+    )
+    if all_none:
+        result = f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
+      <tr><td style="padding:10px 16px;">
+        <p style="margin:0 0 4px 0;font-size:10px;font-weight:700;color:#1e293b;">뱅키스 익스포저
+          <span style="font-weight:400;color:#94a3b8;">{date_label}</span></p>
+        <div style="font-size:12px;color:#94a3b8;">뱅키스 잔고 없음</div>
+      </td></tr>
+    </table>'''
+        return result
 
     divider = '''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0;">
       <tr><td style="height:1px;background:#e2e8f0;font-size:0;line-height:0;">&nbsp;</td></tr>
