@@ -715,7 +715,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 },
                 json={
                     "model": CLAUDE_MODEL,
-                    "max_tokens": 3000,
+                    "max_tokens": 4096,
                     "temperature": 0.0,
                     "messages": [{"role": "user", "content": prompt}],
                 },
@@ -2089,7 +2089,9 @@ def main():
     else:
         print("  경쟁사 신용·대출 특이사항 없음")
     if exposure_data:
-        ref_date = next(iter(exposure_data.values())).get("기준일", "")
+        _first_rows = next(iter(exposure_data.values()))
+        _first_row  = _first_rows[0] if isinstance(_first_rows, list) else _first_rows
+        ref_date = _first_row.get("기준일", "")
         print(f"  익스포저 데이터 로드 완료 ({len(exposure_data)}건, 기준일: {ref_date})")
     else:
         ref_date = ""
