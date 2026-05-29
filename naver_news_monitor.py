@@ -388,7 +388,7 @@ def crawl_naver_news(keyword: str) -> list:
                 break
             except Exception as e:
                 if crawl_attempt < 2:
-                    print(f"[{keyword}] API 오류 — 5초 후 재시도 ({crawl_attempt+1}/3): {e}")
+                    print(f"[{keyword}] API 오류 — {5}초 후 재시도 ({crawl_attempt+1}/3): {e}")
                     time.sleep(5)
                 else:
                     print(f"[{keyword}] API 오류 — 3회 실패, 건너뜀: {e}")
@@ -501,9 +501,6 @@ TITLE_ONLY_PATTERNS = [
     # 리스크 해소·완화 기사 (위기 탈출, 거래정지 해제 등)
     "위기 탈출", "위기탈출", "거래정지 해제", "거래재개", "매매거래 정지 해제",
     "액면병합", "주권 변경상장",  # 기술적 조치, 리스크 아님
-    # 자진(자발적) 상장폐지 — 사모펀드 인수·완전자회사 편입 등 기업 자발적 결정, 리스크 아님
-    "자진 상장폐지", "자진상장폐지", "자발적 상장폐지", "자발적상장폐지",
-    "자진 상폐", "자진상폐",
     # 전망·소식 기사 (제목에만 적용 — desc에 있으면 오탐 위험)
     "전망", "소식",  # 제목 기반으로만 필터
     "(完)", "(완)", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩",
@@ -516,7 +513,7 @@ TITLE_ONLY_PATTERNS = [
 # 주의: "전망", "소식"은 리스크 기사 desc에도 등장할 수 있어 TITLE_ONLY로 이동
 TEXT_PATTERNS = [
     "분석", "리포트", "보고서", "추천",
-    "인터뷰", "기획", "특집", "르포", "칼럼", "오피니언", "논설",  # "사설"은 TITLE_ONLY_PATTERNS에 이미 포함
+    "인터뷰", "기획", "특집", "르포", "칼럼", "오피니언", "사설", "논설",
 ]
 
 # desc에서만 체크하면 오탐 위험 — 기자수첩 등은 제목에만 적용
@@ -525,12 +522,6 @@ TITLE_ONLY_PATTERNS += [
     "잡아낸", "변호사", "법률가", "판사", "검사", "사례로 보는", "이야기",
     "하고 싶으면", "하려면", "하는 법", "Q&A", "궁금증",
     "갑질", "피해자", "제보",  # 제보·피해 사례 기사
-    # 기업 자구책·개선 방향 기사 (리스크 해소·완화)
-    "위기 벗어", "위기탈피", "위기극복", "체질 개선", "체질개선",
-    "벗어날까", "살아날까", "회복할까",  # 전망·의문형 제목
-    "위기감 고조", "위기감",  # 분위기성 표현 — 확정 사건 없음
-    # 업계 협약·단가·제도 기사 (리스크 아님)
-    "납품단가", "단가 인상", "유보금", "상생협약", "표준계약",
 ]
 
 EXCLUDE_TITLE_RE_PATTERNS = [
@@ -539,14 +530,6 @@ EXCLUDE_TITLE_RE_PATTERNS = [
     r"\[특집\]",
     r"①|②|③|④|⑤",
     r"^\d+위\s",
-    # 칼럼·시리즈 뱃지 — [셀럽의 한 수], [DQN], [마켓워치] 등 고정 코너명
-    r"^\[셀럽",
-    r"^\[DQN\]",
-    r"^\[마켓워치\]",
-    r"^\[시그널\]",
-    r"^\[머니뭐니\]",
-    r"^\[주간\s",
-    r"^\[월간\s",
 ]
 
 def is_hard_excluded(title: str, desc: str = "") -> tuple:
@@ -585,102 +568,136 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 뱅키스(MTS·HTS) 고객의 자산 손실 또는 당사 직접 손실로 이어지는 기사만 선별합니다.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[판단 절차 — 반드시 이 순서로 확인]
+[포함 기준 — 아래 6가지 중 하나에 해당해야만 relevant:true]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+기준1. 코스피·코스닥 상장사의 상장폐지·거래정지·부도·파산·기업회생 신청 또는 확정
+기준2. 금융당국(금감원·금융위)이 한국투자증권 또는 증권업계를 직접 대상으로 조사 착수·제재·과태료 부과 확정
+기준3. 한국투자증권 MTS·HTS 시스템 직접 장애·보안사고·오류 발생
+기준4. 증권사가 직접 참여한 PF·채권·발행어음의 부실·만기 미상환·미매각 확정
+기준5. 반대매매 실제 급증·역대 최대 등 수치 확정 또는 신용융자 한도 전면 중단 시행
+기준6. 한국투자증권이 직접 언급된 기사로 고객 피해·법적 제재·금전 손실 발생
 
-STEP 1. 아래 제외 조건 중 하나라도 해당하면 → 무조건 relevant:false, 이후 단계 불필요
-  ✗ 칼럼·오피니언·기획·기자수첩·시리즈 기사 (연재, 인터뷰, 전문가 조언 포함)
-  ✗ 업계 전체 실적·통계·순이익·성장률 기사 (특정 기업 리스크 언급 있어도)
-  ✗ 일일 공시 모음·브리핑 기사 (개별 기업 공시 포함돼도)
-  ✗ 리스크 해소·완화 방향 기사 (위기 탈출, 거래정지 해제, 정상화, 회복, 자구책 성공)
-  ✗ 자진(자발적) 상장폐지 기사 (사모펀드 인수·완전자회사 편입 등 기업 자발적 결정)
-  ✗ 분위기성·전망성 표현만 있는 기사 ("위기감", "우려", "경고음", "뇌관", "위험 커져")
-    → 수치·기업명·날짜가 확정적으로 명시된 경우만 예외
-  ✗ 기사 핵심 주제가 리스크가 아닌데 본문에 리스크 키워드가 부수적으로 등장
-  ✗ 비상장사·협력사·은행·보험사 단독 사건 (증권사 익스포저 없는 타 금융업권)
-  ✗ 선거·공약·부동산 개발·복합문화시설 기사
-  ✗ 제목이 의문형 ("~할까?", "~되나?") + 기업 자구책·성장 방향
+7. 직접 손실은 미확정이나 증권사 익스포저 확대 가능성이 높은 조기징후
+   (감사의견 거절 예상·차환 실패 우려·PF 만기 연장 실패·대규모 미청약·대주주 횡령 배임 의혹)
+   → relevant:true 가능, grade는 반드시 "참고"
 
-STEP 2. STEP 1을 통과한 기사만 — 아래 포함 기준 확인
-  아래 6가지 중 하나에 해당해야만 relevant:true. 모호하면 false.
-
-  기준1. 코스피·코스닥 상장사의 상장폐지·거래정지·부도·파산·기업회생 신청 또는 확정
-  기준2. 금융당국(금감원·금융위)이 한국투자증권 또는 증권업계를 직접 대상으로 조사 착수·제재·과태료 부과 확정
-  기준3. 한국투자증권 MTS·HTS 시스템 직접 장애·보안사고·오류 발생
-  기준4. 증권사가 직접 참여한 PF·채권·발행어음의 부실·만기 미상환·미매각 확정
-  기준5. 반대매매 실제 급증·역대 최대 등 수치 확정 또는 신용융자 한도 전면 중단 시행
-  기준6. 한국투자증권이 직접 언급된 기사로 고객 피해·법적 제재·금전 손실 발생
-
-STEP 3. 기준1~6에 해당하지 않아도 아래 조기징후에 해당하면 relevant:true (grade는 반드시 "참고")
-  — 단, 아래 조건을 모두 충족해야 함:
-    · 기사 제목의 핵심 주체가 구체적 기업명이어야 함 (업계 전반 X)
-    · 구체적 금액·날짜·비율이 기사에 명시되어야 함
-    · 사건이 현재 진행 중이거나 임박한 것이어야 함 (이미 알려진 사건 반복 분석 X)
-  해당 조기징후: 감사의견 거절 예상 / 차환 실패 우려 / PF 만기 연장 실패 / 대주주 횡령·배임 의혹 신규
+위 7가지 중 하나에도 해당하지 않으면 무조건 relevant:false.
+모호하거나 확신이 없으면 relevant:false.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[판단 예시]
+[판단 예시 — 반드시 참고]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✅ 긴급 | "금양, 상장폐지 효력정지 가처분 신청" → 기준1, 상폐 절차 진행 중
-✅ 긴급 | "제이알글로벌리츠 400억 채무불이행, 법원에 회생 신청" → 기준1, 상장 리츠 회생 신청
-✅ 긴급 | "빚투 우려 현실로…반대매매 역대 최대, 하루 3000억 강제청산" → 기준5, 수치 확정
-✅ 긴급 | "한국투자증권 MTS 접속 장애, 매매 1시간 중단" → 기준3, 당사 시스템 장애
-✅ 주의 | "금감원, 증권사 PF 브릿지론 현장검사 착수" → 기준2, 증권업계 직접 조사
-✅ 참고 | "OO건설 ABCP 차환 실패 우려…만기 3주 앞두고 미매각" → STEP3, 구체적 기업+금액+임박
-✅ 참고 | "XX리츠 감사의견 거절 가능성…내달 감사보고서 제출" → STEP3, 구체적 기업+시기 명시
+✅ relevant:true  | 긴급 | "금양, 상장폐지 효력정지 가처분 신청" → 기준1 (상폐 절차 진행 중)
+✅ relevant:true  | 긴급 | "한국투자증권 전산사고 과태료 1억 제재" → 기준2+기준3 (당사 직접 제재)
+✅ relevant:true  | 긴급 | "제이알글로벌리츠 400억 채무불이행, 법원에 회생 신청" → 기준1 (상장 리츠 회생 신청)
+✅ relevant:true  | 주의 | "금감원, 증권사 PF 브릿지론 현장검사 착수" → 기준2 (증권업계 직접 조사 착수)
+✅ relevant:true  | 긴급 | "빚투 우려 현실로…반대매매 역대 최대, 하루 3000억 강제청산" → 기준5 (실제 수치 확정)
+✅ relevant:true  | 긴급 | "한국투자증권 MTS 접속 장애, 매매 1시간 중단" → 기준3 (당사 시스템 장애)
 
-❌ false | "빚투 잔고 26조 돌파, 삼성전자 쏠림" → STEP1✗ 통계 보도, 반대매매 확정 아님
-❌ false | "신용융자 36조 역대 최대…전문가 경고" → STEP1✗ 통계+분위기성, 확정 사건 없음
-❌ false | "태영건설 PF 천안 20년 악몽" → STEP1✗ 이미 알려진 사건 반복 분석
-❌ false | "다원시스 협력사 줄도산 위기" → STEP2 미충족, 비상장 협력사·증권사 익스포저 없음
-❌ false | "우리은행 인도네시아 충당금 1380억" → STEP1✗ 타 금융업권, 증권사 무관
-❌ false | "[기자수첩] 빚투 경고음" → STEP1✗ 칼럼·기자 의견
-❌ false | "1분기 보험사 당기순익 4.5조" → STEP1✗ 업계 실적 통계
-❌ false | "핸즈코퍼레이션, 위기 탈출 분주한 발걸음" → STEP1✗ 리스크 해소 방향
-❌ false | "[단독] 제이알리츠 주주들 1450억 넣겠다" → STEP1✗ 주주 지원·유증 = 해소 방향
-❌ false | "오스템임플란트 자진 상장폐지 후 동명이사 혼란" → STEP1✗ 자진 상폐 완료 기업
-❌ false | "'동전주 전락' 패션그룹형지…상폐 위기감 고조" → STEP1✗ 분위기성, 신청·확정 없음
-❌ false | "썸에이지, 게임사업 강화로 위기 벗어날까?" → STEP1✗ 의문형+자구책 방향
-❌ false | "19개 건설사 납품단가 인상…유보금 관행 폐지" → STEP1✗ 업계 협약, 리스크 아님
-❌ false | "[셀럽의 한 수] 코스피 체질 개선 성공했나?" → STEP1✗ 칼럼·시리즈 기사
-❌ false | "[DQN] CJ바이오사이언스 재무·인력 유출" → STEP1✗ 시리즈 기획 기사
-❌ false | "고금리·환율·유가 3高에 기업들 비명" → STEP1✗ 거시경제 분석, 확정 손실 없음
+❌ relevant:false | "[미국발 고금리] 불안한 빚투…코스피 뇌관 되나" → 전망·경고성, 확정 사건 없음
+❌ relevant:false | "외국인 44조 순매도, 개인이 받아냈다" → 수급 동향 기사
+❌ relevant:false | "빚투 잔고 26조 돌파, 삼성전자 쏠림" → 통계 보도, 반대매매 확정 아님
+❌ relevant:false | "고금리·환율·유가 3高에 기업들 비명" → 거시경제 분석, 직접 손실 없음
+❌ relevant:false | "증권사 실적 양극화 심화" → 성과 비교 기사
+❌ relevant:false | "우리은행 인도네시아 충당금 1380억" → 타 금융업권, 증권사 익스포저 없음
+❌ relevant:false | "다원시스 협력사 줄도산 위기" → 비상장 협력사, 증권사 익스포저 없음
+❌ relevant:false | "태영건설 PF 천안 20년 악몽" → 이미 알려진 사건 후속 분석, 새 리스크 없음
+❌ relevant:false | "[한투증권 실적과 질문들]④ 신용융자로 흡수한 빚투 호황" → 시리즈 기획, 손실 아닌 실적
+❌ relevant:false | "BTS 정국, 대기업 임원 해킹 피해" → 증권사 시스템 무관
+❌ relevant:false | "[기자수첩] '포모'가 부추긴 빚투 경고음" → 칼럼·기자 의견, 실제 반대매매 확정 없음
+❌ relevant:false | "신용융자 36조 역대 최대…전문가 경고" → 통계 보도, 반대매매 확정 아님
+❌ relevant:false | "코스피 8천 돌파 후 빚투 경고등…신용융자 36조 사상 최대" → 잔고 통계 보도, 실제 반대매매 발생 아님
+❌ relevant:false | "도 의원 후보, 폐점한 홈플러스 복합문화플랫폼으로" → 선거 공약 기사, 증권사 익스포저와 무관
+❌ relevant:false | "HL D&I 주가 신바람…건설주 정책 기대감에 매수" → 기사 주인공이 HL D&I, 태양건설은 본문 언급만, 직접 리스크 없음
+❌ relevant:false | "갑질 잡아낸 변호사…금융당국도 놀란" → 변호사 인터뷰 기사, 본문 내 K사 사례는 설명 목적, 기사 핵심 주제가 리스크 아님
+❌ relevant:false | "사례로 보는 PF 부실…전문가 조언" → 기획·해설 기사, 가상 사례 포함, 실제 확정 사건 아님
+❌ relevant:false | "현직이 푸는 사모펀드 환매중단 사태 3(完)" → 연재 칼럼, 직접 손실 사건 아님
+❌ relevant:false | "1분기 보험사 당기순익 4.5조…본업 성장세 둔화" → 업계 실적 통계 기사, 본문 내 홈플러스 언급은 부수적, 기사 핵심이 리스크 아님
+❌ relevant:false | "5월 26일 주식시장 주요공시" → 일일 공시 모음 기사, 본문에 특정 기업 공시 포함돼도 기사 자체가 리스크 기사 아님
+❌ relevant:false | "[풍문레이다] 매년 흑자 행진 윙스풋, 인크레더블버즈 임 前 대표..." → 루머·소문 기반 기획 기사, 확정 사건 아님
+❌ relevant:false | "핸즈코퍼레이션, 위기 탈출 분주한 발걸음" → 리스크 완화·해소 방향 기사, 위험 증가 아님
+❌ relevant:false | "[김재창의 시사풍월] 홈플러스와 삼성전자…같은 뿌리, 다른 운명" → 칼럼·오피니언 기사, 직접 리스크 사건 아님
+❌ relevant:false | "이원컴포텍, 액면병합 주권 변경상장→매매거래 정지 해제" → 거래정지 해제 = 리스크 해소, 위험 아님
+❌ relevant:false | "[단독] 제이알리츠 주주들 1450억 넣겠다…운용사에 유증 압박" → 주주 지원·유증 = 긍정 방향, 직접 손실 사건 아님
+❌ relevant:false | "오늘의 주요 공시 브리핑" → 공시 모음, 개별 사건 기사 아님
+❌ relevant:false | "은행권 2분기 순이익 전망…PF 리스크 변수" → 업계 실적 전망 기사, 확정 사건 없음
+❌ relevant:false | "세제 40% 공제 내세운 국민성장펀드…광풍 뒤 숨은 리스크" → 리스크 우려·분석, 직접 손실 미확정
+❌ relevant:false | "[롯데건설 PF 점검] 홈플러스 후순위 1조 시한폭탄" → 시리즈 기획, 이미 알려진 사건 반복 분석
+✅ relevant:true  | 참고 | "OO건설 ABCP 차환 실패 우려…만기 3주 앞두고 미매각" → 기준7 (차환 실패 조기징후)
+✅ relevant:true  | 참고 | "XX리츠 감사의견 거절 가능성…내달 감사보고서 제출" → 기준7 (감사의견 거절 조기징후)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [등급 기준] — relevant:true인 경우만 적용
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
-긴급: 상장폐지·부도·파산·회생 신청 또는 확정 / 금융당국 제재·과태료 확정 / 당사 MTS·HTS 장애 / 반대매매 실제 수치 확정 / 100억↑ 채무 미상환·디폴트 선언
+긴급 (즉각 대응 필요):
+  - 상장폐지·부도·파산·회생 신청 또는 확정
+  - 금융당국 제재·과태료 확정
+  - 당사 MTS·HTS 시스템 장애 발생
+  - 반대매매 역대 최대 등 실제 수치 확정
+  - 100억 이상 채무 미상환·디폴트 선언
 
-주의: 구체적 기업명+금액 명시 + 회생·부도·상폐 가능성 첫 언급 (신청 전) / 금융당국 조사 예고·착수 / 신용등급 강등 경고(Negative Watch) 신규 / PF 부실 징후 첫 보도
-  ※ 이미 알려진 사건의 반복 보도·심층 분석은 주의에서도 제외
+주의 (모니터링 필요) — 아래 조건 모두 충족해야 함:
+  - 구체적 기업명 + 구체적 금액이 기사에 명시된 경우만
+  - 회생·부도·상폐 가능성 처음 언급 (신청 전 단계)
+  - 금융당국 조사·검사 예고·착수 (구체적 대상 명시)
+  - 신용등급 강등 경고(Negative Watch) 신규 발생
+  - PF·채권 부실 징후 첫 보도 (기존 알려진 사건 반복 아닌 것)
+  ※ 이미 알려진 사건의 반복 보도·심층 분석·칼럼은 주의에서도 제외
 
-참고: STEP3 조기징후 해당 기사만
+참고 (업황 파악용 + 조기징후):
+  - 직접 손실 없으나 모니터링 필요한 동향
+  - 손실 미확정이나 증권사 익스포저 확대 가능성 있는 조기징후 (기준7 해당)
 
-[중복 처리]
-동일 사건(기업명+사건유형)을 다른 언론사가 보도한 경우 id 가장 작은 1건만 true, 나머지 false.
-중복 의심 시 제외.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[출력 형식]
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-반드시 JSON 배열만. 마크다운 코드블록(```) 금지. 50건 전부 포함.
-각 항목:
-- id: 뉴스 번호
-- relevant: true/false
-- grade: "긴급"/"주의"/"참고"/null
-- reason: 20자 이내, relevant=false면 null
-- confidence: 0.0~1.0 (false도 반드시 포함)
-- action: relevant=true만, 50자 이내 실무 조치. "보고·공유·전달" 제외, 실제 행동만.
-  긴급→[확인대상]+[즉시조치]+[기한] / 주의→[모니터링주기]+[악화트리거] / 참고→[시사점]+[점검항목]
-- entity: 핵심 기업·종목명 1개 (기관명 제외), relevant=false면 null
-- event_type: 상장폐지/거래정지/기업회생/파산부도/PF부실/신용등급강등/반대매매/금감원제재/시스템장애/발행어음부실/유동성위기/대규모환매/감사의견거절/횡령배임/차환실패/기타리스크, relevant=false면 null
+[매우 중요 — 핵심 주제 판단]
+기사의 핵심 주제·제목의 중심이 리스크가 아니면 relevant:false.
+본문에 리스크 사례·키워드가 등장해도 아래 경우는 반드시 relevant:false:
+- 변호사·판사·전문가 인터뷰 또는 조언 기사
+- 피해 사례 소개 기획 기사 (K사, A씨 등 익명 사례 포함)
+- 제목이 질문형·방법론형 ("~하려면", "~하는 법", "Q&A")
+- 갑질·민원·제보 중심 기사
+- 업계 전체 실적·통계 기사 (분기순익, 성장률 등) — 본문에 특정 기업 리스크 언급 있어도 기사 주제가 실적이면 false
+- 일일 공시 모음·브리핑 기사 — 본문에 개별 기업 공시 포함돼도 기사 자체가 리스크 탐지 대상 아님
+- 리스크 해소·완화 기사 — "위기 탈출", "거래정지 해제", "거래재개", "정상화" 등 상황이 개선되는 방향이면 false
+- 기술적 조치 기사 — 액면병합, 주권변경, 관리종목 해제 등 리스크 직접 관련 없는 행정·기술적 조치
+- 주주 지원·유증 참여 기사 — 투자자가 자금을 넣는 방향은 리스크 해소 시그널, 손실 사건 아님
+본문 일부에 리스크 단어가 있어도 기사 주제가 호재·실적·전망·성과이면 제외.
+제목 주인공이 리스크 상황이 아닌데 본문에 타 기업 리스크가 언급된 경우도 제외.
 
-반환 예시:
+[중복 기사 처리 — 반드시 엄격히 적용]
+- 동일한 사건·이슈를 다른 언론사가 보도한 경우, id 숫자 가장 작은 것 1건만 relevant:true
+- 나머지 동일 사건 기사는 무조건 relevant:false
+- 제목이 달라도 핵심 사건(기업명+사건유형)이 동일하면 중복
+- 동일 정책·제도 변경(예: 동전주 상장폐지, 신용융자 잔고 현황 등)은 1건만 선택
+- 같은 기업의 같은 날 다른 측면을 다룬 기사도 가장 핵심적인 1건만 선택
+- 중복 의심 시 반드시 제외 (차라리 제외하는 게 나음)
+
+반드시 JSON 배열만 반환하세요. 마크다운 코드블록(```) 없이 순수 JSON만.
+- reason: 선별 이유를 증권사 실무 관점에서 20자 이내로 (relevant=false면 null)
+- confidence: relevant 판단 확신도 0.0~1.0 (1.0=완전확신, 0.5=애매함). relevant=false도 반드시 포함.
+- action: relevant:true인 모든 기사에 대해 실무 담당자가 즉시 취해야 할 구체적 조치를 50자 이내로 작성하세요.
+  "보고", "공유", "전달" 등 보고 행위는 제외하고 실제 확인·점검·산출 등 실무 행동만 기재.
+  등급별 작성 기준:
+  - 긴급: [확인 대상] + [즉시 조치] + [기한] 포함. 예) "OO 보유 채권 담보 현황 즉시 파악, 금일 내 평가손 산출"
+  - 주의: [모니터링 주기] + [악화 시 트리거 조건] 포함. 예) "주 1회 잔고 추이 점검, 신용등급 추가 강등 시 즉시 대응"
+  - 참고: [업황 시사점] + [선제적 점검 항목] 포함. 예) "동종업계 PF 만기 구조 비교, 자사 익스포저 비중 점검"
+  기사 유형별 참고 패턴:
+  - 회생·파산·부도: 보유 채권 담보 현황 및 선순위 여부 파악
+  - 금감원·금융위 조사·제재: 컴플라이언스 소명자료 및 관련 계약 현황 점검
+  - PF·브릿지론 부실: 만기 도래 현황 및 미매각 잔액 파악
+  - 신용등급 강등: 해당 채권 듀레이션 및 평가손 산출
+  - 반대매매·신용융자: 반대매매 가능 규모 및 담보 부족 계좌 현황 파악
+  - 리츠·펀드 부실: 기초자산 담보가치 및 선순위 채권 현황 확인
+  (relevant=false면 null)
+- entity: 기사의 핵심 기업명 또는 종목명을 공식 명칭 기준으로 1개 추출 (예: 태영건설, 홈플러스, 제이알글로벌리츠, 한화솔루션). 금감원·금융위 등 기관명은 제외하고 기업·종목명만 추출. (relevant=false면 null)
+- event_type: 사건 유형을 아래 중 1개로 분류. (relevant=false면 null)
+  상장폐지 / 거래정지 / 기업회생 / 파산부도 / PF부실 / 신용등급강등 / 반대매매 / 금감원제재 / 시스템장애 / 발행어음부실 / 유동성위기 / 대규모환매 / 감사의견거절 / 횡령배임 / 차환실패 / 기타리스크
+반환 형식 예시 (긴급/주의/참고/제외 각 1건):
 [
-  {{"id":1,"relevant":true,"grade":"긴급","reason":"리츠 회생신청·손실 확정","confidence":0.97,"action":"해당 리츠 보유 고객 전수 파악, 금일 내 평가손 산출","entity":"제이알글로벌리츠","event_type":"기업회생"}},
-  {{"id":2,"relevant":true,"grade":"주의","reason":"PF 부실 징후·손실 미확정","confidence":0.82,"action":"주 1회 PF 잔액 점검, 연체 발생 시 즉시 대응","entity":"태영건설","event_type":"PF부실"}},
-  {{"id":3,"relevant":true,"grade":"참고","reason":"차환 실패 임박·구체 금액 명시","confidence":0.74,"action":"해당 ABCP 만기·차환 계획 파악, 미차환 시 손실 시나리오 준비","entity":"OO건설","event_type":"차환실패"}},
-  {{"id":4,"relevant":false,"grade":null,"reason":null,"confidence":0.08,"action":null,"entity":null,"event_type":null}}
+  {{"id":1,"relevant":true,"grade":"긴급","reason":"리츠 기초자산 회생신청·손실 확정","confidence":0.97,"action":"해당 리츠 보유 고객 전수 파악 및 금일 내 평가손 산출","entity":"제이알글로벌리츠","event_type":"기업회생"}},
+  {{"id":2,"relevant":true,"grade":"주의","reason":"PF 부실 징후·손실 미확정 단계","confidence":0.82,"action":"주 1회 PF 잔액 추이 점검, 연체 발생 시 즉시 대응","entity":"태영건설","event_type":"PF부실"}},
+  {{"id":3,"relevant":true,"grade":"참고","reason":"업계 발행어음 증가 동향","confidence":0.71,"action":"동종업계 발행어음 만기 구조 비교, 자사 유동성 비율 점검","entity":"미래에셋증권","event_type":"발행어음부실"}},
+  {{"id":4,"relevant":false,"grade":null,"reason":null,"confidence":0.12,"action":null,"entity":null,"event_type":null}}
 ]
 
 뉴스 목록:
@@ -698,11 +715,11 @@ STEP 3. 기준1~6에 해당하지 않아도 아래 조기징후에 해당하면 
                 },
                 json={
                     "model": CLAUDE_MODEL,
-                    "max_tokens": 4096,
+                    "max_tokens": 1800,
                     "temperature": 0.0,
                     "messages": [{"role": "user", "content": prompt}],
                 },
-                timeout=90,
+                timeout=60,
             )
             print(f"  [AI] 배치 {offset//50+1} 응답 {time.time()-_t0:.1f}초")
             if res.status_code == 429:
@@ -722,38 +739,11 @@ STEP 3. 기준1~6에 해당하지 않아도 아래 조기징후에 해당하면 
             if not raw:
                 raise ValueError("Claude 응답 text 비어있음")
             raw = raw.replace("```json", "").replace("```", "").strip()
-            _start = raw.find("[")
-            _end   = raw.rfind("]")
-            if _start == -1 or _end == -1 or _end <= _start:
-                # ] 없이 잘린 경우 — json_repair 복구 시도
-                if _start != -1:
-                    try:
-                        from json_repair import repair_json as _rj
-                        _repaired = _rj(raw[_start:])
-                        grades = json.loads(_repaired)
-                        print(f"  JSON repair(잘린 응답) 적용됨 (배치 {offset//50+1})")
-                        if not isinstance(grades, list):
-                            raise ValueError(f"grades가 list가 아님: {type(grades)}")
-                        grade_map = {g["id"]: g for g in grades}
-                        result = []
-                        for i, article in enumerate(batch):
-                            info = grade_map.get(i + offset + 1, {})
-                            article["_ai_confidence"] = info.get("confidence", None)
-                            if info.get("relevant") and info.get("grade"):
-                                if not info.get("entity", "").strip():
-                                    print(f"  [entity 빈값] relevant 무효화: {article.get('title','')[:30]}")
-                                    continue
-                                article["grade"]      = info["grade"]
-                                article["reason"]     = info.get("reason", "")
-                                article["action"]     = info.get("action", "")
-                                article["entity"]     = info.get("entity", "").strip()
-                                article["event_type"] = info.get("event_type", "")
-                                result.append(article)
-                        return result
-                    except Exception:
-                        pass
+            import re as _re
+            _match = _re.search(r"\[\s*\{.*?\}\s*\]", raw, _re.S)
+            if not _match:
                 raise ValueError("JSON 배열을 찾을 수 없음 (정규식 불일치)")
-            raw = raw[_start:_end + 1]
+            raw = _match.group(0)
             try:
                 try:
                     grades = json.loads(raw)
@@ -787,9 +777,8 @@ STEP 3. 기준1~6에 해당하지 않아도 아래 조기징후에 해당하면 
         except Exception as e:
             print(f"AI 필터링 오류: {e}")
             try:
-                if 'res' in locals():
-                    print(f"API 응답 상태코드: {res.status_code}")
-                    print(f"API 응답 원문: {res.text[:300]}")
+                print(f"API 응답 상태코드: {res.status_code}")
+                print(f"API 응답 원문: {res.text[:300]}")
             except:
                 pass
             if attempt < 2:
@@ -954,28 +943,22 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     # confidence 구간별 강등 정책
     # 긴급: 0.85 미만 → 주의
     # 주의: 0.60 미만 → 참고 (false positive 억제)
-    urgent_keep = []
-    for a in urgent:
+    for a in urgent[:]:
         conf = a.get("_ai_confidence") or 0
         if conf < 0.85:
             a["grade"] = "주의"
             a["customer_notice"] = None
+            urgent.remove(a)
             caution.append(a)
             print(f"  [confidence 강등] 긴급→주의 (conf={conf:.2f}): {a['title'][:30]}")
-        else:
-            urgent_keep.append(a)
-    urgent = urgent_keep
 
-    caution_keep = []
-    for a in caution:
+    for a in caution[:]:
         conf = a.get("_ai_confidence") or 0
         if conf < 0.60:
             a["grade"] = "참고"
+            caution.remove(a)
             ref.append(a)
             print(f"  [confidence 강등] 주의→참고 (conf={conf:.2f}): {a['title'][:30]}")
-        else:
-            caution_keep.append(a)
-    caution = caution_keep
 
     # 긴급 — 상위 2건 유지, 나머지 주의로 강등
     for i, a in enumerate(urgent):
@@ -1048,7 +1031,7 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
     return result
 
 
-def build_exposure_html(entity: str, exposure_data: dict, ref_date: str, border_color: str = "#c0392b") -> str:
+def build_exposure_html(entity: str, exposure_data: list, ref_date: str, border_color: str = "#c0392b") -> str:
     """익스포저 현황 HTML — 옵션B: 통합 헤더 + 보유/여신 태그로 구분"""
     rows = find_exposure(entity, exposure_data)
     if not rows:
@@ -1063,19 +1046,13 @@ def build_exposure_html(entity: str, exposure_data: dict, ref_date: str, border_
     loan_rows  = [r for r in rows if r.get("종목유형","") in LOAN_TYPES]
 
     def _fmt_row(r, show_type=True):
-        try:
-            잔고 = float(str(r.get("잔고(억)","0") or "0").replace(",",""))
-        except (ValueError, TypeError):
-            잔고 = 0.0
-        try:
-            고객 = int(float(str(r.get("고객수","0") or "0").replace(",","")))
-        except (ValueError, TypeError):
-            고객 = 0
+        잔고 = float(str(r.get("잔고(억)","0")).replace(",",""))
+        고객 = int(float(str(r.get("고객수","0")).replace(",","")))
         type_str = f' <span style="color:#94a3b8;font-size:10px;">({r.get("종목유형","")})</span>' if show_type else ''
         return (
             f'<div style="font-size:12px;color:#1e293b;line-height:1.7;">'
             f'<span style="font-weight:700;">{r.get("종목명","")}</span>{type_str}'
-            f' {잔고:,.1f}억원 / {고객:,}명</div>'
+            f' {잔고:,.0f}억원 / {고객:,}명</div>'
         )
 
     result = ''
@@ -1095,16 +1072,10 @@ def build_exposure_html(entity: str, exposure_data: dict, ref_date: str, border_
 
     if loan_rows:
         if len(loan_rows) == 1:
-            try:
-                loan_잔고 = float(str(loan_rows[0].get("잔고(억)","0") or "0").replace(",",""))
-            except (ValueError, TypeError):
-                loan_잔고 = 0.0
-            try:
-                loan_고객 = int(float(str(loan_rows[0].get("고객수","0") or "0").replace(",","")))
-            except (ValueError, TypeError):
-                loan_고객 = 0
+            loan_잔고 = float(str(loan_rows[0].get("잔고(억)","0")).replace(",",""))
+            loan_고객 = int(float(str(loan_rows[0].get("고객수","0")).replace(",","")))
             loan_name = loan_rows[0].get("종목명","")
-            loan_html = f'<div style="font-size:12px;color:#1e293b;line-height:1.7;"><span style="font-weight:700;">{loan_name}</span> {loan_잔고:,.1f}억원 / {loan_고객:,}명</div>'
+            loan_html = f'<div style="font-size:12px;color:#1e293b;line-height:1.7;"><span style="font-weight:700;">{loan_name}</span> {loan_잔고:,.0f}억원 / {loan_고객:,}명</div>'
         else:
             loan_html = "".join([_fmt_row(r, show_type=False) for r in loan_rows])
 
@@ -1140,8 +1111,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
     now = datetime.now(timezone(timedelta(hours=9)))  # 한국시간 KST
     sections = {"긴급": [], "주의": [], "참고": []}
     for a in articles:
-        if a.get("grade") in sections:
-            sections[a["grade"]].append(a)
+        sections[a["grade"]].append(a)
 
     GRADE_STYLE = {
         "긴급": {"header_bg":"#fafafa","border_left":"#ef4444","label_color":"#dc2626","card_bg":"#ffffff","card_border":"#fecaca"},
@@ -1175,7 +1145,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
             if grade == "참고":
                 r_risk = a.get("_risk_score", "")
                 if r_risk:
-                    r_filled = min(int(r_risk), 10)
+                    r_filled = int(r_risk)
                     r_bar = "█" * r_filled + "░" * (10 - r_filled)
                     r_score_html = f'<div style="font-size:9px;color:#94a3b8;font-family:monospace;text-align:right;">{r_risk:.1f}<br>{r_bar}</div>'
                 else:
@@ -1205,7 +1175,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     c_exp_row   = f'<tr><td style="padding:0;">{c_exp_html}</td></tr>' if c_exp_html else ""
                     c_risk = a.get("_risk_score", "")
                     if c_risk:
-                        c_filled = min(int(c_risk), 10)
+                        c_filled = int(c_risk)
                         c_bar = "█" * c_filled + "░" * (10 - c_filled)
                         c_score_html = (
                             f'<div style="text-align:right;min-width:90px;">'
@@ -1244,7 +1214,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                         a["_has_exposure"] = True
                     risk_score = a.get("_risk_score", "")
                     if risk_score:
-                        filled = min(int(risk_score), 10)  # 채워진 블록 수 (0~10)
+                        filled = int(risk_score)        # 채워진 블록 수 (0~10)
                         empty  = 10 - filled
                         bar_str = "█" * filled + "░" * empty
                         risk_score_html = (
@@ -1267,7 +1237,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     notice_text = (a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice","")
                     notice_row = f'<tr><td class="care-td" bgcolor="#f8fafc" style="padding:10px 16px;background:#f8fafc;border-top:1px solid #e2e8f0;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#334155;">고객케어 안내 추천 문구</span></p><p style="margin:0;font-size:12px;color:#334155;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
                     bottom_box = f'<tr><td bgcolor="#fff8f8" style="background:#fff8f8;border-top:1px solid {gs["card_border"]};padding:0;"><table width="100%" cellpadding="0" cellspacing="0" border="0">{action_row}{exposure_row}{notice_row}</table></td></tr>' if (action_row or exposure_row or notice_row) else ""
-                    is_last = (display_items.index(a) == len(display_items) - 1)
+                    is_last = (display_items.index(a) == len([x for x in display_items if x.get("grade")=="긴급"]) - 1 + sum(1 for x in display_items if x.get("grade")!="긴급"))
                     divider = "" if is_last else f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0;"><tr><td style="padding:0;height:1px;background:#ef4444;font-size:0;line-height:0;">&nbsp;</td></tr></table>'
                     rows += f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:0;">
@@ -1290,7 +1260,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
             </td>
           </tr>
           {bottom_box}
-        </table>{divider}'''
+        </table>'''
         if extra_items:
             extra_rows = "".join([f'''
             <tr>
@@ -1354,7 +1324,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
 
   <!-- 헤더 H-3 -->
   <tr>
-    <td class="header-td" style="background:#3b5491;padding:18px 26px 14px;">
+    <td class="header-td" class="header-td" style="background:#3b5491;padding:18px 26px 14px;">
       <!-- 타이틀 -->
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:12px;">
         <tr>
@@ -1375,9 +1345,9 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         </table>
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#1e3370;border-radius:3px;overflow:hidden;">
           <tr>
-            <td width="{max(1, round(len(sections['긴급'])/max(total_count,1)*100))}%" style="background:#ef4444;padding:3px 0;"></td>
-            <td width="{max(1, round(len(sections['주의'])/max(total_count,1)*100))}%" style="background:#f59e0b;padding:3px 0;"></td>
-            <td width="{max(1, round(len(sections['참고'])/max(total_count,1)*100))}%" style="background:#94a3b8;padding:3px 0;"></td>
+            <td width="{max(1, round(len(sections["긴급"])/max(total_count,1)*100))}%" style="background:#ef4444;padding:3px 0;"></td>
+            <td width="{max(1, round(len(sections["주의"])/max(total_count,1)*100))}%" style="background:#f59e0b;padding:3px 0;"></td>
+            <td width="{max(1, round(len(sections["참고"])/max(total_count,1)*100))}%" style="background:#94a3b8;padding:3px 0;"></td>
             <td style="background:#1e3370;padding:3px 0;"></td>
           </tr>
         </table>
@@ -1724,7 +1694,7 @@ def main():
     # exposure_data 먼저 로드 — regrade_by_score 내 _has_exposure 보정용
     exposure_data = load_exposure_data()
     filtered = ai_filter_and_grade(raw_articles, exposure_data=exposure_data)
-    ai_filtered_articles = []  # 로그용 — regrade/dedup 완료 후 갱신
+    ai_filtered_articles = list(filtered)  # 로그용 AI 통과 기사 저장
     for _a in filtered:
         if find_exposure(_a.get("entity",""), exposure_data):
             _a["_has_exposure"] = True
@@ -1817,7 +1787,6 @@ def main():
     filtered = filtered_final
     if before_combo != len(filtered):
         print(f"  중복 사건 제거: {before_combo}건 → {len(filtered)}건")
-    ai_filtered_articles = list(filtered)  # dedup·regrade 완료 후 로그용
     print(f"필터링 후 {len(filtered)}건 선별")
 
     if not filtered:
@@ -1868,14 +1837,8 @@ def main():
         keyword   = article.get("keyword", "")
         exp_rows  = find_exposure(entity, exposure_data)
         def _fmt_exp(r):
-            try:
-                잔고 = float(str(r.get('잔고(억)', '0') or '0').replace(',', ''))
-            except (ValueError, TypeError):
-                잔고 = 0.0
-            try:
-                고객 = int(float(str(r.get('고객수', '0') or '0').replace(',', '')))
-            except (ValueError, TypeError):
-                고객 = 0
+            잔고 = float(str(r.get('잔고(억)', '0')).replace(',', ''))
+            고객 = int(float(str(r.get('고객수', '0')).replace(',', '')))
             return f"{r.get('종목유형','')} {잔고:,.1f}억원/{고객:,}명"
         exp_str = ", ".join([_fmt_exp(r) for r in exp_rows]) if exp_rows else ""
         try:
@@ -2054,15 +2017,10 @@ def main():
             )
             payload = res.json()
             content = payload.get("content", [])
-            raw = next((blk.get("text","") for blk in content if blk.get("type")=="text"), "").strip()
+            raw = content[0].get("text", "").strip() if content else ""
             if not raw:
                 return
             raw = raw.replace("```json", "").replace("```", "").strip()
-            _s = raw.find("{")
-            _e = raw.rfind("}")
-            if _s == -1 or _e == -1 or _e <= _s:
-                return
-            raw = raw[_s:_e + 1]
             result = json.loads(raw)
             if result.get("action"):
                 article["action"] = result["action"]
@@ -2088,8 +2046,7 @@ def main():
     else:
         print("  경쟁사 신용·대출 특이사항 없음")
     if exposure_data:
-        first_rows = next(iter(exposure_data.values()), None)
-        ref_date = first_rows[0].get("기준일", "") if first_rows else ""
+        ref_date = next(iter(exposure_data.values())).get("기준일", "")
         print(f"  익스포저 데이터 로드 완료 ({len(exposure_data)}건, 기준일: {ref_date})")
     else:
         ref_date = ""
@@ -2104,24 +2061,27 @@ def main():
     caution_cnt = len([a for a in filtered if a["grade"]=="주의"])
     ref_cnt = len([a for a in filtered if a["grade"]=="참고"])
     filtered_titles = f"[등급 분포] 긴급 {urgent_cnt}건 / 주의 {caution_cnt}건 / 참고 {ref_cnt}건\n\n" + "\n".join([f"- [{a['grade']}] {a['title']}" for a in filtered])
-    try:
-        sum_res = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": CLAUDE_MODEL,
-                "max_tokens": 80,
-                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 오늘의 리스크 흐름을 30자 이내 한 문장으로만 작성하세요.\n문장 외 다른 내용 일절 금지. 예: '삼부토건 상폐 심의·홈플러스 회생 갈림길 동시 부각'\n\n{filtered_titles}"}],
-            },
-            timeout=15,
-        )
-        ai_summary = next((b.get("text","") for b in sum_res.json().get("content",[]) if b.get("type")=="text"), "").strip()
-    except Exception:
+    if not filtered_titles.strip():
         ai_summary = ""
+    else:
+        try:
+            sum_res = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": CLAUDE_MODEL,
+                    "max_tokens": 80,
+                    "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 오늘의 리스크 흐름을 30자 이내 한 문장으로만 작성하세요.\n문장 외 다른 내용 일절 금지. 예: '삼부토건 상폐 심의·홈플러스 회생 갈림길 동시 부각'\n\n{filtered_titles}"}],
+                },
+                timeout=15,
+            )
+            ai_summary = sum_res.json()["content"][0]["text"].strip()
+        except Exception:
+            ai_summary = ""
 
     html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary, exposure_data=exposure_data, ref_date=ref_date, competitor_notices=competitor_notices, today_str=today_str)
     send_email(subject, html)
@@ -2135,7 +2095,7 @@ def main():
         # event_type 기반 combo 저장 — 동일 기업 다른 사건 유형 구분
         if event_type and entity:
             new_combos_this_run.add((entity, event_type))
-        elif keyword and entity:  # entity 없으면 combo 저장 안 함 — 과다 차단 방지
+        elif keyword:
             new_combos_this_run.add((entity, keyword))
     save_seen_urls(sent_urls, new_combos_this_run,
                    title_norms=new_title_norms, desc_norms=new_desc_norms)
