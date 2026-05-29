@@ -1735,7 +1735,7 @@ def main():
     ai_filtered_articles = list(filtered)  # 로그용 AI 통과 기사 저장
     for _a in filtered:
         for _ent in _a.get("entities") or ([_a.get("entity","")] if _a.get("entity") else []):
-            if find_exposure(_ent, exposure_data):
+            if _ent and _ent.strip() and find_exposure(_ent.strip(), exposure_data):
                 _a["_has_exposure"] = True
                 break
     # 실행 간 중복 사건 필터 — combo + 맥락(title/desc) 기반
@@ -1882,7 +1882,7 @@ def main():
         def _fmt_exp(r):
             잔고 = float(str(r.get('잔고(억)', '0')).replace(',', ''))
             고객 = int(float(str(r.get('고객수', '0')).replace(',', '')))
-            return f"{r.get('종목유형','')} {잔고:,.1f}억원/{고객:,}명"
+            return f"{r.get('종목유형','')} {잔고:,.0f}억원/{고객:,}명"
         exp_str = ", ".join([_fmt_exp(r) for r in exp_rows]) if exp_rows else ""
         try:
             res = requests.post(
@@ -2134,14 +2134,16 @@ def main():
     # 발송된 기사의 URL + (entity, keyword) 조합 저장
     for a in filtered:
         sent_urls.add(a.get("url", ""))   # 실제 발송 URL만 seen 처리
-        entity     = a.get("entity", "").strip()
         keyword    = a.get("keyword", "").strip()
         event_type = a.get("event_type", "").strip()
-        # event_type 기반 combo 저장 — 동일 기업 다른 사건 유형 구분
-        if event_type and entity:
-            new_combos_this_run.add((entity, event_type))
-        elif keyword:
-            new_combos_this_run.add((entity, keyword))
+        # entities 전체 순회 — 복수 종목 기사도 모든 종목 combo 저장
+        for _ent in a.get("entities") or ([a.get("entity","").strip()] if a.get("entity") else []):
+            if not _ent:
+                continue
+            if event_type:
+                new_combos_this_run.add((_ent, event_type))
+            elif keyword:
+                new_combos_this_run.add((_ent, keyword))
     save_seen_urls(sent_urls, new_combos_this_run,
                    title_norms=new_title_norms, desc_norms=new_desc_norms)
     # 필터링 로그 저장 (튜닝·역추적용)
