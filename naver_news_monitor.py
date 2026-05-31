@@ -50,18 +50,46 @@ DESC_SIM_THRESHOLD  = 0.84  # 본문 요약 유사도 (0.84: 안정적, 0.76은 
 
 
 def load_exposure_data() -> dict:
-    """CSV에서 eBiz본부 익스포저 데이터 로드 — {종목명: [row, ...]} 리스트 딕셔너리 반환"""
+    """CSV에서 eBiz본부 익스포저 데이터 로드 — {종목명: [row, ...]} 리스트 딕셔너리 반환
+    헤더가 깨진 경우(Excel → UTF-8 변환 오류) positional 파싱으로 자동 fallback
+    컬럼 순서: 기준일, 종목명, 종목유형, 잔고(억), 고객수"""
+    EXPOSURE_COLUMNS = ["기준일", "종목명", "종목유형", "잔고(억)", "고객수"]
     if not os.path.exists(EXPOSURE_FILE):
         return {}
     try:
+        # 1차 시도: DictReader (헤더 정상인 경우)
         with open(EXPOSURE_FILE, "r", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
-            result = {}
+            rows_all = list(reader)
+            if rows_all and "종목명" in (rows_all[0] or {}):
+                result = {}
+                for row in rows_all:
+                    name = row.get("종목명", "").strip()
+                    if name:
+                        result.setdefault(name, []).append(row)
+                return result
+    except Exception:
+        pass
+    # 2차 fallback: positional 파싱 (헤더 깨진 경우)
+    try:
+        result = {}
+        with open(EXPOSURE_FILE, "r", encoding="utf-8", errors="replace") as f:
+            reader = csv.reader(f)
+            next(reader, None)  # 깨진 헤더 skip
             for row in reader:
-                name = row.get("종목명", "").strip()
+                if len(row) < 5:
+                    continue
+                d = {
+                    "기준일":   row[0].strip(),
+                    "종목명":   row[1].strip(),
+                    "종목유형": row[2].strip(),
+                    "잔고(억)": row[3].strip(),
+                    "고객수":   row[4].strip(),
+                }
+                name = d["종목명"]
                 if name:
-                    result.setdefault(name, []).append(row)
-            return result
+                    result.setdefault(name, []).append(d)
+        return result
     except Exception:
         return {}
 
@@ -76,7 +104,9 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
         return exposure_data[entity]
     # 2) 단어 경계 기반 부분 매칭
     #    앞뒤가 한글/영숫자가 아닌 경우만 허용
-    #    예: "화신" → "무궁화신탁" 불일치, "화신" → "화신정공" 일치
+    #    예: "화신" → "무궁화신탁" 불일치 (앞에 한글 있음)
+    #        "화신" → "화신정공" 불일치 (뒤에 한글 있음)
+    #        정확 일치 또는 entity가 종목명에 포함(단어경계)되는 경우만 매칭
     results = []
     entity_pattern = re.compile(
         r'(?<![가-힣a-zA-Z0-9])' + re.escape(entity) + r'(?![가-힣a-zA-Z0-9])'
@@ -112,24 +142,26 @@ def load_competitor_notices() -> list:
             if not fname.endswith(".csv") or fname == "broker_notices_merged.csv":
                 continue
             fpath = os.path.join(data_dir, fname)
-            # 파일 크기 체크 — 쓰기 중 깨진 파일 방어
-            if os.path.getsize(fpath) < 50:
+            # getsize 후 open 사이 race → try/except로 방어
+            try:
+                with open(fpath, "r", encoding="utf-8-sig") as f:
+                    reader = _csv.DictReader(f)
+                    for row in reader:
+                        date = row.get("date", "")
+                        title = row.get("title", "")
+                        company = row.get("company", "")
+                        if date not in valid_dates:
+                            continue
+                        if any(kw in title for kw in CREDIT_KEYWORDS):
+                            result.append({
+                                "company": company,
+                                "title": title,
+                                "date": date,
+                                "url": row.get("url", ""),
+                            })
+            except Exception as e:
+                print(f"  경쟁사 공지 파일 읽기 오류 ({fname}): {e}")
                 continue
-            with open(fpath, "r", encoding="utf-8-sig") as f:
-                reader = _csv.DictReader(f)
-                for row in reader:
-                    date = row.get("date", "")
-                    title = row.get("title", "")
-                    company = row.get("company", "")
-                    if date not in valid_dates:
-                        continue
-                    if any(kw in title for kw in CREDIT_KEYWORDS):
-                        result.append({
-                            "company": company,
-                            "title": title,
-                            "date": date,
-                            "url": row.get("url", ""),
-                        })
     except Exception as e:
         print(f"  경쟁사 공지 로드 오류: {e}")
 
@@ -212,7 +244,7 @@ def build_competitor_html(notices: list, today_str: str) -> str:
 
 
 def load_seen_urls() -> set:
-    """최근 7시간 키(YYYY-MM-DD HH) 기준 seen URL 로드 — 오래된 키 자동 제거"""
+    """최근 24시간 키(YYYY-MM-DD HH) 기준 seen URL 로드 — 오래된 키 자동 제거"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     valid_keys = {
@@ -239,7 +271,7 @@ def load_seen_urls() -> set:
 
 
 def load_seen_combos() -> set:
-    """최근 7시간 내 발송된 (entity, keyword) 조합 로드"""
+    """최근 24시간 내 발송된 (entity, keyword) 조합 로드"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     valid_keys = {
@@ -265,7 +297,7 @@ def load_seen_combos() -> set:
 
 
 def load_seen_context() -> dict:
-    """최근 7시간 내 발송된 기사의 title_norms·desc_norms 로드 — 맥락 기반 중복 감지"""
+    """최근 24시간 내 발송된 기사의 title_norms·desc_norms 로드 — 맥락 기반 중복 감지"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     valid_keys = {
@@ -291,7 +323,7 @@ def load_seen_context() -> dict:
 
 
 def save_seen_urls(seen: set, combos: set = None, title_norms: list = None, desc_norms: list = None):
-    """현재 시각 키(YYYY-MM-DD HH)로 seen URL + 발송 조합 저장 — 최근 7시간 키만 보존"""
+    """현재 시각 키(YYYY-MM-DD HH)로 seen URL + 발송 조합 저장 — 최근 24시간 키만 보존"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     current_key = now.strftime("%Y-%m-%d %H")
@@ -451,12 +483,21 @@ def fetch_article_body(url: str) -> str:
             "Referer": "https://search.naver.com/",
             "Connection": "keep-alive",
         })
-        # 2MB 초과 페이지 스킵 — GitHub Actions 메모리 절약
+        res.raise_for_status()
+        # Content-Length 있으면 사전 차단, 없으면 iter_content로 실차단
+        # res.text 직접 접근 시 Content-Length 미제공 사이트에서 메모리 폭주 가능
         content_length = int(res.headers.get("Content-Length", 0))
         if content_length > 2_000_000:
             return ""
-        res_text = res.text  # stream 후 실제 로딩
-        res.raise_for_status()
+        MAX_BYTES = 2_000_000
+        chunks = []
+        total = 0
+        for chunk in res.iter_content(chunk_size=32768):
+            total += len(chunk)
+            if total > MAX_BYTES:
+                return ""  # 2MB 초과 — 중단
+            chunks.append(chunk)
+        res_text = b"".join(chunks).decode("utf-8", errors="replace")
         soup = BeautifulSoup(res_text, "html.parser")
         # 네이버 뉴스 본문 선택자
         for selector in ["#dic_area", "#articleBodyContents", ".article-body", "#articeBody", "article"]:
@@ -552,6 +593,87 @@ def is_hard_excluded(title: str, desc: str = "") -> tuple:
         if _re.search(pat, title):
             return True, pat
     return False, None
+
+
+# ─────────────────────────────────────────────
+# Rule Validator — AI 통과 후 코드 최종 차단층
+# AI 오탐을 마지막으로 걸러주는 안전망
+# ─────────────────────────────────────────────
+
+# AI가 relevant:true 해도 제목에 이게 있으면 무조건 차단
+_RULE_BLOCK_TITLE = [
+    "기자수첩", "기자의 눈", "기자노트", "시사풍월", "시장풍월",
+    "칼럼", "오피니언", "사설", "논설", "인터뷰", "직격인터뷰",
+    "전망", "소식", "분석", "리포트", "보고서",
+    "풍문레이다", "풍문 레이더", "루머",
+    "위기 탈출", "위기탈출", "거래정지 해제", "거래재개", "매매거래 정지 해제",
+    "액면병합", "주권 변경상장",
+    "주요공시", "공시브리핑", "오늘의 공시",
+    "(完)", "(완)", "①", "②", "③", "④", "⑤",
+    "갑질", "피해자", "제보", "변호사",
+    "후보", "공약", "선거", "당선",
+    "목표가", "목표주가", "투자의견", "매수", "매도",
+    "당기순익", "당기순이익", "영업이익", "실적",
+    "1분기", "2분기", "3분기", "4분기",
+]
+
+# entity가 비어있거나 금지 기관명이면 차단
+_RULE_BLOCK_ENTITY = {
+    "금감원", "금융위", "금융위원회", "금융감독원",
+    "한국거래소", "KRX", "국회", "법원", "검찰",
+}
+
+# event_type이 설정됐는데 제목에 관련 키워드가 전혀 없으면 의심
+_EVENT_KEYWORDS = {
+    "상장폐지":  ["상장폐지", "상폐", "퇴출"],
+    "거래정지":  ["거래정지", "거래 정지", "매매정지"],
+    "기업회생":  ["기업회생", "회생신청", "회생", "법정관리"],
+    "파산부도":  ["파산", "부도", "도산", "파산신청"],
+    "PF부실":    ["PF", "프로젝트파이낸싱", "브릿지론", "부실"],
+    "신용등급강등": ["신용등급", "강등", "하향", "워치"],
+    "반대매매":  ["반대매매", "강제매도", "담보부족"],
+    "금감원제재": ["제재", "과태료", "과징금", "검사", "조사"],
+    "시스템장애": ["장애", "오류", "접속불가", "MTS", "HTS"],
+    "발행어음부실": ["발행어음", "어음"],
+    "유동성위기": ["유동성", "현금부족", "자금난", "만기"],
+    "횡령배임":  ["횡령", "배임"],
+    "차환실패":  ["차환", "미매각", "만기"],
+    "감사의견거절": ["감사의견", "감사보고서"],
+}
+
+def rule_validate(article: dict) -> tuple:
+    """AI 통과 기사 최종 룰 검증 — (pass: bool, reason: str) 반환
+    하드 차단: 제목 패턴 / 기관명 entity
+    소프트 감점: event_type vs 제목+desc 불일치 → confidence -= 0.2 (False Negative 방지)
+    """
+    title      = article.get("title", "")
+    desc       = article.get("desc", "")
+    entity     = article.get("entity", "").strip()
+    event_type = article.get("event_type", "").strip()
+    text       = title + " " + desc   # 제목+desc 합산 검사
+
+    # 1) 제목에 차단 패턴 포함 — 하드 차단
+    for pat in _RULE_BLOCK_TITLE:
+        if pat in title:
+            return False, f"제목패턴:{pat}"
+
+    # 2) entity가 금지 기관명 단독인 경우 — 하드 차단
+    if entity in _RULE_BLOCK_ENTITY:
+        return False, f"기관명entity:{entity}"
+
+    # 3) event_type vs 제목+desc 불일치 — 소프트 감점 (차단 아님)
+    # 제목에 키워드 없어도 desc에 있으면 정상 기사일 수 있음
+    # False Negative 방지를 위해 차단 대신 confidence 하향
+    skip_check = {"시스템장애", "금감원제재", "기타리스크", "대규모환매"}
+    if event_type and event_type not in skip_check and event_type in _EVENT_KEYWORDS:
+        keywords = _EVENT_KEYWORDS[event_type]
+        if not any(kw in text for kw in keywords):
+            # 제목+desc 모두 키워드 없으면 confidence 감점
+            cur_conf = article.get("_ai_confidence") or 0.5
+            article["_ai_confidence"] = max(0.0, cur_conf - 0.2)
+            print(f"  [RuleValidator 감점] event_type불일치:{event_type} conf {cur_conf:.2f}→{article['_ai_confidence']:.2f}: {title[:30]}")
+
+    return True, None
 
 
 def ai_filter_batch(batch: list, offset: int = 0) -> list:
@@ -692,12 +814,17 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 - entity: 기사의 핵심 기업명 또는 종목명을 공식 명칭 기준으로 1개 추출 (예: 태영건설, 홈플러스, 제이알글로벌리츠, 한화솔루션). 금감원·금융위 등 기관명은 제외하고 기업·종목명만 추출. (relevant=false면 null)
 - event_type: 사건 유형을 아래 중 1개로 분류. (relevant=false면 null)
   상장폐지 / 거래정지 / 기업회생 / 파산부도 / PF부실 / 신용등급강등 / 반대매매 / 금감원제재 / 시스템장애 / 발행어음부실 / 유동성위기 / 대규모환매 / 감사의견거절 / 횡령배임 / 차환실패 / 기타리스크
+- event_key: 사건 단위 식별자를 "entity_eventtype_stage" 형식으로 생성. (relevant=false면 null)
+  stage는 사건 진행 단계를 간결하게 표현 (신청/심의/확정/개시/인가/발동/착수/경고/발생 등)
+  동일 사건의 다른 단계는 다른 event_key — 중요 후속 기사 누락 방지
+  예: "홈플러스_기업회생_신청" / "홈플러스_기업회생_인가" / "금양_상장폐지_심의" / "금양_상장폐지_확정"
+  예: "한국투자증권_시스템장애_발생" / "태영건설_PF부실_연체" / "삼성전자_신용등급강등_경고"
 반환 형식 예시 (긴급/주의/참고/제외 각 1건):
 [
-  {{"id":1,"relevant":true,"grade":"긴급","reason":"리츠 기초자산 회생신청·손실 확정","confidence":0.97,"action":"해당 리츠 보유 고객 전수 파악 및 금일 내 평가손 산출","entity":"제이알글로벌리츠","event_type":"기업회생"}},
-  {{"id":2,"relevant":true,"grade":"주의","reason":"PF 부실 징후·손실 미확정 단계","confidence":0.82,"action":"주 1회 PF 잔액 추이 점검, 연체 발생 시 즉시 대응","entity":"태영건설","event_type":"PF부실"}},
-  {{"id":3,"relevant":true,"grade":"참고","reason":"업계 발행어음 증가 동향","confidence":0.71,"action":"동종업계 발행어음 만기 구조 비교, 자사 유동성 비율 점검","entity":"미래에셋증권","event_type":"발행어음부실"}},
-  {{"id":4,"relevant":false,"grade":null,"reason":null,"confidence":0.12,"action":null,"entity":null,"event_type":null}}
+  {{"id":1,"relevant":true,"grade":"긴급","reason":"리츠 기초자산 회생신청·손실 확정","confidence":0.97,"action":"해당 리츠 보유 고객 전수 파악 및 금일 내 평가손 산출","entity":"제이알글로벌리츠","event_type":"기업회생","event_key":"제이알글로벌리츠_기업회생_신청"}},
+  {{"id":2,"relevant":true,"grade":"주의","reason":"PF 부실 징후·손실 미확정 단계","confidence":0.82,"action":"주 1회 PF 잔액 추이 점검, 연체 발생 시 즉시 대응","entity":"태영건설","event_type":"PF부실","event_key":"태영건설_PF부실_연체"}},
+  {{"id":3,"relevant":true,"grade":"참고","reason":"업계 발행어음 증가 동향","confidence":0.71,"action":"동종업계 발행어음 만기 구조 비교, 자사 유동성 비율 점검","entity":"미래에셋증권","event_type":"발행어음부실","event_key":"미래에셋증권_발행어음부실_증가"}},
+  {{"id":4,"relevant":false,"grade":null,"reason":null,"confidence":0.12,"action":null,"entity":null,"event_type":null,"event_key":null}}
 ]
 
 뉴스 목록:
@@ -739,25 +866,29 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             if not raw:
                 raise ValueError("Claude 응답 text 비어있음")
             raw = raw.replace("```json", "").replace("```", "").strip()
-            import re as _re
-            _match = _re.search(r"\[\s*\{.*?\}\s*\]", raw, _re.S)
-            if not _match:
-                raise ValueError("JSON 배열을 찾을 수 없음 (정규식 불일치)")
-            raw = _match.group(0)
+            # json.loads 우선 시도 → repair → 실패 시 예외
+            # 정규식 추출 제거 — action 내 {} 포함 시 오파싱 방지
+            grades = None
             try:
+                grades = json.loads(raw)
+            except json.JSONDecodeError:
+                pass
+            if grades is None:
                 try:
-                    grades = json.loads(raw)
-                except json.JSONDecodeError:
-                    # trailing comma, 설명문 등 Claude 응답 불완전 시 repair
                     from json_repair import repair_json
-                    repaired = repair_json(raw)
-                    grades = json.loads(repaired)
+                    grades = json.loads(repair_json(raw))
                     print(f"  JSON repair 적용됨 (배치 {offset//50+1})")
-            except json.JSONDecodeError as je:
-                raise ValueError(f"JSON 파싱 실패: {je}") from je
+                except Exception as je:
+                    raise ValueError(f"JSON 파싱 실패: {je}") from je
             if not isinstance(grades, list):
                 raise ValueError(f"grades가 list가 아님: {type(grades)}")
             grade_map = {g["id"]: g for g in grades}
+            # id 누락 감지 — Claude가 일부 id를 건너뛰면 기사 조용히 손실됨
+            expected_ids = set(range(offset + 1, offset + len(batch) + 1))
+            returned_ids = set(grade_map.keys())
+            missing_ids  = expected_ids - returned_ids
+            if missing_ids:
+                print(f"  [경고] AI 응답 id 누락 {len(missing_ids)}건: {sorted(missing_ids)} — 해당 기사 제외 처리")
             result = []
             for i, article in enumerate(batch):
                 info = grade_map.get(i + offset + 1, {})
@@ -772,6 +903,18 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                     article["action"]     = info.get("action", "")
                     article["entity"]     = info.get("entity", "").strip()
                     article["event_type"] = info.get("event_type", "")
+                    # event_key — Claude가 stage 포함해서 직접 생성
+                    # 예: 홈플러스_기업회생_신청, 금양_상장폐지_확정
+                    # fallback: entity_eventtype (stage 없는 경우)
+                    _ek = info.get("event_key", "").strip()
+                    _ent = article["entity"]
+                    _evt = article["event_type"]
+                    article["event_key"] = _ek if _ek else (f"{_ent}_{_evt}" if _ent and _evt else "")
+                    # Rule Validator — AI 오탐 최종 차단
+                    rv_pass, rv_reason = rule_validate(article)
+                    if not rv_pass:
+                        print(f"  [RuleValidator 차단] {rv_reason}: {article.get('title','')[:35]}")
+                        continue
                     result.append(article)
             return result
         except Exception as e:
@@ -831,7 +974,10 @@ def dedup_deterministic(articles: list) -> list:
         desc_norm  = normalize(a.get("desc", ""))
         entity     = a.get("entity", "").strip()
         keyword    = a.get("keyword", "").strip()
-        combo      = (entity, keyword) if entity else None
+        event_type = a.get("event_type", "").strip()
+        # event_type 기반 고정 — keyword fallback 제거
+        # 동일 기업의 다른 사건(상폐/회생/거래정지) 오제거 방지
+        combo      = (entity, event_type) if entity and event_type else None
 
         # 0단계: URL 동일 — 무조건 중복 처리
         url = a.get("url", "").strip()
@@ -1141,7 +1287,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
             </td>
           </tr>
         </table>'''
-        for a in display_items:
+        for _idx, a in enumerate(display_items):
             if grade == "참고":
                 r_risk = a.get("_risk_score", "")
                 if r_risk:
@@ -1196,10 +1342,10 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                   <td align="right" valign="top">{c_score_html}</td>
                 </tr>
               </table>
-              <a href="{a['url']}" class="title-link caution-title" style="font-weight:bold;font-size:14px;text-decoration:none;color:#1e293b;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
+              <a href="{_esc(a['url'])}" class="title-link caution-title" style="font-weight:bold;font-size:14px;text-decoration:none;color:#1e293b;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 0 0;">
                 <tr>
-                  <td style="font-size:11px;"><a href="{a['url']}" style="color:#4a6099;text-decoration:none;">↗ 기사 보기</a></td>
+                  <td style="font-size:11px;"><a href="{_esc(a['url'])}" style="color:#4a6099;text-decoration:none;">↗ 기사 보기</a></td>
                   <td align="right" style="font-size:11px;color:#94a3b8;">{a.get("pub_str","")}</td>
                 </tr>
               </table>
@@ -1226,18 +1372,20 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                         )
                     else:
                         risk_score_html = ""
-                    # keyword + entity 뱃지
+                    # keyword + entity 뱃지 + body_fail 경고 뱃지
                     urgent_badges = ""
                     if a.get("keyword"):
                         urgent_badges += f'<span style="font-size:10px;background:#e8f0fe;color:#3b5491;padding:2px 7px;border-radius:3px;margin-right:4px;font-weight:600;">{a["keyword"]}</span>'
                     if a.get("entity") and a.get("entity") != a.get("keyword"):
                         urgent_badges += f'<span style="font-size:10px;background:#f1f5f9;color:#4a6099;padding:2px 7px;border-radius:3px;font-weight:600;">{a["entity"]}</span>'
+                    if a.get("_body_failed"):
+                        urgent_badges += '<span style="font-size:10px;background:#fef3c7;color:#b45309;padding:2px 7px;border-radius:3px;margin-left:6px;font-weight:700;">⚠ 기사 본문 수집 실패 — 수동 확인 필요</span>'
                     action_row = f'<tr><td class="action-td" bgcolor="#fef2f2" style="padding:10px 16px;border-bottom:1px solid {gs["card_border"]};background:#fef2f2;"><p style="margin:0 0 3px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
                     exposure_row = f'<tr><td style="padding:0;border-bottom:1px solid {gs["card_border"]};background:#ffffff;">{exposure_html}</td></tr>' if exposure_html else ""
-                    notice_text = (a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice","")
+                    notice_text = _esc((a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice",""))
                     notice_row = f'<tr><td class="care-td" bgcolor="#f8fafc" style="padding:10px 16px;background:#f8fafc;border-top:1px solid #e2e8f0;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#334155;">고객케어 안내 추천 문구</span></p><p style="margin:0;font-size:12px;color:#334155;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
                     bottom_box = f'<tr><td bgcolor="#fff8f8" style="background:#fff8f8;border-top:1px solid {gs["card_border"]};padding:0;"><table width="100%" cellpadding="0" cellspacing="0" border="0">{action_row}{exposure_row}{notice_row}</table></td></tr>' if (action_row or exposure_row or notice_row) else ""
-                    is_last = (display_items.index(a) == len([x for x in display_items if x.get("grade")=="긴급"]) - 1 + sum(1 for x in display_items if x.get("grade")!="긴급"))
+                    is_last = (_idx == len(display_items) - 1)
                     divider = "" if is_last else f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0;"><tr><td style="padding:0;height:1px;background:#ef4444;font-size:0;line-height:0;">&nbsp;</td></tr></table>'
                     rows += f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:0;">
@@ -1249,10 +1397,10 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                   <td align="right" valign="top">{risk_score_html}</td>
                 </tr>
               </table>
-              <a href="{a['url']}" class="title-link" style="font-weight:700;font-size:15px;text-decoration:none;color:#1e293b;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
+              <a href="{_esc(a['url'])}" class="title-link" style="font-weight:700;font-size:15px;text-decoration:none;color:#1e293b;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:5px 0 8px 0;">
                 <tr>
-                  <td style="font-size:12px;"><a href="{a['url']}" style="color:#4a6099;text-decoration:none;font-weight:500;">↗ 기사 보기</a></td>
+                  <td style="font-size:12px;"><a href="{_esc(a['url'])}" style="color:#4a6099;text-decoration:none;font-weight:500;">↗ 기사 보기</a></td>
                   <td align="right" style="font-size:11px;color:#94a3b8;">{a.get("pub_str","")}</td>
                 </tr>
               </table>
@@ -1324,7 +1472,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
 
   <!-- 헤더 H-3 -->
   <tr>
-    <td class="header-td" class="header-td" style="background:#3b5491;padding:18px 26px 14px;">
+    <td class="header-td" style="background:#3b5491;padding:18px 26px 14px;">
       <!-- 타이틀 -->
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:12px;">
         <tr>
@@ -1537,11 +1685,14 @@ def save_filter_log(raw_articles: list, hard_excluded: list, ai_filtered: list, 
 
         logs.append({
             "hash"      : h,
-            "title"     : title[:60],
             "keyword"   : a.get("keyword",""),
+            "entity"    : a.get("entity",""),       # 역추적용
+            "event_type": a.get("event_type",""),   # 역추적용
+            "grade"     : a.get("grade",""),         # 역추적용
             "decision"  : decision,
             "reason"    : reason,       # reason code — 통계 집계 가능
             "confidence": confidence,   # AI 확신도 — 0.5~0.7 구간 수동 검토용
+            # title 제거 — 장기운영 시 로그 비대화 방지 (hash로 역추적)
         })
 
     # 제외 사유별 통계
@@ -1739,24 +1890,32 @@ def main():
     new_desc_norms   = []
 
     for a in filtered:
-        entity   = a.get("entity", "").strip()
-        keyword  = a.get("keyword", "").strip()
+        entity     = a.get("entity", "").strip()
+        keyword    = a.get("keyword", "").strip()
         event_type = a.get("event_type", "").strip()
-        # event_type 있으면 (entity, event_type) — 더 정밀한 사건 구분
-        # 없으면 (entity, keyword) fallback
-        combo    = (entity, event_type) if entity and event_type else                    (entity, keyword) if entity and keyword else None
+        event_key  = a.get("event_key", "").strip()  # entity_eventtype 사건 단위 식별자
+        # event_key 기반 combo — 사건 단위 dedup
+        # 홈플러스_기업회생, 금양_상장폐지 등 동일 사건 24시간 중복 차단
+        if event_key:
+            combo = ("ek", event_key)  # 2-tuple — 단일 string tuple 변환 버그 방지
+        elif entity and event_type:
+            combo = (entity, event_type)
+        elif entity and keyword:
+            combo = (entity, keyword)
+        else:
+            combo = None
         kw_only  = ("", keyword) if keyword else None
         t_norm   = _norm(a.get("title", ""))
         d_norm   = _norm(a.get("desc",  ""))
         matched  = False
         reason   = ""
 
-        # ① 7시간 내 이미 발송된 (entity+keyword) 조합
+        # ① 24시간 내 이미 발송된 동일 사건 (event_key 기반)
         if combo and combo in seen_combos:
             if is_next_stage(a.get("title",""), a.get("desc","")):
                 pass  # 다음 절차 기사 — 중복이어도 통과
             else:
-                matched = True; reason = "동일 사건(entity+kw) 이미 발송"
+                matched = True; reason = f"동일 사건 이미 발송({combo[0]})"
 
         # ② keyword만 조합 (entity 없는 경우)
         if not matched and not entity and kw_only and kw_only in seen_combos:
@@ -1827,12 +1986,12 @@ def main():
     def generate_action_and_notice(article):
         if article.get("grade") != "긴급":
             return
-        # body 크롤링 실패 시 action·고객안내 모두 차단 — 금융권 hallucination 방지
+        # body 크롤링 실패 시 title+desc 기반 최소 action 허용
+        # (선택자 미매칭 언론사에서도 긴급 기사 action 완전 차단 방지)
+        # customer_notice는 본문 확인 전 단정 표현 위험 — 계속 차단
         if article.get("_body_failed"):
-            print(f"  본문 크롤링 실패 — action·고객안내 생성 스킵: {article.get('title','')[:30]}")
-            article["action"] = "본문 미확인 — 수동 검토 필요"
-            return
-        body_text = article.get("body", "")
+            print(f"  본문 크롤링 실패 — title+desc 기반 action 생성: {article.get('title','')[:30]}")
+        body_text = article.get("body", "") or ""  # 실패 시 desc fallback 이미 저장됨
         entity    = article.get("entity", "")
         keyword   = article.get("keyword", "")
         exp_rows  = find_exposure(entity, exposure_data)
@@ -2015,16 +2174,33 @@ def main():
                 },
                 timeout=20,
             )
+            if res.status_code == 429:
+                print(f"  대응방안 Rate limit 429 — 스킵: {article.get('title','')[:20]}")
+                return
+            res.raise_for_status()
             payload = res.json()
             content = payload.get("content", [])
             raw = content[0].get("text", "").strip() if content else ""
             if not raw:
                 return
             raw = raw.replace("```json", "").replace("```", "").strip()
-            result = json.loads(raw)
+            # ai_filter_batch와 동일하게 repair_json 적용
+            # Claude가 앞뒤 설명 붙이거나 trailing comma 넣어도 파싱 성공
+            result = None
+            try:
+                result = json.loads(raw)
+            except json.JSONDecodeError:
+                pass
+            if result is None:
+                try:
+                    from json_repair import repair_json
+                    result = json.loads(repair_json(raw))
+                except Exception:
+                    result = {}
             if result.get("action"):
                 article["action"] = result["action"]
-            if result.get("customer_notice"):
+            # body_fail 시 customer_notice 차단 유지 — 본문 미확인 상태에서 단정 표현 위험
+            if result.get("customer_notice") and not article.get("_body_failed"):
                 article["customer_notice"] = result["customer_notice"]
         except Exception as e:
             print(f"  대응방안 생성 오류 ({article.get('title','')[:20]}): {e}")
@@ -2075,12 +2251,18 @@ def main():
                 json={
                     "model": CLAUDE_MODEL,
                     "max_tokens": 80,
-                    "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 오늘의 리스크 흐름을 30자 이내 한 문장으로만 작성하세요.\n문장 외 다른 내용 일절 금지. 예: '삼부토건 상폐 심의·홈플러스 회생 갈림길 동시 부각'\n\n{filtered_titles}"}],
+                    "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 오늘의 리스크 흐름을 한 문장으로만 작성하세요.\n규칙: 20~30자 이내 / 마침표 금지 / 줄바꿈 금지 / 문장 외 다른 내용 일절 금지\n예: '삼부토건 상폐 심의·홈플러스 회생 갈림길 동시 부각'\n\n{filtered_titles}"}],
                 },
                 timeout=15,
             )
-            ai_summary = sum_res.json()["content"][0]["text"].strip()
-        except Exception:
+            payload = sum_res.json()
+            if "content" not in payload:
+                print(f"  AI 요약 API 오류: {payload.get('error',{}).get('message','unknown')}")
+                ai_summary = ""
+            else:
+                ai_summary = payload["content"][0]["text"].strip()
+        except Exception as e:
+            print(f"  AI 요약 생성 실패: {e}")
             ai_summary = ""
 
     html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary, exposure_data=exposure_data, ref_date=ref_date, competitor_notices=competitor_notices, today_str=today_str)
@@ -2092,8 +2274,11 @@ def main():
         entity     = a.get("entity", "").strip()
         keyword    = a.get("keyword", "").strip()
         event_type = a.get("event_type", "").strip()
-        # event_type 기반 combo 저장 — 동일 기업 다른 사건 유형 구분
-        if event_type and entity:
+        event_key  = a.get("event_key",  "").strip()
+        # event_key 기반 combo 저장 — 사건 단위 24시간 dedup
+        if event_key:
+            new_combos_this_run.add(("ek", event_key))  # 2-tuple 저장
+        elif event_type and entity:
             new_combos_this_run.add((entity, event_type))
         elif keyword:
             new_combos_this_run.add((entity, keyword))
