@@ -78,38 +78,15 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
     #    앞뒤가 한글/영숫자가 아닌 경우만 허용
     #    예: "화신" → "무궁화신탁" 불일치, "화신" → "화신정공" 일치
     results = []
-    seen_names = set()
     entity_pattern = re.compile(
         r'(?<![가-힣a-zA-Z0-9])' + re.escape(entity) + r'(?![가-힣a-zA-Z0-9])'
     )
     for name, rows in exposure_data.items():
-        if name in seen_names:
-            continue
         name_pattern = re.compile(
             r'(?<![가-힣a-zA-Z0-9])' + re.escape(name) + r'(?![가-힣a-zA-Z0-9])'
         )
         if entity_pattern.search(name) or name_pattern.search(entity):
             results.extend(rows)
-            seen_names.add(name)
-            continue
-        # 3) 공통 prefix 6자 이상 매칭 — 법인명 축약 대응
-        #    예: "제이알글로벌리츠" ↔ "제이알글로벌위탁관리부동산투자회사"
-        #    (주)·㈜·공백 제거 후 비교, entity·name 모두 4자 이상인 경우만 적용
-        clean_e = re.sub(r'[(주)㈜\s]', '', entity)
-        clean_n = re.sub(r'[(주)㈜\s]', '', name)
-        if len(clean_e) >= 4 and len(clean_n) >= 4:
-            prefix_len = sum(1 for a, b in zip(clean_e, clean_n) if a == b and
-                             all(x == y for x, y in zip(clean_e, clean_n[:len(clean_e)])))
-            # zip prefix 정확히 계산
-            plen = 0
-            for a, b in zip(clean_e, clean_n):
-                if a == b:
-                    plen += 1
-                else:
-                    break
-            if plen >= 6:
-                results.extend(rows)
-                seen_names.add(name)
     return results
 
 
@@ -2069,7 +2046,7 @@ def main():
     else:
         print("  경쟁사 신용·대출 특이사항 없음")
     if exposure_data:
-        ref_date = next(iter(exposure_data.values())).get("기준일", "")
+        ref_date = next(iter(exposure_data.values()))[0].get("기준일", "")
         print(f"  익스포저 데이터 로드 완료 ({len(exposure_data)}건, 기준일: {ref_date})")
     else:
         ref_date = ""
