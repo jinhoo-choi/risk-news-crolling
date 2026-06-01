@@ -95,25 +95,16 @@ def load_exposure_data() -> dict:
 
 
 def find_exposure(entity: str, exposure_data: dict) -> list:
-    """entity와 종목명 딕셔너리 매칭 — 단어 경계 기반 정밀 매칭, 동일 종목명의 모든 행 반환
-    지수명(코스피·코스닥·S&P500 등) 직접 entity는 광범위 매칭 차단
-    """
+    """entity와 종목명 딕셔너리 매칭 — 단어 경계 기반 정밀 매칭, 동일 종목명의 모든 행 반환"""
     import re
     if not entity or not exposure_data:
         return []
-    # 지수명이 entity로 들어온 경우 — 부분 매칭 차단 (코스피 → KODEX코스피 등 오탐 방지)
-    INDEX_NAMES = {"코스피", "코스닥", "코스200", "S&P500", "S&P", "나스닥", "다우", "닛케이", "항셍"}
-    if entity in INDEX_NAMES:
-        return []  # 지수 자체는 익스포저 미표시
     # 1) 정확히 일치하면 즉시 반환 (모든 유형 포함)
     if entity in exposure_data:
         return exposure_data[entity]
     # 2) 단어 경계 기반 부분 매칭
     #    앞뒤가 한글/영숫자가 아닌 경우만 허용
     #    예: "화신" → "무궁화신탁" 불일치, "화신" → "화신정공" 일치
-    #    단, entity가 2자 이하 단음절이면 오탐 위험 — 정확 일치만 허용
-    if len(entity) <= 2:
-        return []  # 너무 짧은 entity는 부분매칭 금지
     results = []
     entity_pattern = re.compile(
         r'(?<![가-힣a-zA-Z0-9])' + re.escape(entity) + r'(?![가-힣a-zA-Z0-9])'
@@ -559,14 +550,6 @@ TITLE_ONLY_PATTERNS += [
     "잡아낸", "변호사", "법률가", "판사", "검사", "사례로 보는", "이야기",
     "하고 싶으면", "하려면", "하는 법", "Q&A", "궁금증",
     "갑질", "피해자", "제보",  # 제보·피해 사례 기사
-    # 단순 시장상황·투자 심리 기사 — 확정 손실·부실 아님
-    "빚투 증가", "빚투 급증", "빚투 사상최대", "빚투 역대", "빚투 최대",
-    "빚투' ", "'빚투'",  # '빚투' 37조 형태 (따옴표 포함)
-    "신용거래 증가", "신용거래 급증", "신용잔고 증가", "신용잔고 급증",
-    "신용융자 증가", "신용융자 급증", "신용융자 사상최대",
-    "레버리지 확대", "레버리지 증가", "과열 경고", "단기 과열",
-    "낙관론", "강세장", "상승장", "랠리",
-    "투자심리", "시장 과열", "버블 우려", "거품 논란",
 ]
 
 EXCLUDE_TITLE_RE_PATTERNS = [
@@ -734,15 +717,22 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
   - 반대매매·신용융자: 반대매매 가능 규모 및 담보 부족 계좌 현황 파악
   - 리츠·펀드 부실: 기초자산 담보가치 및 선순위 채권 현황 확인
   (relevant=false면 null)
-- entities: 기사에 등장하는 핵심 기업명·종목명을 공식 명칭 기준으로 최대 3개까지 배열로 추출 (예: ["삼성전자","SK하이닉스"], ["태영건설"], ["제이알글로벌리츠","한화솔루션"]). 금감원·금융위 등 기관명은 제외하고 기업·종목명만 추출. 없으면 [] 대신 null. (relevant=false면 null)
+- entity: 투자자 익스포저(보유 주식·채권)가 직접 위협받는 기업명 또는 종목명을 공식 명칭 기준으로 1개 추출. 금감원·금융위 등 기관명 제외.
+  선택 우선순위:
+  ① 주가조작·횡령·배임·수사 기사: 피해 종목(주가가 조작된 회사, 횡령 대상 회사) 우선. 수사받는 증권사·운용사 직원은 entity 아님.
+     예) "NH투자증권 직원이 DI동일 주가조작" → entity=DI동일 (NH투자증권 아님)
+     예) "키움증권 직원이 에코프로 주가조작" → entity=에코프로
+  ② 상폐·거래정지·회생·파산: 해당 종목사 자체가 entity.
+  ③ PF·신용등급·발행어음: 리스크 발생 주체 기업이 entity.
+  (relevant=false면 null)
 - event_type: 사건 유형을 아래 중 1개로 분류. (relevant=false면 null)
   상장폐지 / 거래정지 / 기업회생 / 파산부도 / PF부실 / 신용등급강등 / 반대매매 / 금감원제재 / 시스템장애 / 발행어음부실 / 유동성위기 / 대규모환매 / 감사의견거절 / 횡령배임 / 차환실패 / 기타리스크
 반환 형식 예시 (긴급/주의/참고/제외 각 1건):
 [
-  {{"id":1,"relevant":true,"grade":"긴급","reason":"리츠 기초자산 회생신청·손실 확정","confidence":0.97,"action":"해당 리츠 보유 고객 전수 파악 및 금일 내 평가손 산출","entities":["제이알글로벌리츠"],"event_type":"기업회생"}},
-  {{"id":2,"relevant":true,"grade":"주의","reason":"PF 부실 징후·손실 미확정 단계","confidence":0.82,"action":"주 1회 PF 잔액 추이 점검, 연체 발생 시 즉시 대응","entities":["태영건설"],"event_type":"PF부실"}},
-  {{"id":3,"relevant":true,"grade":"참고","reason":"빚투·신용융자 사상 최대, 반대매매 위험","confidence":0.71,"action":"신용융자 담보부족 계좌 전수 파악, 담보비율 재산정","entities":["삼성전자","SK하이닉스"],"event_type":"반대매매"}},
-  {{"id":4,"relevant":false,"grade":null,"reason":null,"confidence":0.12,"action":null,"entities":null,"event_type":null}}
+  {{"id":1,"relevant":true,"grade":"긴급","reason":"리츠 기초자산 회생신청·손실 확정","confidence":0.97,"action":"해당 리츠 보유 고객 전수 파악 및 금일 내 평가손 산출","entity":"제이알글로벌리츠","event_type":"기업회생"}},
+  {{"id":2,"relevant":true,"grade":"주의","reason":"PF 부실 징후·손실 미확정 단계","confidence":0.82,"action":"주 1회 PF 잔액 추이 점검, 연체 발생 시 즉시 대응","entity":"태영건설","event_type":"PF부실"}},
+  {{"id":3,"relevant":true,"grade":"참고","reason":"업계 발행어음 증가 동향","confidence":0.71,"action":"동종업계 발행어음 만기 구조 비교, 자사 유동성 비율 점검","entity":"미래에셋증권","event_type":"발행어음부실"}},
+  {{"id":4,"relevant":false,"grade":null,"reason":null,"confidence":0.12,"action":null,"entity":null,"event_type":null}}
 ]
 
 뉴스 목록:
@@ -774,6 +764,9 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 continue
             res.raise_for_status()
             payload = res.json()
+            stop_reason = payload.get("stop_reason", "")
+            if stop_reason == "max_tokens":
+                raise ValueError(f"응답 max_tokens 초과로 잘림 (배치 {offset//50+1}) — max_tokens 증가 필요")
             content = payload.get("content", [])
             if not content:
                 raise ValueError("Claude 응답 content 비어있음")
@@ -784,11 +777,11 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             if not raw:
                 raise ValueError("Claude 응답 text 비어있음")
             raw = raw.replace("```json", "").replace("```", "").strip()
-            import re as _re
-            _match = _re.search(r"\[\s*\{.*?\}\s*\]", raw, _re.S)
-            if not _match:
-                raise ValueError("JSON 배열을 찾을 수 없음 (정규식 불일치)")
-            raw = _match.group(0)
+            _start = raw.find("[")
+            _end   = raw.rfind("]")
+            if _start == -1 or _end == -1 or _end <= _start:
+                raise ValueError("JSON 배열을 찾을 수 없음 (rfind 불일치)")
+            raw = raw[_start:_end + 1]
             try:
                 try:
                     grades = json.loads(raw)
@@ -808,25 +801,14 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 info = grade_map.get(i + offset + 1, {})
                 article["_ai_confidence"] = info.get("confidence", None)
                 if info.get("relevant") and info.get("grade"):
-                    # entities 빈값이면 dedup combo 충돌 방지 — relevant:false 처리
-                    _chk_entities = info.get("entities") or info.get("entity")
-                    _has_entity = bool(_chk_entities) if isinstance(_chk_entities, list) else bool(str(_chk_entities or "").strip())
-                    if not _has_entity:
-                        print(f"  [entities 빈값] relevant 무효화: {article.get('title','')[:30]}")
+                    # entity 빈값이면 dedup combo 충돌 방지 — relevant:false 처리
+                    if not info.get("entity", "").strip():
+                        print(f"  [entity 빈값] relevant 무효화: {article.get('title','')[:30]}")
                         continue
                     article["grade"]      = info["grade"]
                     article["reason"]     = info.get("reason", "")
                     article["action"]     = info.get("action", "")
-                    # entities 배열 파싱 — 하위 호환: entity(구) / entities(신) 모두 지원
-                    _entities_raw = info.get("entities") or info.get("entity")
-                    if isinstance(_entities_raw, list):
-                        _entities = [e.strip() for e in _entities_raw if e and str(e).strip()]
-                    elif isinstance(_entities_raw, str) and _entities_raw.strip():
-                        _entities = [_entities_raw.strip()]
-                    else:
-                        _entities = []
-                    article["entities"]   = _entities
-                    article["entity"]     = _entities[0] if _entities else ""  # 하위 호환
+                    article["entity"]     = info.get("entity", "").strip()
                     article["event_type"] = info.get("event_type", "")
                     result.append(article)
             return result
@@ -968,8 +950,8 @@ def calc_risk_score(article: dict, exposure_data: dict = None) -> float:
     )
     # exposure_data가 있으면 직접 체크 (main에서 attach 전에도 정확하게 반영)
     if exposure_data is not None and not article.get("_has_exposure"):
-        _ents = article.get("entities") or ([article.get("entity","")] if article.get("entity","").strip() else [])
-        if any(find_exposure(e, exposure_data) for e in _ents if e):
+        entity = article.get("entity", "").strip()
+        if entity and find_exposure(entity, exposure_data):
             article["_has_exposure"] = True
     exp_boost = 0.1 if article.get("_has_exposure") else 0
     raw = conf * kw_weight + exp_boost
@@ -1049,7 +1031,19 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     ref_cnt     = sum(1 for a in result if a.get("grade") == "참고")
     print(f"  등급 조정 완료 → 긴급 {urgent_cnt}건 / 주의 {caution_cnt}건 / 참고 {ref_cnt}건")
 
-    return result
+    # B안 — 동일 entity + 동일 grade 1건 제한 (리스크 점수 높은 것 유지)
+    entity_grade_seen = {}
+    result_deduped = []
+    for a in sorted(result, key=lambda x: x.get("_risk_score") or 0, reverse=True):
+        eg_key = (a.get("entity","").strip(), a.get("grade",""))
+        if eg_key[0] and eg_key in entity_grade_seen:
+            print(f"  [B안 dedup] 동일entity 동일등급 제거: [{a['grade']}] {a['title'][:35]}")
+            continue
+        if eg_key[0]:
+            entity_grade_seen[eg_key] = True
+        result_deduped.append(a)
+
+    return result_deduped
 
 
 def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
@@ -1087,111 +1081,71 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
     return result
 
 
-def build_exposure_html_multi(entities, exposure_data: dict, ref_date: str, border_color: str = "#c0392b") -> str:
-    """entities(list or str) 기반 다중 종목 익스포저를 유형별로 합산해 헤더 1개로 출력
-    유형 매핑: 주식→주식잔고 / 채권→채권잔고 / 신용→여신잔고
-    각 유형 내 잔고 상위 2개 제한
-    """
-    if isinstance(entities, str):
-        entities = [entities] if entities.strip() else []
-    # 지수명 entity 필터 — 코스피/코스닥 등은 익스포저 블록 자체 미표시
-    INDEX_NAMES = {"코스피","코스닥","코스200","S&P500","S&P","나스닥","다우","닛케이","항셍"}
-    entities = [e for e in entities if e not in INDEX_NAMES]
-    if not entities:
+def build_exposure_html(entity: str, exposure_data: list, ref_date: str, border_color: str = "#c0392b") -> str:
+    """익스포저 현황 HTML — 옵션B: 통합 헤더 + 보유/여신 태그로 구분"""
+    rows = find_exposure(entity, exposure_data)
+    if not rows:
         return ""
-
-    # 모든 entity의 rows를 유형별로 합산 (중복 종목명+유형 제거)
-    STOCK_TYPE  = "주식"
-    BOND_TYPE   = "채권"
-    LOAN_TYPE   = "신용"
-
-    def _sort_key(r):
-        try: return -float(str(r.get("잔고(억)","0")).replace(",",""))
-        except: return 0
-
-    stock_rows, bond_rows, loan_rows = [], [], []
-    seen_keys = set()
-
-    for ent in entities:
-        for r in find_exposure(ent, exposure_data):
-            key = (r.get("종목명",""), r.get("종목유형",""))
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            유형 = r.get("종목유형","").strip()
-            if 유형 == STOCK_TYPE:
-                stock_rows.append(r)
-            elif 유형 == BOND_TYPE:
-                bond_rows.append(r)
-            elif 유형 == LOAN_TYPE:
-                loan_rows.append(r)
-
-    # 잔고 내림차순 정렬 후 상위 2개
-    stock_rows = sorted(stock_rows, key=_sort_key)[:2]
-    bond_rows  = sorted(bond_rows,  key=_sort_key)[:2]
-    loan_rows  = sorted(loan_rows,  key=_sort_key)[:2]
-
     date_label = f"기준일: {ref_date}" if ref_date else ""
 
-    # 3개 모두 없음 → 잔고없음 표시
-    if not stock_rows and not bond_rows and not loan_rows:
-        return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
-      <tr><td style="padding:10px 16px;">
-        <p style="margin:0 0 4px 0;font-size:10px;font-weight:700;color:#1e293b;">뱅키스 익스포저
-          <span style="font-weight:400;color:#94a3b8;">{date_label}</span></p>
-        <div style="font-size:12px;color:#94a3b8;">잔고없음</div>
-      </td></tr>
-    </table>'''
+    # 종목유형 분류
+    # 여신잔고: 여신, 신용융자, 신용, 신용공여 → loan_rows
+    # 보유현황: 주식, 펀드, 리츠, 채권 등 나머지 → stock_rows
+    LOAN_TYPES = {"여신", "신용융자", "신용", "신용공여", "신용대출"}
+    stock_rows = [r for r in rows if r.get("종목유형","") not in LOAN_TYPES]
+    loan_rows  = [r for r in rows if r.get("종목유형","") in LOAN_TYPES]
 
-
-    def _fmt_row(r):
+    def _fmt_row(r, show_type=True):
         잔고 = float(str(r.get("잔고(억)","0")).replace(",",""))
         고객 = int(float(str(r.get("고객수","0")).replace(",","")))
+        type_str = f' <span style="color:#94a3b8;font-size:10px;">({r.get("종목유형","")})</span>' if show_type else ''
         return (
             f'<div style="font-size:12px;color:#1e293b;line-height:1.7;">'
-            f'<span style="font-weight:700;">{r.get("종목명","")}</span>'
+            f'<span style="font-weight:700;">{r.get("종목명","")}</span>{type_str}'
             f' {잔고:,.1f}억원 / {고객:,}명</div>'
         )
 
-    def _section(tag, bg, color, rows, empty_text=None):
-        if rows:
-            rows_html = "".join([_fmt_row(r) for r in rows])
-        elif empty_text is not None:
-            rows_html = f'<div style="font-size:12px;color:#94a3b8;line-height:1.7;">{empty_text}</div>'
-        else:
-            return ""
-        return f'''
+    result = ''
+    sections = []
+
+    if stock_rows:
+        rows_html = "".join([_fmt_row(r) for r in stock_rows])
+        sections.append(f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:2px;">
           <tr>
             <td valign="top" style="padding-top:2px;width:52px;white-space:nowrap;">
-              <span style="font-size:9px;background:{bg};color:{color};padding:1px 6px;border-radius:2px;font-weight:700;">{tag}</span>
+              <span style="font-size:9px;background:#fee2e2;color:#c0392b;padding:1px 6px;border-radius:2px;font-weight:700;">보유현황</span>
             </td>
             <td style="padding-left:4px;">{rows_html}</td>
           </tr>
-        </table>'''
+        </table>''')
+
+    if loan_rows:
+        if len(loan_rows) == 1:
+            loan_잔고 = float(str(loan_rows[0].get("잔고(억)","0")).replace(",",""))
+            loan_고객 = int(float(str(loan_rows[0].get("고객수","0")).replace(",","")))
+            loan_name = loan_rows[0].get("종목명","")
+            loan_html = f'<div style="font-size:12px;color:#1e293b;line-height:1.7;"><span style="font-weight:700;">{loan_name}</span> {loan_잔고:,.1f}억원 / {loan_고객:,}명</div>'
+        else:
+            loan_html = "".join([_fmt_row(r, show_type=False) for r in loan_rows])
+
+        sections.append(f'''
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:2px;">
+          <tr>
+            <td valign="top" style="padding-top:2px;width:52px;white-space:nowrap;">
+              <span style="font-size:9px;background:#fef3c7;color:#b45309;padding:1px 6px;border-radius:2px;font-weight:700;">여신잔고</span>
+            </td>
+            <td style="padding-left:4px;">{loan_html}</td>
+          </tr>
+        </table>''')
 
     divider = '''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0;">
       <tr><td style="height:1px;background:#e2e8f0;font-size:0;line-height:0;">&nbsp;</td></tr>
     </table>'''
 
-    sections = []
-    s = _section("주식잔고", "#fee2e2", "#c0392b", stock_rows)
-    if s: sections.append(s)
-
-    s = _section("채권잔고", "#ede9fe", "#6d28d9", bond_rows)
-    if s: sections.append(s)
-
-    # 여신잔고: 없으면 "없음" 명시 (주식·채권이 1개 이상 있을 때)
-    has_any = bool(stock_rows or bond_rows)
-    s = _section("여신잔고", "#fef3c7", "#b45309", loan_rows,
-                 empty_text="없음" if has_any else None)
-    if s: sections.append(s)
-
-    if not sections:
-        return ""
-
     inner = divider.join(sections)
-    return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
+
+    result = f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:10px 16px;">
         <p style="margin:0 0 8px 0;font-size:10px;font-weight:700;color:#1e293b;">뱅키스 익스포저
           <span style="font-weight:400;color:#94a3b8;">{date_label}</span></p>
@@ -1199,10 +1153,7 @@ def build_exposure_html_multi(entities, exposure_data: dict, ref_date: str, bord
       </td></tr>
     </table>'''
 
-
-def build_exposure_html(entity: str, exposure_data: dict, ref_date: str, border_color: str = "#c0392b") -> str:
-    """단일 entity 래퍼 — build_exposure_html_multi 위임"""
-    return build_exposure_html_multi([entity] if entity else [], exposure_data, ref_date, border_color)
+    return result
 
 
 def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '', exposure_data: dict = None, ref_date: str = '', competitor_notices: list = None, today_str: str = ''):
@@ -1264,14 +1215,12 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 badges = ""
                 if a.get("keyword"):
                     badges += f'<span style="display:inline-block;font-size:10px;color:#3b5491;background:#e8f0fe;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;">{a["keyword"]}</span>'
-                _badge_entities = a.get("entities") or ([a["entity"]] if a.get("entity") else [])
-                for _be in _badge_entities:
-                    if _be and _be != a.get("keyword"):
-                        badges += f'<span style="display:inline-block;font-size:10px;color:#7a9abf;background:#f1f5f9;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;">{_be}</span>'
+                if a.get("entity") and a.get("entity") != a.get("keyword"):
+                    badges += f'<span style="display:inline-block;font-size:10px;color:#7a9abf;background:#f1f5f9;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;">{a["entity"]}</span>'
 
                 if grade == "주의":
                     # 주의 카드 — 리스크 점수 (황색 톤)
-                    c_exp_html = build_exposure_html_multi(a.get("entities") or a.get("entity",""), exposure_data or {}, ref_date, border_color=gs["border_left"])
+                    c_exp_html = build_exposure_html(a.get("entity",""), exposure_data or {}, ref_date, border_color=gs["border_left"])
                     c_action_row = f'<tr><td style="padding:10px 16px;background:#fff0ee;border-top:1px solid {gs["card_border"]};border-bottom:1px solid {gs["card_border"]};"><p style="margin:0 0 3px 0;font-size:10px;font-weight:700;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
                     c_exp_row   = f'<tr><td style="padding:0;">{c_exp_html}</td></tr>' if c_exp_html else ""
                     c_risk = a.get("_risk_score", "")
@@ -1310,8 +1259,8 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         </table>'''
                 else:
                     # 긴급 풀카드 B-4 — 리스크점수 + 뱃지 강화 + 좌측 6px
-                    exposure_html = build_exposure_html_multi(a.get("entities") or a.get("entity",""), exposure_data or {}, ref_date)
-                    if exposure_html and "잔고없음" not in exposure_html:
+                    exposure_html = build_exposure_html(a.get("entity",""), exposure_data or {}, ref_date)
+                    if exposure_html:
                         a["_has_exposure"] = True
                     risk_score = a.get("_risk_score", "")
                     if risk_score:
@@ -1331,10 +1280,8 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     urgent_badges = ""
                     if a.get("keyword"):
                         urgent_badges += f'<span style="font-size:10px;background:#e8f0fe;color:#3b5491;padding:2px 7px;border-radius:3px;margin-right:4px;font-weight:600;">{a["keyword"]}</span>'
-                    _urg_ents = a.get("entities") or ([a["entity"]] if a.get("entity") else [])
-                    for _ue in _urg_ents:
-                        if _ue and _ue != a.get("keyword"):
-                            urgent_badges += f'<span style="font-size:10px;background:#f1f5f9;color:#4a6099;padding:2px 7px;border-radius:3px;margin-right:4px;font-weight:600;">{_ue}</span>'
+                    if a.get("entity") and a.get("entity") != a.get("keyword"):
+                        urgent_badges += f'<span style="font-size:10px;background:#f1f5f9;color:#4a6099;padding:2px 7px;border-radius:3px;font-weight:600;">{a["entity"]}</span>'
                     action_row = f'<tr><td class="action-td" bgcolor="#fef2f2" style="padding:10px 16px;border-bottom:1px solid {gs["card_border"]};background:#fef2f2;"><p style="margin:0 0 3px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
                     exposure_row = f'<tr><td style="padding:0;border-bottom:1px solid {gs["card_border"]};background:#ffffff;">{exposure_html}</td></tr>' if exposure_html else ""
                     notice_text = _esc((a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice",""))
@@ -1799,8 +1746,7 @@ def main():
     filtered = ai_filter_and_grade(raw_articles, exposure_data=exposure_data)
     ai_filtered_articles = list(filtered)  # 로그용 AI 통과 기사 저장
     for _a in filtered:
-        _ents_chk = _a.get("entities") or ([_a.get("entity","")] if _a.get("entity","").strip() else [])
-        if any(find_exposure(e, exposure_data) for e in _ents_chk if e):
+        if find_exposure(_a.get("entity",""), exposure_data):
             _a["_has_exposure"] = True
     # 실행 간 중복 사건 필터 — combo + 맥락(title/desc) 기반
     import unicodedata as _ud
@@ -1939,15 +1885,7 @@ def main():
         body_text = article.get("body", "")
         entity    = article.get("entity", "")
         keyword   = article.get("keyword", "")
-        _ents_act = article.get("entities") or ([entity] if entity.strip() else [])
-        exp_rows  = []
-        _seen_exp = set()
-        for _e in _ents_act:
-            for _r in find_exposure(_e, exposure_data):
-                _key = (_r.get("종목명",""), _r.get("종목유형",""))
-                if _key not in _seen_exp:
-                    exp_rows.append(_r)
-                    _seen_exp.add(_key)
+        exp_rows  = find_exposure(entity, exposure_data)
         def _fmt_exp(r):
             잔고 = float(str(r.get('잔고(억)', '0')).replace(',', ''))
             고객 = int(float(str(r.get('고객수', '0')).replace(',', '')))
@@ -2195,7 +2133,10 @@ def main():
                 },
                 timeout=15,
             )
-            ai_summary = sum_res.json()["content"][0]["text"].strip()
+            _sum_payload = sum_res.json()
+            _sum_content = _sum_payload.get("content", [])
+            _sum_text = next((b.get("text","") for b in _sum_content if b.get("type")=="text"), "")
+            ai_summary = _sum_text.strip()
         except Exception:
             ai_summary = ""
 
@@ -2211,7 +2152,7 @@ def main():
         # event_type 기반 combo 저장 — 동일 기업 다른 사건 유형 구분
         if event_type and entity:
             new_combos_this_run.add((entity, event_type))
-        elif keyword:
+        elif keyword and entity:   # entity 빈값이면 ("", keyword) combo 저장 금지
             new_combos_this_run.add((entity, keyword))
     save_seen_urls(sent_urls, new_combos_this_run,
                    title_norms=new_title_norms, desc_norms=new_desc_norms)
