@@ -561,6 +561,7 @@ TITLE_ONLY_PATTERNS += [
     "갑질", "피해자", "제보",  # 제보·피해 사례 기사
     # 단순 시장상황·투자 심리 기사 — 확정 손실·부실 아님
     "빚투 증가", "빚투 급증", "빚투 사상최대", "빚투 역대", "빚투 최대",
+    "빚투' ", "'빚투'",  # '빚투' 37조 형태 (따옴표 포함)
     "신용거래 증가", "신용거래 급증", "신용잔고 증가", "신용잔고 급증",
     "신용융자 증가", "신용융자 급증", "신용융자 사상최대",
     "레버리지 확대", "레버리지 증가", "과열 경고", "단기 과열",
@@ -1087,102 +1088,110 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
 
 
 def build_exposure_html_multi(entities, exposure_data: dict, ref_date: str, border_color: str = "#c0392b") -> str:
-    """entities(list or str) 기반 다중 종목 익스포저 HTML 합산 — build_exposure_html 래퍼"""
+    """entities(list or str) 기반 다중 종목 익스포저를 유형별로 합산해 헤더 1개로 출력
+    유형 매핑: 주식→주식잔고 / 채권→채권잔고 / 신용→여신잔고
+    각 유형 내 잔고 상위 2개 제한
+    """
     if isinstance(entities, str):
         entities = [entities] if entities.strip() else []
+    # 지수명 entity 필터 — 코스피/코스닥 등은 익스포저 블록 자체 미표시
+    INDEX_NAMES = {"코스피","코스닥","코스200","S&P500","S&P","나스닥","다우","닛케이","항셍"}
+    entities = [e for e in entities if e not in INDEX_NAMES]
     if not entities:
         return ""
-    parts = []
-    seen_names = set()
-    for ent in entities:
-        html = build_exposure_html(ent, exposure_data, ref_date, border_color)
-        if html and ent not in seen_names:
-            parts.append(html)
-            seen_names.add(ent)
-    return "".join(parts)
 
+    # 모든 entity의 rows를 유형별로 합산 (중복 종목명+유형 제거)
+    STOCK_TYPE  = "주식"
+    BOND_TYPE   = "채권"
+    LOAN_TYPE   = "신용"
 
-def build_exposure_html(entity: str, exposure_data: list, ref_date: str, border_color: str = "#c0392b") -> str:
-    """익스포저 현황 HTML — 옵션B: 통합 헤더 + 보유/여신 태그로 구분"""
-    rows = find_exposure(entity, exposure_data)
-    if not rows:
-        return ""
-    date_label = f"기준일: {ref_date}" if ref_date else ""
-
-    # 종목유형 분류
-    # 여신잔고: 여신, 신용융자, 신용, 신용공여 → loan_rows
-    # 보유현황: 주식, 펀드, 리츠, 채권 등 나머지 → stock_rows
-    LOAN_TYPES = {"여신", "신용융자", "신용", "신용공여", "신용대출"}
-    # 잔고 기준 정렬 후 최대 2개만 — 영향도 상위 종목만 표시
     def _sort_key(r):
         try: return -float(str(r.get("잔고(억)","0")).replace(",",""))
         except: return 0
-    stock_rows = sorted([r for r in rows if r.get("종목유형","") not in LOAN_TYPES], key=_sort_key)[:2]
-    loan_rows  = sorted([r for r in rows if r.get("종목유형","") in LOAN_TYPES],  key=_sort_key)[:2]
 
-    def _fmt_row(r, show_type=True):
+    stock_rows, bond_rows, loan_rows = [], [], []
+    seen_keys = set()
+
+    for ent in entities:
+        for r in find_exposure(ent, exposure_data):
+            key = (r.get("종목명",""), r.get("종목유형",""))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            유형 = r.get("종목유형","").strip()
+            if 유형 == STOCK_TYPE:
+                stock_rows.append(r)
+            elif 유형 == BOND_TYPE:
+                bond_rows.append(r)
+            elif 유형 == LOAN_TYPE:
+                loan_rows.append(r)
+
+    # 잔고 내림차순 정렬 후 상위 2개
+    stock_rows = sorted(stock_rows, key=_sort_key)[:2]
+    bond_rows  = sorted(bond_rows,  key=_sort_key)[:2]
+    loan_rows  = sorted(loan_rows,  key=_sort_key)[:2]
+
+    date_label = f"기준일: {ref_date}" if ref_date else ""
+
+    # 3개 모두 없음 → 잔고없음 표시
+    if not stock_rows and not bond_rows and not loan_rows:
+        return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
+      <tr><td style="padding:10px 16px;">
+        <p style="margin:0 0 4px 0;font-size:10px;font-weight:700;color:#1e293b;">뱅키스 익스포저
+          <span style="font-weight:400;color:#94a3b8;">{date_label}</span></p>
+        <div style="font-size:12px;color:#94a3b8;">잔고없음</div>
+      </td></tr>
+    </table>'''
+
+
+    def _fmt_row(r):
         잔고 = float(str(r.get("잔고(억)","0")).replace(",",""))
         고객 = int(float(str(r.get("고객수","0")).replace(",","")))
-        type_str = f' <span style="color:#94a3b8;font-size:10px;">({r.get("종목유형","")})</span>' if show_type else ''
         return (
             f'<div style="font-size:12px;color:#1e293b;line-height:1.7;">'
-            f'<span style="font-weight:700;">{r.get("종목명","")}</span>{type_str}'
+            f'<span style="font-weight:700;">{r.get("종목명","")}</span>'
             f' {잔고:,.1f}억원 / {고객:,}명</div>'
         )
 
-    result = ''
-    sections = []
-
-    if stock_rows:
-        rows_html = "".join([_fmt_row(r) for r in stock_rows])
-        sections.append(f'''
+    def _section(tag, bg, color, rows, empty_text=None):
+        if rows:
+            rows_html = "".join([_fmt_row(r) for r in rows])
+        elif empty_text is not None:
+            rows_html = f'<div style="font-size:12px;color:#94a3b8;line-height:1.7;">{empty_text}</div>'
+        else:
+            return ""
+        return f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:2px;">
           <tr>
             <td valign="top" style="padding-top:2px;width:52px;white-space:nowrap;">
-              <span style="font-size:9px;background:#fee2e2;color:#c0392b;padding:1px 6px;border-radius:2px;font-weight:700;">보유현황</span>
+              <span style="font-size:9px;background:{bg};color:{color};padding:1px 6px;border-radius:2px;font-weight:700;">{tag}</span>
             </td>
             <td style="padding-left:4px;">{rows_html}</td>
           </tr>
-        </table>''')
-
-    if loan_rows:
-        if len(loan_rows) == 1:
-            loan_잔고 = float(str(loan_rows[0].get("잔고(억)","0")).replace(",",""))
-            loan_고객 = int(float(str(loan_rows[0].get("고객수","0")).replace(",","")))
-            loan_name = loan_rows[0].get("종목명","")
-            loan_html = f'<div style="font-size:12px;color:#1e293b;line-height:1.7;"><span style="font-weight:700;">{loan_name}</span> {loan_잔고:,.1f}억원 / {loan_고객:,}명</div>'
-        else:
-            loan_html = "".join([_fmt_row(r, show_type=False) for r in loan_rows])
-
-        sections.append(f'''
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:2px;">
-          <tr>
-            <td valign="top" style="padding-top:2px;width:52px;white-space:nowrap;">
-              <span style="font-size:9px;background:#fef3c7;color:#b45309;padding:1px 6px;border-radius:2px;font-weight:700;">여신잔고</span>
-            </td>
-            <td style="padding-left:4px;">{loan_html}</td>
-          </tr>
-        </table>''')
-    else:
-        # 여신잔고 없음 명시 — stock_rows가 있을 때만 (익스포저 섹션이 열린 경우)
-        if stock_rows:
-            sections.append('''
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:2px;">
-          <tr>
-            <td valign="top" style="padding-top:2px;width:52px;white-space:nowrap;">
-              <span style="font-size:9px;background:#fef3c7;color:#b45309;padding:1px 6px;border-radius:2px;font-weight:700;">여신잔고</span>
-            </td>
-            <td style="padding-left:4px;"><div style="font-size:12px;color:#94a3b8;line-height:1.7;">없음</div></td>
-          </tr>
-        </table>''')
+        </table>'''
 
     divider = '''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0;">
       <tr><td style="height:1px;background:#e2e8f0;font-size:0;line-height:0;">&nbsp;</td></tr>
     </table>'''
 
-    inner = divider.join(sections)
+    sections = []
+    s = _section("주식잔고", "#fee2e2", "#c0392b", stock_rows)
+    if s: sections.append(s)
 
-    result = f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
+    s = _section("채권잔고", "#ede9fe", "#6d28d9", bond_rows)
+    if s: sections.append(s)
+
+    # 여신잔고: 없으면 "없음" 명시 (주식·채권이 1개 이상 있을 때)
+    has_any = bool(stock_rows or bond_rows)
+    s = _section("여신잔고", "#fef3c7", "#b45309", loan_rows,
+                 empty_text="없음" if has_any else None)
+    if s: sections.append(s)
+
+    if not sections:
+        return ""
+
+    inner = divider.join(sections)
+    return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:10px 16px;">
         <p style="margin:0 0 8px 0;font-size:10px;font-weight:700;color:#1e293b;">뱅키스 익스포저
           <span style="font-weight:400;color:#94a3b8;">{date_label}</span></p>
@@ -1190,7 +1199,10 @@ def build_exposure_html(entity: str, exposure_data: list, ref_date: str, border_
       </td></tr>
     </table>'''
 
-    return result
+
+def build_exposure_html(entity: str, exposure_data: dict, ref_date: str, border_color: str = "#c0392b") -> str:
+    """단일 entity 래퍼 — build_exposure_html_multi 위임"""
+    return build_exposure_html_multi([entity] if entity else [], exposure_data, ref_date, border_color)
 
 
 def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '', exposure_data: dict = None, ref_date: str = '', competitor_notices: list = None, today_str: str = ''):
@@ -1299,7 +1311,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 else:
                     # 긴급 풀카드 B-4 — 리스크점수 + 뱃지 강화 + 좌측 6px
                     exposure_html = build_exposure_html_multi(a.get("entities") or a.get("entity",""), exposure_data or {}, ref_date)
-                    if exposure_html:
+                    if exposure_html and "잔고없음" not in exposure_html:
                         a["_has_exposure"] = True
                     risk_score = a.get("_risk_score", "")
                     if risk_score:
