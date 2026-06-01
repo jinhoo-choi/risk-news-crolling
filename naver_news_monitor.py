@@ -459,7 +459,7 @@ def crawl_naver_news(keyword: str) -> list:
             if title and link:
                 articles.append({
                     "title"  : title,
-                    "desc"   : (desc[:80].rsplit(" ", 1)[0] if len(desc) > 80 and " " in desc[:80] else desc[:80]) if desc else "",
+                    "desc"   : (desc[:120].rsplit(" ", 1)[0] if len(desc) > 120 and " " in desc[:120] else desc[:120]) if desc else "",
                     "url"    : link,
                     "pubDate": pub,
                     "keyword": keyword,
@@ -1845,11 +1845,10 @@ def main():
     def generate_action_and_notice(article):
         if article.get("grade") != "긴급":
             return
-        if article.get("_body_failed"):
-            print(f"  본문 크롤링 실패 — action·고객안내 생성 스킵: {article.get('title','')[:30]}")
-            article["action"] = "본문 미확인 — 수동 검토 필요"
-            return
-        body_text = article.get("body", "")
+        _body_failed = article.get("_body_failed", False)
+        if _body_failed:
+            print(f"  본문 크롤링 실패 — 제목·요약 기반으로 action 생성: {article.get('title','')[:30]}")
+        body_text = article.get("body", "") or article.get("desc", "")
         entity    = article.get("entity", "")
         keyword   = article.get("keyword", "")
         exp_rows  = find_exposure(entity, exposure_data)
@@ -2044,9 +2043,15 @@ def main():
             raw = raw.replace("```json", "").replace("```", "").strip()
             result = json.loads(raw)
             if result.get("action"):
-                article["action"] = result["action"]
+                action_text = result["action"]
+                if _body_failed:
+                    action_text += " *(본문 크롤링 실패, 제목 기반 생성)"
+                article["action"] = action_text
             if result.get("customer_notice"):
-                article["customer_notice"] = result["customer_notice"]
+                notice_text = result["customer_notice"]
+                if _body_failed:
+                    notice_text += "\n*(본문 크롤링 실패, 제목 기반 생성)"
+                article["customer_notice"] = notice_text
         except Exception as e:
             print(f"  대응방안 생성 오류 ({article.get('title','')[:20]}): {e}")
 
