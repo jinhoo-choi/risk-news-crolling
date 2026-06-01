@@ -86,13 +86,16 @@ jobs:
         run: python naver_news_monitor.py
 
       # seen_news.json push 실패 시 다음 실행에서 옛날 seen 로드 → 중복 발송 위험
-      # git pull --rebase 실패 시 즉시 종료 (|| true 제거) — 원인 파악 용이
+      # stash --include-untracked: filter_log_*.json 등 Python 생성 파일이
+      # unstaged 상태로 남아 git pull --rebase 충돌 방지
       - name: seen_news.json 커밋 & 푸시
         if: always()
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
+          git stash --include-untracked || true
           git pull --rebase origin main
+          git stash pop || true
           git add seen_news.json || true
           git diff --cached --quiet || git commit -m "update seen_news [skip ci]"
           git push || exit 1
