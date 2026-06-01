@@ -1602,6 +1602,58 @@ def save_filter_log(raw_articles: list, hard_excluded: list, ai_filtered: list, 
         print(f"  로그 저장 실패: {e}")
 
 
+
+def send_email_error(error_msg: str, trace: str):
+    """런타임 오류 발생 시 담당자에게 오류 내용 메일 발송"""
+    kst = timezone(timedelta(hours=9))
+    now = datetime.now(kst)
+    now_str = now.strftime("%Y년 %m월 %d일 %H:%M")
+    receiver = NO_RESULT_RECEIVER if NO_RESULT_RECEIVER else EMAIL_SENDER
+
+    html_body = f"""<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:'Apple SD Gothic Neo','Malgun Gothic',Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f1f5f9;">
+<tr><td align="center" style="padding:16px;">
+<table width="640" cellpadding="0" cellspacing="0" border="0" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
+  <tr>
+    <td style="background:#7f1d1d;padding:20px 26px;">
+      <p style="margin:0 0 4px 0;font-size:18px;font-weight:bold;color:#ffffff;">🚨 eBiz본부 리스크 탐지봇 — 런타임 오류</p>
+      <p style="margin:0;font-size:12px;color:#fca5a5;">{now_str} 기준 (KST)</p>
+    </td>
+  </tr>
+  <tr>
+    <td style="padding:20px 26px;">
+      <p style="margin:0 0 8px 0;font-size:13px;font-weight:700;color:#1e293b;">오류 내용</p>
+      <p style="margin:0 0 16px 0;font-size:13px;color:#dc2626;background:#fef2f2;padding:10px 14px;border-left:4px solid #dc2626;word-break:break-all;">{_esc(str(error_msg))}</p>
+      <p style="margin:0 0 8px 0;font-size:13px;font-weight:700;color:#1e293b;">스택 트레이스</p>
+      <pre style="margin:0;font-size:11px;color:#475569;background:#f8fafc;padding:12px 14px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;border:1px solid #e2e8f0;">{_esc(trace[-2000:])}</pre>
+    </td>
+  </tr>
+  <tr>
+    <td style="padding:14px 26px;border-top:1px solid #e2e8f0;">
+      <p style="margin:0;font-size:12px;color:#94a3b8;">GitHub Actions 워크플로우 로그에서 상세 내용을 확인하시기 바랍니다.<br>담당자: (정) 최진후 차장</p>
+    </td>
+  </tr>
+</table>
+</td></tr>
+</table>
+</body></html>"""
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"[리스크봇 오류] {now_str} 기준 — 런타임 오류 발생"
+    msg["From"]    = f"eBiz 리스크봇 <{EMAIL_SENDER}>"
+    msg["To"]      = receiver
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.ehlo()
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            server.sendmail(EMAIL_SENDER, [receiver], msg.as_string())
+        print(f"  오류 메일 발송 완료 → {receiver}")
+    except Exception as e:
+        print(f"  오류 메일 발송 실패: {e}")
+
 def send_email_no_result(subject: str, html_body: str):
     """결과 없을 때 특정인(NO_RESULT_RECEIVER)에게만 발송"""
     receiver = NO_RESULT_RECEIVER if NO_RESULT_RECEIVER else EMAIL_SENDER
@@ -2125,4 +2177,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import traceback as _tb
+    try:
+        main()
+    except Exception as _e:
+        _trace = _tb.format_exc()
+        print(f"런타임 오류 발생:\n{_trace}")
+        try:
+            send_email_error(_e, _trace)
+        except Exception as _me:
+            print(f"오류 메일 발송 실패: {_me}")
+        raise
