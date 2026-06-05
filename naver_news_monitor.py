@@ -624,6 +624,12 @@ EXCLUDE_TITLE_RE_PATTERNS = [
 def is_hard_excluded(title: str, desc: str = "") -> tuple:
     """하드 제외 패턴 매칭 — (excluded: bool, reason: str) 반환"""
 
+    # 치명적 키워드 bypass — "[특징주] XX기업 상장폐지" 같은 케이스 보호
+    CRITICAL_KW = ["상장폐지", "파산", "부도", "횡령", "배임", "거래정지",
+                   "기업회생", "MTS 장애", "MTS 접속 장애"]
+    if any(kw in title for kw in CRITICAL_KW):
+        return False, None  # 치명적 키워드 → AI 판단으로 넘김
+
     for pat in TITLE_ONLY_PATTERNS:
         if pat in title:
             return True, pat
@@ -632,7 +638,7 @@ def is_hard_excluded(title: str, desc: str = "") -> tuple:
         if pat in text:
             return True, pat
     for pat in EXCLUDE_TITLE_RE_PATTERNS:
-        if _re.search(pat, title):
+        if re.search(pat, title):
             return True, pat
     return False, None
 
@@ -772,6 +778,11 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 - 주주 지원·유증 참여 기사 — 투자자가 자금을 넣는 방향은 리스크 해소 시그널, 손실 사건 아님
 본문 일부에 리스크 단어가 있어도 기사 주제가 호재·실적·전망·성과이면 제외.
 제목 주인공이 리스크 상황이 아닌데 본문에 타 기업 리스크가 언급된 경우도 제외.
+- 과거 사건 회고·사례 인용: "과거 OO기업 상장폐지 때처럼..." 식의 과거형 서술, 타 기업 비교 인용 → relevant:false
+  오직 현재 시점에 새롭게 발생하거나 진행 중인 리스크만 탐지
+- 루머·찌라시·설(說): 온라인 커뮤니티 게시글 인용, 증권가 찌라시, 출처 불분명한 설에 기반한 기사 → relevant:false
+- 해외주식 실적 쇼크(기준8): 반드시 기사 본문에 예상치 하회를 뒷받침하는 구체적 수치(%, 달러 등)가 명시되어야 함
+  "실적이 부진했다", "시장 기대에 못 미쳤다"는 수치 없는 표현만으로는 기준8 미충족
 
 [중복 기사 처리 — 반드시 엄격히 적용]
 - 동일한 사건·이슈를 다른 언론사가 보도한 경우, id 숫자 가장 작은 것 1건만 relevant:true
