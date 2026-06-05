@@ -122,6 +122,76 @@ def _load_ticker_map() -> dict:
 TICKER_MAP_RUNTIME = _load_ticker_map()
 
 
+
+# 언론사 신뢰도 가중치 — AI confidence 보정
+# 주요 금융·경제 전문 언론: +0.05 / 출처 불명·커뮤니티: -0.05
+# 도메인 기반 언론사 신뢰도 가중치
+MEDIA_TRUST = {
+    # 신뢰도 높음 (+0.05) — 금융·경제 전문 언론
+    "yna.co.kr":     +0.05,  # 연합뉴스
+    "news1.kr":      +0.05,  # 뉴스1
+    "hankyung.com":  +0.05,  # 한국경제
+    "mk.co.kr":      +0.05,  # 매일경제
+    "edaily.co.kr":  +0.05,  # 이데일리
+    "thebell.co.kr": +0.05,  # 더벨
+    "mt.co.kr":      +0.05,  # 머니투데이
+    "fnnews.com":    +0.05,  # 파이낸셜뉴스
+    "wowtv.co.kr":   +0.04,  # 한국경제TV
+    "mbc.com":       +0.04,  # MBC
+    "kbs.co.kr":     +0.04,  # KBS
+    "sbs.co.kr":     +0.04,  # SBS
+    "chosun.com":    +0.04,  # 조선비즈
+    "joongang.co.kr":+0.04,  # 중앙일보
+    "donga.com":     +0.04,  # 동아일보
+    "asiae.co.kr":   +0.03,  # 아시아경제
+    "sedaily.com":   +0.03,  # 서울경제
+    "heraldcorp.com":+0.03,  # 헤럴드경제
+    "bizwatch.co.kr":+0.03,  # 비즈워치
+    "infostock.co.kr":+0.03, # 인포스탁
+    # 신뢰도 낮음 (-0.05) — 출처 불명
+    "blog.naver.com":-0.05,
+    "tistory.com":   -0.05,
+    "cafe.daum.net": -0.05,
+    "investing.com": -0.03,
+}
+
+def get_media_boost(url: str) -> float:
+    """URL 도메인 기반 언론사 신뢰도 보정값 반환"""
+    url_lower = url.lower()
+    for domain, boost in MEDIA_TRUST.items():
+        if domain in url_lower:
+            return boost
+    return 0.0
+
+def get_price_change(entity: str) -> float | None:
+    """해외주식 당일 등락률 조회 (yfinance) — 실패 시 None 반환
+    entity: 한글 종목명 (내부적으로 티커로 역변환)
+    반환: 등락률 (예: -12.6) 또는 None
+    """
+    try:
+        import yfinance as yf
+        # 한글명 → 티커 역변환
+        ticker = NAME_TO_TICKER.get(entity)
+        if not ticker:
+            # TICKER_MAP_RUNTIME 역방향 조회
+            for t, n in TICKER_MAP_RUNTIME.items():
+                if n == entity:
+                    ticker = t
+                    break
+        if not ticker:
+            return None
+        data = yf.Ticker(ticker).fast_info
+        change = getattr(data, "three_month_change", None)
+        # 당일 등락률: (현재가 - 전일종가) / 전일종가 * 100
+        prev = getattr(data, "previous_close", None)
+        curr = getattr(data, "last_price", None)
+        if prev and curr and prev > 0:
+            return round((curr - prev) / prev * 100, 2)
+    except Exception:
+        pass
+    return None
+
+
 def normalize_ticker(name: str) -> str:
     """종목명이 티커(영문 대문자)이면 한글명으로 변환, 아니면 그대로 반환
     ticker_map.json → TICKER_TO_NAME 순으로 조회
@@ -731,8 +801,11 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
         for i, a in enumerate(batch)
     ])
 
-    prompt = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-        "filter_prompt.txt"), encoding="utf-8").read().replace("{numbered}", numbered)
+    _fp_tpl = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+        "filter_prompt.txt"), encoding="utf-8").read()
+    _fp_static = _fp_tpl.replace("{numbered}", "")  # 캐싱용 고정 부분
+    _fp_dynamic = numbered                            # 가변 뉴스 목록
+    prompt = _fp_tpl.replace("{numbered}", numbered)  # 기존 호환용
     for attempt in range(3):
         try:
             _t0 = time.time()
@@ -741,13 +814,18 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 headers={
                     "x-api-key": ANTHROPIC_KEY,
                     "anthropic-version": "2023-06-01",
+                    "anthropic-beta": "prompt-caching-2024-07-31",
                     "content-type": "application/json",
                 },
                 json={
                     "model": CLAUDE_MODEL,
                     "max_tokens": 6000,
                     "temperature": 0.0,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": _fp_static,
+                         "cache_control": {"type": "ephemeral"}},
+                        {"type": "text", "text": _fp_dynamic},
+                    ]}],
                 },
                 timeout=60,
             )
@@ -1019,6 +1097,24 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     urgent_cnt  = sum(1 for a in result if a.get("grade") == "긴급")
     caution_cnt = sum(1 for a in result if a.get("grade") == "주의")
     ref_cnt     = sum(1 for a in result if a.get("grade") == "참고")
+
+    # 해외주식 실시간 주가 보정 — yfinance 조회 실패 시 무시
+    for a in result:
+        entity = a.get("entity","")
+        exp_rows = find_exposure(entity, exposure_data or {})
+        if not any(r.get("종목유형","") in ("해외주식","해외담보") for r in exp_rows):
+            continue
+        change = get_price_change(entity)
+        if change is None:
+            continue
+        a["_price_change"] = change
+        if change <= -10:
+            a["_ai_confidence"] = min(a.get("_ai_confidence",0.7) + 0.10, 1.0)
+            print(f"  [주가보정] {entity} {change:+.1f}% → conf+0.10")
+        elif change <= -5:
+            a["_ai_confidence"] = min(a.get("_ai_confidence",0.7) + 0.05, 1.0)
+            print(f"  [주가보정] {entity} {change:+.1f}% → conf+0.05")
+
     print(f"  등급 조정 완료 → 긴급 {urgent_cnt}건 / 주의 {caution_cnt}건 / 참고 {ref_cnt}건")
 
     # B안 — 동일 entity + 동일 grade 1건 제한 (리스크 점수 높은 것 유지)
@@ -1282,6 +1378,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                             f'<div style="font-size:9px;color:#94a3b8;margin-bottom:2px;">리스크 점수</div>'
                             f'<div style="font-size:13px;font-weight:700;color:#b45309;margin-bottom:2px;">{c_risk:.1f}<span style="font-size:9px;color:#94a3b8;font-weight:400;"> / 10</span></div>'
                             f'<div style="font-size:9px;color:#f59e0b;letter-spacing:1px;font-family:monospace;">{c_bar}</div>'
+                            f'{ ("<div style=\"font-size:10px;color:#dc2626;font-weight:700;margin-top:2px;\">▼" + str(round(abs(a.get("_price_change",0)),1)) + "%</div>") if (a.get("_price_change") or 0) <= -3 else ("<div style=\"font-size:10px;color:#16a34a;font-weight:700;margin-top:2px;\">▲" + str(round(abs(a.get("_price_change",0)),1)) + "%</div>") if (a.get("_price_change") or 0) >= 3 else "" }'
                             f'</div>'
                         )
                     else:
@@ -1321,6 +1418,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                             f'<div style="font-size:9px;color:#94a3b8;margin-bottom:2px;">리스크 점수</div>'
                             f'<div style="font-size:13px;font-weight:700;color:#c0392b;margin-bottom:2px;">{risk_score:.1f}<span style="font-size:9px;color:#94a3b8;font-weight:400;"> / 10</span></div>'
                             f'<div style="font-size:9px;color:#c0392b;letter-spacing:1px;font-family:monospace;">{bar_str}</div>'
+                            f'{ ("<div style=\"font-size:10px;color:#dc2626;font-weight:700;margin-top:2px;\">▼" + str(round(abs(a.get("_price_change",0)),1)) + "%</div>") if (a.get("_price_change") or 0) <= -3 else ("<div style=\"font-size:10px;color:#16a34a;font-weight:700;margin-top:2px;\">▲" + str(round(abs(a.get("_price_change",0)),1)) + "%</div>") if (a.get("_price_change") or 0) >= 3 else "" }'
                             f'</div>'
                         )
                     else:
