@@ -74,6 +74,12 @@ jobs:
       - name: 라이브러리 설치
         run: pip install -r requirements.txt
 
+      - name: 티커 매핑 갱신
+        run: |
+          pip install yfinance --quiet || true
+          python ticker_mapper.py
+        continue-on-error: true  # 실패해도 메인 탐지 무관
+
       - name: 뉴스 크롤링 & AI 필터링 & 이메일 발송
         env:
           EMAIL_SENDER:         ${{ secrets.EMAIL_SENDER }}
@@ -86,17 +92,14 @@ jobs:
         run: python naver_news_monitor.py
 
       # seen_news.json push 실패 시 다음 실행에서 옛날 seen 로드 → 중복 발송 위험
-      # stash --include-untracked: filter_log_*.json 등 Python 생성 파일이
-      # unstaged 상태로 남아 git pull --rebase 충돌 방지
+      # git pull --rebase 실패 시 즉시 종료 (|| true 제거) — 원인 파악 용이
       - name: seen_news.json 커밋 & 푸시
         if: always()
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
-          git stash --include-untracked || true
           git pull --rebase origin main
-          git stash pop || true
-          git add seen_news.json || true
+          git add seen_news.json ticker_map.json || true
           git diff --cached --quiet || git commit -m "update seen_news [skip ci]"
           git push || exit 1
 
