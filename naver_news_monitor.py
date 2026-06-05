@@ -50,6 +50,67 @@ DESC_SIM_THRESHOLD  = 0.84  # 본문 요약 유사도 (0.84: 안정적, 0.76은 
 # ─────────────────────────────────────────────
 
 
+
+# ─────────────────────────────────────────────
+# 해외주식 티커 → 한글 종목명 매핑
+# exposure_data.csv 해외 종목이 티커(NVDA 등)로 입력된 경우 자동 변환
+# ─────────────────────────────────────────────
+TICKER_TO_NAME = {
+    # 반도체·장비
+    "NVDA": "엔비디아",   "AVGO": "브로드컴",      "MU": "마이크론",
+    "INTC": "인텔",       "AMD": "AMD",             "QCOM": "퀄컴",
+    "AMAT": "어플라이드머티리얼즈", "LRCX": "램리서치", "KLAC": "KLA",
+    "MRVL": "마벨테크놀로지", "ON": "온세미컨덕터",  "TXN": "텍사스인스트루먼트",
+    "ARM": "ARM홀딩스",   "ASML": "ASML",           "TSM": "TSMC",
+    # 빅테크·소프트웨어
+    "AAPL": "애플",       "MSFT": "마이크로소프트", "GOOGL": "알파벳",
+    "GOOG": "알파벳",     "META": "메타",            "AMZN": "아마존",
+    "NFLX": "넷플릭스",   "CRM": "세일즈포스",       "ORCL": "오라클",
+    "IBM": "IBM",         "ADBE": "어도비",          "NOW": "서비스나우",
+    "PLTR": "팔란티어",   "SNOW": "스노우플레이크",
+    # 전기차·자동차
+    "TSLA": "테슬라",     "GM": "GM",               "F": "포드",
+    "RIVN": "리비안",     "LCID": "루시드",          "NIO": "니오",
+    "XPEV": "샤오펑",     "LI": "리오토",
+    # 금융
+    "JPM": "JP모건",      "BAC": "뱅크오브아메리카", "GS": "골드만삭스",
+    "MS": "모건스탠리",   "WFC": "웰스파고",         "C": "씨티그룹",
+    "V": "비자",          "MA": "마스터카드",        "BRK.B": "버크셔해서웨이",
+    "COIN": "코인베이스",
+    # 바이오·헬스
+    "LLY": "일라이릴리",  "JNJ": "존슨앤존슨",      "PFE": "화이자",
+    "MRNA": "모더나",     "ABBV": "애브비",           "UNH": "유나이티드헬스",
+    "AMGN": "암젠",       "GILD": "길리어드",         "REGN": "리제네론",
+    # 소비재·리테일
+    "WMT": "월마트",      "COST": "코스트코",         "HD": "홈디포",
+    "NKE": "나이키",      "SBUX": "스타벅스",         "MCD": "맥도날드",
+    # 에너지·원자재
+    "XOM": "엑슨모빌",    "CVX": "쉐브론",            "OXY": "옥시덴탈",
+    # 플랫폼·핀테크
+    "UBER": "우버",       "ABNB": "에어비앤비",       "SHOP": "쇼피파이",
+    "PYPL": "페이팔",     "SQ": "블록",               "SPOT": "스포티파이",
+    # 통신
+    "T": "AT&T",          "VZ": "버라이즌",           "TMUS": "T모바일",
+    # 주요 ETF
+    "SPY": "SPDR S&P500 ETF",   "QQQ": "나스닥100 ETF",
+    "SOXL": "반도체 레버리지 ETF", "TQQQ": "나스닥3배 ETF",
+    "SOXS": "반도체 인버스 ETF",   "ARKK": "ARK이노베이션 ETF",
+}
+
+# 역방향: 한글명 → 티커 (키워드 생성 시 활용)
+NAME_TO_TICKER = {v: k for k, v in TICKER_TO_NAME.items()}
+
+
+def normalize_ticker(name: str) -> str:
+    """종목명이 티커(영문 대문자)이면 한글명으로 변환, 아니면 그대로 반환
+    예: 'NVDA' → '엔비디아', '엔비디아' → '엔비디아', 'AVGO' → '브로드컴'
+    """
+    stripped = name.strip()
+    # 티커 패턴: 영문 대문자 1~5자 (마침표 포함 허용 BRK.B 등)
+    if re.match(r'^[A-Z]{1,5}(\.[A-Z])?$', stripped):
+        return TICKER_TO_NAME.get(stripped, stripped)
+    return stripped
+
 def load_exposure_data() -> dict:
     """CSV에서 eBiz본부 익스포저 데이터 로드 — {종목명: [row, ...]} 리스트 딕셔너리 반환
     컬럼 순서: 기준일, 종목명, 종목유형, 잔고(억), 고객수[, 시장]
@@ -64,7 +125,8 @@ def load_exposure_data() -> dict:
             if rows_all and "종목명" in (rows_all[0] or {}):
                 result = {}
                 for row in rows_all:
-                    name = row.get("종목명", "").strip()
+                    name = normalize_ticker(row.get("종목명", "").strip())
+                    row["종목명"] = name  # 티커→한글명 정규화
                     if not name:
                         continue
                     # 시장 컬럼 없으면 국내 기본값
@@ -92,7 +154,8 @@ def load_exposure_data() -> dict:
                     "고객수":   row[4].strip(),
                     "시장":     row[5].strip() if has_market and len(row) > 5 else "국내",
                 }
-                name = d["종목명"]
+                name = normalize_ticker(d["종목명"])
+                d["종목명"] = name
                 if name:
                     result.setdefault(name, []).append(d)
         return result
@@ -109,7 +172,7 @@ def get_overseas_keywords(exposure_data: dict, top_n: int = 30) -> list:
         for row in rows:
             if row.get("시장", "국내") != "해외":
                 continue
-            if row.get("종목유형", "") not in ("주식", "신용"):
+            if row.get("종목유형", "") not in ("주식", "신용", "해외주식", "해외담보"):
                 continue
             try:
                 bal = float(str(row.get("잔고(억)", "0")).replace(",", ""))
@@ -850,7 +913,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 },
                 json={
                     "model": CLAUDE_MODEL,
-                    "max_tokens": 4000,
+                    "max_tokens": 6000,
                     "temperature": 0.0,
                     "messages": [{"role": "user", "content": prompt}],
                 },
@@ -937,9 +1000,9 @@ def dedup_deterministic(articles: list) -> list:
 
     def normalize(text: str) -> str:
         t = unicodedata.normalize("NFKC", text)
-        t = _re.sub(r"\[.*?\]|\(.*?\)", "", t)
-        t = _re.sub(r"속보|단독|긴급|종합", "", t)
-        t = _re.sub(r"[^가-힣a-zA-Z0-9]", "", t)
+        t = re.sub(r"\[.*?\]|\(.*?\)", "", t)
+        t = re.sub(r"속보|단독|긴급|종합", "", t)
+        t = re.sub(r"[^가-힣a-zA-Z0-9]", "", t)
         return t.strip()
 
     seen_norms    = []
@@ -1215,10 +1278,10 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
       </td></tr>
     </table>'''
 
-    LOAN_TYPES  = {"여신", "신용융자", "신용", "신용공여", "신용대출"}
+    LOAN_TYPES  = {"여신", "신용융자", "신용", "신용공여", "신용대출", "해외담보"}
     BOND_TYPES  = {"채권"}
 
-    stock_rows = [r for r in all_rows if r.get("종목유형","") not in LOAN_TYPES and r.get("종목유형","") not in BOND_TYPES]
+    stock_rows = [r for r in all_rows if r.get("종목유형","") not in LOAN_TYPES and r.get("종목유형","") not in BOND_TYPES]  # 주식·해외주식 모두 포함
     bond_rows  = [r for r in all_rows if r.get("종목유형","") in BOND_TYPES]
     loan_rows  = [r for r in all_rows if r.get("종목유형","") in LOAN_TYPES]
 
@@ -2041,7 +2104,7 @@ def main():
         keyword   = article.get("keyword", "")
         exp_rows  = find_exposure(entity, exposure_data)
         # 해외주식 여부 — 익스포저 rows의 시장 컬럼 또는 keyword 패턴으로 판단
-        is_overseas = any(r.get("시장","국내") == "해외" for r in exp_rows)
+        is_overseas = any(r.get("시장","국내") == "해외" or r.get("종목유형","") in ("해외주식","해외담보") for r in exp_rows)
         def _fmt_exp(r):
             잔고 = float(str(r.get('잔고(억)', '0')).replace(',', ''))
             고객 = int(float(str(r.get('고객수', '0')).replace(',', '')))
