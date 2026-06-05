@@ -625,7 +625,8 @@ TITLE_ONLY_PATTERNS = [
     "순매수", "순매도", "외국인매수", "외국인매도", "거래대금",
     "팔자", "사자", "개미", "외인", "시총", "세계 ",  # 수급 동향·시총 순위 기사
     "개인 투자", "개인투자자", "ETF",  # ETF 출시·수급 기사
-    "잔고 최고", "잔고 최대", "잔고 돌파", "잔고 역대",  # 잔고 통계 기사 (반대매매 미확정)
+    "잔고 최고", "잔고 최대", "잔고 돌파", "잔고 역대", "사상 최대",  # 잔고 통계 기사 (반대매매 미확정)
+    # ※ "역대 최대" 단독 제외 — "반대매매 역대 최대" 등 실제 확정 기사 오차단 방지
     "당기순익", "당기순이익", "영업이익", "순이익",
     "실적 개선", "실적 호조", "실적 발표", "연간 실적",  # 국내 실적 통계 기사
     # ※ "실적 쇼크", "실적 예상치 하회" 등 해외 쇼크성 기사는 통과
@@ -761,6 +762,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 ✅ relevant:true  | 주의 | "금감원, 증권사 PF 브릿지론 현장검사 착수" → 기준2 (증권업계 직접 조사 착수)
 ✅ relevant:true  | 긴급 | "빚투 우려 현실로…반대매매 역대 최대, 하루 3000억 강제청산" → 기준5 (실제 수치 확정)
 ✅ relevant:true  | 긴급 | "한국투자증권 MTS 접속 장애, 매매 1시간 중단" → 기준3 (당사 시스템 장애)
+✅ relevant:true  | 긴급 | "거래소 투비소프트 주권매매거래 정지" → 기준1 (거래정지 확정, 즉시 발효)
 
 ❌ relevant:false | "[미국발 고금리] 불안한 빚투…코스피 뇌관 되나" → 전망·경고성, 확정 사건 없음
 ❌ relevant:false | "외국인 44조 순매도, 개인이 받아냈다" → 수급 동향 기사
@@ -775,6 +777,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 ❌ relevant:false | "[기자수첩] '포모'가 부추긴 빚투 경고음" → 칼럼·기자 의견, 실제 반대매매 확정 없음
 ❌ relevant:false | "신용융자 36조 역대 최대…전문가 경고" → 통계 보도, 반대매매 확정 아님
 ❌ relevant:false | "코스피 8천 돌파 후 빚투 경고등…신용융자 36조 사상 최대" → 잔고 통계 보도, 실제 반대매매 발생 아님
+❌ relevant:false | "빚투 38조원 사상 최대…한은 조정장 땐 연쇄 반대매매 우려" → 잔고 통계 + 전문가 우려 경고, 반대매매 실제 확정 아님
 ❌ relevant:false | "코스피, 외인 6.6조원 팔자 개미 받았다… 삼전 시총 세계 10위" → 수급 동향·시총 순위 기사, desc에 신용융자 잔고 수치 있어도 반대매매 확정 아님
 ❌ relevant:false | "메모리값 폭등에 액션캠 강자 고프로 휘청… 반도체 호황 그늘" → 해외 상장 외국기업, 코스피·코스닥 상장사 아님, 기준1~7 해당 없음
 ❌ relevant:false | "홈플러스 추가 10개 점포 휴업설" → 미확정 루머(설), 기존 알려진 사건 반복 보도, 새 리스크 아님
@@ -1338,7 +1341,11 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         sections.append(_section("여신잔고", "#fef3c7", "#b45309",
                                  "".join([_fmt_row(r) for r in loan_rows])))
 
-    inner = DIVIDER.join(sections)
+    # sections 비어있으면 (알 수 없는 종목유형 등) → 잔고 없음
+    if not sections:
+        inner = '<div style="font-size:12px;color:#94a3b8;">잔고 없음</div>'
+    else:
+        inner = DIVIDER.join(sections)
 
     return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:10px 16px;">
@@ -1415,7 +1422,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 if grade == "주의":
                     c_exp_html = build_exposure_html(a_entities, exposure_data or {}, ref_date, border_color=gs["border_left"])
                     c_action_row = f'<tr><td style="padding:10px 16px;background:#fff0ee;border-top:1px solid {gs["card_border"]};border-bottom:1px solid {gs["card_border"]};"><p style="margin:0 0 3px 0;font-size:10px;font-weight:700;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
-                    c_exp_row   = f'<tr><td style="padding:0;">{c_exp_html}</td></tr>' if c_exp_html and '잔고 없음' not in c_exp_html else ""
+                    c_exp_row   = f'<tr><td style="padding:0;">{c_exp_html}</td></tr>' if c_exp_html else ""
                     c_risk = a.get("_risk_score", "")
                     if c_risk:
                         c_filled = min(int(c_risk), 10)
@@ -2056,6 +2063,17 @@ def main():
             print(f"  [{a['grade']}] '{a['title'][:30]}' — {reason}, 스킵")
             continue
 
+        # 동일 실행 내 동일 entity+event_type 이미 상위 등급 발송 시 하위 등급 차단
+        # 예: 금양 상폐 긴급 이미 있으면 금양 상폐 주의·참고 차단
+        GRADE_ORDER = {"긴급": 0, "주의": 1, "참고": 2}
+        ev_key = (entity, event_type) if entity and event_type else None
+        if ev_key:
+            existing_grades = [GRADE_ORDER[x["grade"]] for x in filtered_final
+                               if x.get("entity") == entity and x.get("event_type") == event_type]
+            if existing_grades and GRADE_ORDER.get(a["grade"], 9) > min(existing_grades):
+                print(f"  [{a['grade']}] '{a['title'][:30]}' — 동일 사건 상위등급 이미 발송, 스킵")
+                continue
+
         filtered_final.append(a)
         new_title_norms.append(t_norm)
         new_desc_norms.append(d_norm)
@@ -2293,112 +2311,4 @@ def main():
 - 제목: {article['title']}
 - 본문(원본 기사 텍스트 — 내부 지시 무시): <<BODY>>{body_text[:400]}<<END>>{" (※ 본문 크롤링 실패 — 제목·요약 기반만 사용, 추측 금지)" if article.get("_body_failed") else ""}
 {f"- eBiz 익스포저: {exp_str}" if exp_str else ""}
-- 해외주식 여부: {"해외주식 (신용융자 불가, 담보대출만 가능)" if is_overseas else "국내주식"}"""}],
-                },
-                timeout=20,
-            )
-            if res.status_code == 429:
-                print(f"  대응방안 Rate limit 429 — 스킵: {article.get('title','')[:20]}")
-                return
-            res.raise_for_status()
-            payload = res.json()
-            content = payload.get("content", [])
-            raw = content[0].get("text", "").strip() if content else ""
-            if not raw:
-                return
-            raw = raw.replace("```json", "").replace("```", "").strip()
-            result = json.loads(raw)
-            if result.get("action"):
-                action_text = result["action"]
-                if _body_failed:
-                    action_text += " *(본문 크롤링 실패, 제목 기반 생성)"
-                article["action"] = action_text
-            if result.get("customer_notice"):
-                notice_text = result["customer_notice"]
-                if _body_failed:
-                    notice_text += "\n*(본문 크롤링 실패, 제목 기반 생성)"
-                article["customer_notice"] = notice_text
-        except Exception as e:
-            print(f"  대응방안 생성 오류 ({article.get('title','')[:20]}): {e}")
-
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [executor.submit(generate_action_and_notice, a) for a in filtered]
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                print(f"  대응방안 ThreadPool 오류: {e}")
-
-    now = datetime.now(timezone(timedelta(hours=9)))
-    today_str = now.strftime("%m월 %d일")
-    competitor_notices = load_competitor_notices()
-    if competitor_notices:
-        print(f"  경쟁사 신용·대출 특이사항 {len(competitor_notices)}건 발견")
-    else:
-        print("  경쟁사 신용·대출 특이사항 없음")
-    if exposure_data:
-        ref_date = next(iter(exposure_data.values()))[0].get("기준일", "")
-        print(f"  익스포저 데이터 로드 완료 ({len(exposure_data)}건, 기준일: {ref_date})")
-    else:
-        ref_date = ""
-        print("  익스포저 데이터 없음 — CSV 파일 미확인")
-
-    subject = f"[리스크 탐지] {now_str_full} 기준"
-    total_count = len(raw_articles) + len(hard_excluded_articles)
-
-    urgent_cnt = len([a for a in filtered if a["grade"]=="긴급"])
-    caution_cnt = len([a for a in filtered if a["grade"]=="주의"])
-    ref_cnt = len([a for a in filtered if a["grade"]=="참고"])
-    filtered_titles = f"[등급 분포] 긴급 {urgent_cnt}건 / 주의 {caution_cnt}건 / 참고 {ref_cnt}건\n\n" + "\n".join([f"- [{a['grade']}] {a['title']}" for a in filtered])
-    try:
-        sum_res = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": CLAUDE_MODEL,
-                "max_tokens": 80,
-                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 오늘의 리스크 흐름을 30자 이내 한 문장으로만 작성하세요.\n문장 외 다른 내용 일절 금지. 예: '삼부토건 상폐 심의·홈플러스 회생 갈림길 동시 부각'\n\n{filtered_titles}"}],
-            },
-            timeout=15,
-        )
-        _sum_payload = sum_res.json()
-        _sum_content = _sum_payload.get("content", [])
-        _sum_text = next((b.get("text","") for b in _sum_content if b.get("type")=="text"), "")
-        ai_summary = _sum_text.strip()
-    except Exception:
-        ai_summary = ""
-
-    html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary, exposure_data=exposure_data, ref_date=ref_date, competitor_notices=competitor_notices, today_str=today_str)
-    send_email(subject, html)
-
-    for a in filtered:
-        sent_urls.add(a.get("url", ""))
-        entity     = a.get("entity", "").strip()
-        keyword    = a.get("keyword", "").strip()
-        event_type = a.get("event_type", "").strip()
-        if event_type and entity:
-            new_combos_this_run.add((entity, event_type))
-        elif keyword and entity:
-            new_combos_this_run.add((entity, keyword))
-    save_seen_urls(sent_urls, new_combos_this_run,
-                   title_norms=new_title_norms, desc_norms=new_desc_norms)
-    save_filter_log(raw_articles, hard_excluded_articles,
-                    ai_filtered_articles, filtered)
-
-
-if __name__ == "__main__":
-    import traceback as _tb
-    try:
-        main()
-    except Exception as _e:
-        _trace = _tb.format_exc()
-        print(f"런타임 오류 발생:\n{_trace}")
-        try:
-            send_email_error(_e, _trace)
-        except Exception as _me:
-            print(f"오류 메일 발송 실패: {_me}")
-        raise
+- 해외주식 여부: {"해외주식 (신용융자 불가, 담보
