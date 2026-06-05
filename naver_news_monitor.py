@@ -1838,6 +1838,8 @@ def main():
                 result.append(article)
         return keyword, result
 
+    # 익스포저 데이터 선로드 — 해외 동적 키워드 생성 + AI 필터링에 공통 사용
+    exposure_data = load_exposure_data()
     # 해외주식 동적 키워드 생성 — 익스포저 CSV 상위 30개 종목
     overseas_kws = get_overseas_keywords(exposure_data, top_n=30)
     all_keywords = KEYWORDS + overseas_kws
@@ -1884,7 +1886,6 @@ def main():
         print(f"  하드 제외룰: {before_hard}건 → {len(raw_articles)}건 ({before_hard - len(raw_articles)}건 제거)")
 
     print(f"\nAI 필터링 중... (총 {len(raw_articles)}건)")
-    exposure_data = load_exposure_data()
     filtered = ai_filter_and_grade(raw_articles, exposure_data=exposure_data)
     ai_filtered_articles = list(filtered)
     for _a in filtered:
