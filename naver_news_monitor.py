@@ -17,6 +17,7 @@ import time
 import os
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import unicodedata
 from email.utils import parsedate_to_datetime as _pdt
 
 # ─────────────────────────────────────────────
@@ -126,13 +127,15 @@ def get_overseas_keywords(exposure_data: dict, top_n: int = 30) -> list:
     for name, _ in top:
         keywords.append(f"{name} 실적")        # 실적 쇼크
         keywords.append(f"{name} 급락")        # 급락
+        keywords.append(f"{name} 파산")        # 파산·도산
+        keywords.append(f"{name} 상장폐지")    # 해외 상장폐지
     return keywords
 
 
 def find_exposure(entity: str, exposure_data: dict) -> list:
     """entity와 종목명 딕셔너리 매칭 — 단어 경계 기반 정밀 매칭 + prefix 6자 매칭
     동일 종목명의 모든 행 반환"""
-    import re
+
     if not entity or not exposure_data:
         return []
     # 1) 정확히 일치하면 즉시 반환 (모든 유형 포함)
@@ -620,7 +623,7 @@ EXCLUDE_TITLE_RE_PATTERNS = [
 
 def is_hard_excluded(title: str, desc: str = "") -> tuple:
     """하드 제외 패턴 매칭 — (excluded: bool, reason: str) 반환"""
-    import re as _re
+
     for pat in TITLE_ONLY_PATTERNS:
         if pat in title:
             return True, pat
@@ -913,8 +916,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 
 def dedup_deterministic(articles: list) -> list:
     """3단계 중복 제거 — 제목 유사도 + 기업명·키워드 조합 + desc 유사도"""
-    import unicodedata
-    import re as _re
+
     try:
         from rapidfuzz import fuzz as _fuzz
         def _ratio(a, b): return _fuzz.ratio(a, b) / 100.0
