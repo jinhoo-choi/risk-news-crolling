@@ -85,16 +85,51 @@ TICKER_TO_NAME = {
     "SOXS": "반도체 인버스 ETF",   "ARKK": "ARK이노베이션 ETF",
 }
 
+
+# 관련주 매핑 — entity 직접 매칭 실패 시 관련 상장주식으로 안내
+# 예: "한국투자증권" 뉴스 → 익스포저에 없음 → "한국금융지주" 관련주로 표시
+RELATED_STOCK_MAP = {
+    "한국투자증권":   "한국금융지주",
+    "한투증권":       "한국금융지주",
+    "KIS":            "한국금융지주",
+    "미래에셋증권":   "미래에셋증권",
+    "삼성증권":       "삼성증권",
+    "NH투자증권":     "NH투자증권",
+    "KB증권":         "KB금융",
+    "신한투자증권":   "신한지주",
+    "키움증권":       "키움증권",
+    "토스증권":       "비바리퍼블리카",
+    "한국거래소":     "한국거래소",
+    "한국은행":       None,
+    "금감원":         None,
+    "금융감독원":     None,
+}
+
 NAME_TO_TICKER = {v: k for k, v in TICKER_TO_NAME.items()}
+
+# ticker_map.json 런타임 로드 (ticker_mapper.py가 생성)
+def _load_ticker_map() -> dict:
+    """ticker_map.json 로드 — 없으면 TICKER_TO_NAME fallback"""
+    try:
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ticker_map.json")
+        if os.path.exists(p):
+            m = json.load(open(p, encoding="utf-8"))
+            return {**TICKER_TO_NAME, **m}  # json이 우선
+    except Exception:
+        pass
+    return TICKER_TO_NAME
+
+TICKER_MAP_RUNTIME = _load_ticker_map()
+
 
 def normalize_ticker(name: str) -> str:
     """종목명이 티커(영문 대문자)이면 한글명으로 변환, 아니면 그대로 반환
-    예: 'NVDA' → '엔비디아', '엔비디아' → '엔비디아', 'AVGO' → '브로드컴'
+    ticker_map.json → TICKER_TO_NAME 순으로 조회
+    예: 'NVDA' → '엔비디아', 'IONQ' → '아이온큐', '삼성전자' → '삼성전자'
     """
     stripped = name.strip()
-    # 티커 패턴: 영문 대문자 1~5자 (마침표 포함 허용 BRK.B 등)
     if re.match(r'^[A-Z]{1,5}(\.[A-Z])?$', stripped):
-        return TICKER_TO_NAME.get(stripped, stripped)
+        return TICKER_MAP_RUNTIME.get(stripped, stripped)
     return stripped
 
 def load_exposure_data() -> dict:
@@ -1061,8 +1096,42 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
 
     date_label = f"기준일: {ref_date}" if ref_date else ""
 
-    # 3개 다 없으면 → 뱅키스 잔고 없음
+    # 3개 다 없으면 → 관련주 확인 후 없으면 잔고 없음
     if not all_rows:
+        related_name = None
+        related_rows = []
+        for ent in entities_list:
+            cand = RELATED_STOCK_MAP.get(ent)
+            if cand:
+                cand_rows = find_exposure(cand, exposure_data) if exposure_data else []
+                if cand_rows:
+                    related_name = cand
+                    related_rows = cand_rows
+                    break
+        if related_name and related_rows:
+            L = {"여신","신용융자","신용","신용공여","신용대출","해외담보"}
+            B = {"채권"}
+            rs = [r for r in related_rows if r.get("종목유형","") not in L and r.get("종목유형","") not in B]
+            rl = [r for r in related_rows if r.get("종목유형","") in L]
+            rb = [r for r in related_rows if r.get("종목유형","") in B]
+            def _rrow(r, rn):
+                bal = float(str(r.get("잔고(억)","0")).replace(",",""))
+                cus = int(float(str(r.get("고객수","0")).replace(",","")))
+                return f'<div style="font-size:12px;color:#374151;line-height:1.8;">{rn} {bal:,.0f}억원 / {cus:,}명</div>'
+            inner_r = ""
+            if rs:
+                inner_r += f'<div style="margin-bottom:4px;"><span style="font-size:9px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:2px;font-weight:700;">관련주·주식잔고</span> ' + "".join([_rrow(r, related_name) for r in rs]) + "</div>"
+            if rl:
+                inner_r += f'<div style="margin-bottom:4px;"><span style="font-size:9px;background:#fef3c7;color:#b45309;padding:1px 6px;border-radius:2px;font-weight:700;">관련주·여신잔고</span> ' + "".join([_rrow(r, related_name) for r in rl]) + "</div>"
+            if rb:
+                inner_r += f'<div style="margin-bottom:4px;"><span style="font-size:9px;background:#ede9fe;color:#5b21b6;padding:1px 6px;border-radius:2px;font-weight:700;">관련주·채권잔고</span> ' + "".join([_rrow(r, related_name) for r in rb]) + "</div>"
+            return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
+      <tr><td style="padding:10px 16px;">
+        <p style="margin:0 0 6px 0;font-size:10px;font-weight:700;color:#1e293b;">뱅키스 익스포저
+          <span style="font-weight:400;color:#94a3b8;">{date_label}</span></p>
+        {inner_r}
+      </td></tr>
+    </table>'''
         return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:10px 16px;">
         <p style="margin:0 0 4px 0;font-size:10px;font-weight:700;color:#1e293b;">뱅키스 익스포저
