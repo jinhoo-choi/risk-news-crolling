@@ -47,7 +47,7 @@ jobs:
 
   crawl-and-notify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     needs: crawl-broker-notices
     if: always()   # broker 실패·스킵돼도 메인 탐지는 반드시 실행
     permissions:
@@ -74,12 +74,6 @@ jobs:
       - name: 라이브러리 설치
         run: pip install -r requirements.txt
 
-      - name: 티커 매핑 갱신
-        run: |
-          pip install yfinance --quiet || true
-          python ticker_mapper.py
-        continue-on-error: true  # 실패해도 메인 탐지 무관
-
       - name: 뉴스 크롤링 & AI 필터링 & 이메일 발송
         env:
           EMAIL_SENDER:         ${{ secrets.EMAIL_SENDER }}
@@ -90,6 +84,12 @@ jobs:
           NAVER_CLIENT_ID:      ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET:  ${{ secrets.NAVER_CLIENT_SECRET }}
         run: python naver_news_monitor.py
+
+      - name: 티커 매핑 갱신 (탐지 후)
+        run: |
+          pip install yfinance --quiet || true
+          python ticker_mapper.py
+        continue-on-error: true  # 실패해도 무관
 
       # seen_news.json push 실패 시 다음 실행에서 옛날 seen 로드 → 중복 발송 위험
       # git pull --rebase 실패 시 즉시 종료 (|| true 제거) — 원인 파악 용이
