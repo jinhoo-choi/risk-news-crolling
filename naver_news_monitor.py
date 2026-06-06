@@ -1,7 +1,51 @@
-"""
-네이버 뉴스 키워드 모니터링 & Claude AI 필터링 & 이메일 알림
-GitHub Actions 전용 버전 / 네이버 검색 API 사용
-"""
+RELATED_STOCK_MAP = {
+    # 증권사 → 상장 지주·모회사
+    "한국투자증권":   "한국금융지주",
+    "한투증권":       "한국금융지주",
+    "미래에셋증권":   "미래에셋증권",
+    "삼성증권":       "삼성증권",
+    "NH투자증권":     "NH투자증권",
+    "KB증권":         "KB금융",
+    "신한투자증권":   "신한지주",
+    "하나증권":       "하나금융지주",
+    "키움증권":       "키움증권",
+    "대신증권":       "대신증권",
+    "유안타증권":     "유안타증권",
+    "메리츠증권":     "메리츠금융지주",
+    "교보증권":       "교보생명",
+    "IBK투자증권":    "기업은행",
+    "SK증권":         "SK증권",
+    # 은행 → 지주
+    "국민은행":       "KB금융",
+    "신한은행":       "신한지주",
+    "하나은행":       "하나금융지주",
+    "우리은행":       "우리금융지주",
+    "기업은행":       "기업은행",
+    "농협은행":       "NH투자증권",
+    "카카오뱅크":     "카카오뱅크",
+    "케이뱅크":       "케이뱅크",
+    # 카드·보험 → 지주
+    "국민카드":       "KB금융",
+    "신한카드":       "신한지주",
+    "삼성생명":       "삼성생명",
+    "한화생명":       "한화생명",
+    "교보생명":       "교보생명",
+    "메리츠화재":     "메리츠금융지주",
+    # 주요 대기업 계열
+    "삼성물산":       "삼성물산",
+    "SK이노베이션":   "SK이노베이션",
+    "현대캐피탈":     "현대차",
+    "현대카드":       "현대차",
+    "롯데카드":       "롯데지주",
+    # 감독·규제 기관 (관련주 없음)
+    "금융감독원":     None,
+    "금감원":         None,
+    "금융위원회":     None,
+    "한국은행":       None,
+    "금융위":         None,
+    "한국거래소":     None,
+    "예탁결제원":     None,
+}
 
 import requests
 import re
@@ -64,57 +108,13 @@ DESC_SIM_THRESHOLD  = 0.84  # 본문 요약 유사도 (0.84: 안정적, 0.76은 
 # exposure_data.csv 해외 종목이 티커(NVDA 등)로 입력된 경우 자동 변환
 # ─────────────────────────────────────────────
 TICKER_TO_NAME = {
-    "NVDA": "엔비디아",   "AVGO": "브로드컴",      "MU": "마이크론",
-    "INTC": "인텔",       "AMD": "AMD",             "QCOM": "퀄컴",
-    "AMAT": "어플라이드머티리얼즈", "LRCX": "램리서치", "KLAC": "KLA",
-    "MRVL": "마벨테크놀로지", "ON": "온세미컨덕터",  "TXN": "텍사스인스트루먼트",
-    "ARM": "ARM홀딩스",   "ASML": "ASML",           "TSM": "TSMC",
-    "AAPL": "애플",       "MSFT": "마이크로소프트", "GOOGL": "알파벳",
-    "GOOG": "알파벳",     "META": "메타",            "AMZN": "아마존",
-    "NFLX": "넷플릭스",   "CRM": "세일즈포스",       "ORCL": "오라클",
-    "IBM": "IBM",         "ADBE": "어도비",          "NOW": "서비스나우",
-    "PLTR": "팔란티어",   "SNOW": "스노우플레이크",
-    "TSLA": "테슬라",     "GM": "GM",               "F": "포드",
-    "RIVN": "리비안",     "LCID": "루시드",          "NIO": "니오",
-    "XPEV": "샤오펑",     "LI": "리오토",
-    "JPM": "JP모건",      "BAC": "뱅크오브아메리카", "GS": "골드만삭스",
-    "MS": "모건스탠리",   "WFC": "웰스파고",         "C": "씨티그룹",
-    "V": "비자",          "MA": "마스터카드",        "BRK.B": "버크셔해서웨이",
-    "COIN": "코인베이스",
-    "LLY": "일라이릴리",  "JNJ": "존슨앤존슨",      "PFE": "화이자",
-    "MRNA": "모더나",     "ABBV": "애브비",           "UNH": "유나이티드헬스",
-    "AMGN": "암젠",       "GILD": "길리어드",         "REGN": "리제네론",
-    "WMT": "월마트",      "COST": "코스트코",         "HD": "홈디포",
-    "NKE": "나이키",      "SBUX": "스타벅스",         "MCD": "맥도날드",
-    "XOM": "엑슨모빌",    "CVX": "쉐브론",            "OXY": "옥시덴탈",
-    "UBER": "우버",       "ABNB": "에어비앤비",       "SHOP": "쇼피파이",
-    "PYPL": "페이팔",     "SQ": "블록",               "SPOT": "스포티파이",
-    "T": "AT&T",          "VZ": "버라이즌",           "TMUS": "T모바일",
-    "SPY": "SPDR S&P500 ETF",   "QQQ": "나스닥100 ETF",
-    "SOXL": "반도체 레버리지 ETF", "TQQQ": "나스닥3배 ETF",
-    "SOXS": "반도체 인버스 ETF",   "ARKK": "ARK이노베이션 ETF",
+    # ticker_map.json 미존재 시 최소 fallback — Actions에서 자동 갱신
+    "TSLA":"테슬라",    "NVDA":"엔비디아",  "GOOGL":"알파벳",   "AAPL":"애플",
+    "MSFT":"마이크로소프트","META":"메타",   "AMZN":"아마존",    "AVGO":"브로드컴",
+    "MU":"마이크론",    "INTC":"인텔",      "AMD":"AMD",         "QCOM":"퀄컴",
+    "TSM":"TSMC",       "PLTR":"팔란티어",  "IONQ":"아이온큐",   "SOXL":"반도체레버리지ETF",
+    "QQQ":"나스닥100 ETF","TQQQ":"나스닥3배 ETF","VOO":"뱅가드S&P500 ETF","SPY":"SPDR S&P500 ETF",
 }
-
-
-# 관련주 매핑 — entity 직접 매칭 실패 시 관련 상장주식으로 안내
-# 예: "한국투자증권" 뉴스 → 익스포저에 없음 → "한국금융지주" 관련주로 표시
-RELATED_STOCK_MAP = {
-    "한국투자증권":   "한국금융지주",
-    "한투증권":       "한국금융지주",
-    "KIS":            "한국금융지주",
-    "미래에셋증권":   "미래에셋증권",
-    "삼성증권":       "삼성증권",
-    "NH투자증권":     "NH투자증권",
-    "KB증권":         "KB금융",
-    "신한투자증권":   "신한지주",
-    "키움증권":       "키움증권",
-    "토스증권":       "비바리퍼블리카",
-    "한국거래소":     "한국거래소",
-    "한국은행":       None,
-    "금감원":         None,
-    "금융감독원":     None,
-}
-
 NAME_TO_TICKER = {v: k for k, v in TICKER_TO_NAME.items()}
 
 # ticker_map.json 런타임 로드 (ticker_mapper.py가 생성)
@@ -1307,7 +1307,7 @@ def _price_badge(a: dict) -> str:
         return ""
     pct = str(round(abs(chg), 1))
     if chg <= -3:
-        return f'<div style="font-size:10px;color:#dc2626;font-weight:700;margin-top:2px;">▼{pct}%</div>'
+        return f'<div style="font-size:10px;color:#2563eb;font-weight:700;margin-top:2px;">▼{pct}%</div>'
     if chg >= 3:
         return f'<div style="font-size:10px;color:#16a34a;font-weight:700;margin-top:2px;">▲{pct}%</div>'
     return ""
@@ -1375,6 +1375,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     badges += f'<span style="display:inline-block;font-size:10px;color:#3b5491;background:#e8f0fe;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;">{a["keyword"]}</span>'
                 if a.get("entity") and a.get("entity") != a.get("keyword"):
                     badges += f'<span style="display:inline-block;font-size:10px;color:#7a9abf;background:#f1f5f9;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;">{a["entity"]}</span>'
+                badges += _price_badge(a)  # 등락률 뱃지 — 키워드 옆
 
                 if grade == "주의":
                     c_exp_html = build_exposure_html(a_entities, exposure_data or {}, ref_date, border_color=gs["border_left"])
@@ -1389,7 +1390,6 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                             f'<div style="font-size:9px;color:#94a3b8;margin-bottom:2px;">리스크 점수</div>'
                             f'<div style="font-size:13px;font-weight:700;color:#b45309;margin-bottom:2px;">{c_risk:.1f}<span style="font-size:9px;color:#94a3b8;font-weight:400;"> / 10</span></div>'
                             f'<div style="font-size:9px;color:#f59e0b;letter-spacing:1px;font-family:monospace;">{c_bar}</div>'
-                            + _price_badge(a)
                             + f'</div>'
                         )
                     else:
@@ -1429,7 +1429,6 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                             f'<div style="font-size:9px;color:#94a3b8;margin-bottom:2px;">리스크 점수</div>'
                             f'<div style="font-size:13px;font-weight:700;color:#c0392b;margin-bottom:2px;">{risk_score:.1f}<span style="font-size:9px;color:#94a3b8;font-weight:400;"> / 10</span></div>'
                             f'<div style="font-size:9px;color:#c0392b;letter-spacing:1px;font-family:monospace;">{bar_str}</div>'
-                            + _price_badge(a)
                             + f'</div>'
                         )
                     else:
@@ -1439,6 +1438,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                         urgent_badges += f'<span style="font-size:10px;background:#e8f0fe;color:#3b5491;padding:2px 7px;border-radius:3px;margin-right:4px;font-weight:600;">{a["keyword"]}</span>'
                     if a.get("entity") and a.get("entity") != a.get("keyword"):
                         urgent_badges += f'<span style="font-size:10px;background:#f1f5f9;color:#4a6099;padding:2px 7px;border-radius:3px;font-weight:600;">{a["entity"]}</span>'
+                    urgent_badges += _price_badge(a)  # 등락률 뱃지 — 키워드 옆
                     action_row = f'<tr><td class="action-td" bgcolor="#fef2f2" style="padding:10px 16px;border-bottom:1px solid {gs["card_border"]};background:#fef2f2;"><p style="margin:0 0 3px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
                     exposure_row = f'<tr><td style="padding:0;border-bottom:1px solid {gs["card_border"]};background:#ffffff;">{exposure_html}</td></tr>' if exposure_html else ""
                     notice_text = _esc((a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice",""))
