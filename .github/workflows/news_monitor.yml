@@ -98,7 +98,9 @@ jobs:
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
+          git stash --include-untracked || true
           git pull --rebase origin main
+          git stash pop || true
           git add seen_news.json ticker_map.json || true
           git diff --cached --quiet || git commit -m "update seen_news [skip ci]"
           git push || exit 1
