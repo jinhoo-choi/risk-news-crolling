@@ -10,7 +10,7 @@ from pathlib import Path
 # ── 설정 ──────────────────────────────────────────
 EXPOSURE_FILE  = os.environ.get("EXPOSURE_FILE", "exposure_data.csv")
 OUTPUT_FILE    = "ticker_map.json"
-MIN_BAL        = 100  # 100억 이상 종목만 매핑 (소요시간 단축)
+MIN_BAL        = 0    # 전체 매핑 — 포괄 키워드 방식으로 전환해 선행 불필요
 BATCH_SIZE     = 10  # yfinance 배치 크기
 SLEEP_SEC      = 0.3  # 배치 간 딜레이
 TICKER_RE      = re.compile(r'^[A-Z]{1,5}(\.[A-Z])?$')
