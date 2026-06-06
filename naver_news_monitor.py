@@ -31,6 +31,16 @@ ANTHROPIC_KEY     = os.environ["ANTHROPIC_API_KEY"]
 NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
 NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
+# 해외주식 포괄 리스크 키워드 — 종목명 불필요, AI가 entity 추출
+OVERSEAS_KEYWORDS = [
+    "반도체주 급락",      # 브로드컴·마이크론 등 섹터 기사
+    "해외주식 실적쇼크",  # 실적 쇼크 포괄
+    "나스닥 급락",        # 나스닥 전반 급락
+    "미국주식 상장폐지",  # 해외 상폐
+    "미국주식 파산",      # 해외 파산
+    "해외주식 급락",      # 해외 전반
+]
+
 KEYWORDS = ["부실 리스크", "신용 리스크", "유동성 리스크", "디폴트 리스크", "기업회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "반대매매 급증", "신용등급 강등", "PF 부실", "미매각", "신용융자", "발행어음", "서킷브레이커", "한국투자증권오류", "한국투자증권 장애", "한국투자증권 접속불가"]
 MAX_NEWS_PER_KEYWORD = 300   # 네이버 API 페이지 제한 (100건×3페이지)
 USER_AGENTS = [
@@ -253,38 +263,12 @@ def load_exposure_data() -> dict:
     except Exception:
         return {}
 
-def get_overseas_keywords(exposure_data: dict, top_n: int = 30) -> list:
-    """해외주식 익스포저 상위 N개 종목으로 동적 키워드 생성
-    종목명 기준 주식 잔고 합산 → 상위 top_n개 선택
-    키워드 패턴: "{종목명} 실적", "{종목명} 급락", "{종목명} 파산" 등"""
-    overseas = {}
-    for name, rows in exposure_data.items():
-        for row in rows:
-            유형 = row.get("종목유형", "")
-            시장 = row.get("시장", "")
-            if 유형 not in ("해외주식", "해외담보") and 시장 != "해외":
-                continue
-            if 유형 not in ("주식", "신용", "해외주식", "해외담보"):
-                continue
-            try:
-                bal = float(str(row.get("잔고(억)", "0")).replace(",", ""))
-            except Exception:
-                bal = 0
-            overseas[name] = overseas.get(name, 0) + bal
-
-    if not overseas:
-        return []
-
-    # 잔고 기준 상위 top_n
-    top = sorted(overseas.items(), key=lambda x: x[1], reverse=True)[:top_n]
-
-    keywords = []
-    for name, _ in top:
-        keywords.append(f"{name} 실적")        # 실적 쇼크
-        keywords.append(f"{name} 급락")        # 급락
-        keywords.append(f"{name} 파산")      
-        keywords.append(f"{name} 상장폐지")  
-    return keywords
+def get_overseas_keywords(exposure_data: dict = None, top_n: int = 30) -> list:
+    """해외주식 포괄 리스크 키워드 반환
+    종목명 기반 동적 키워드 대신 포괄 키워드 사용
+    → ticker_mapper 선행 불필요, AI가 기사에서 entity 직접 추출
+    """
+    return list(OVERSEAS_KEYWORDS)
 
 def find_exposure(entity: str, exposure_data: dict) -> list:
     """entity와 종목명 딕셔너리 매칭 — O(1) 정확 매칭 우선, fallback prefix 6자
@@ -706,7 +690,7 @@ TITLE_ONLY_PATTERNS = [
     "순매수", "순매도", "외국인매수", "외국인매도", "거래대금",
     "팔자", "사자", "개미", "외인", "시총", "세계 ",
     "개인 투자", "개인투자자", "ETF",
-    "잔고 최고", "잔고 최대", "잔고 돌파", "잔고 역대", "사상 최대",
+    "잔고 최고", "잔고 최대", "잔고 돌파", "잔고 역대",  # "사상 최대" 단독 제거 — 급락 기사 오차단 방지
   
     "당기순익", "당기순이익", "영업이익", "순이익",
     "실적 개선", "실적 호조", "실적 발표", "연간 실적",
@@ -1302,6 +1286,19 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
       </td></tr>
     </table>'''
 
+def _price_badge(a: dict) -> str:
+    """해외주식 등락률 뱃지 HTML 반환"""
+    chg = a.get("_price_change")
+    if chg is None:
+        return ""
+    pct = str(round(abs(chg), 1))
+    if chg <= -3:
+        return f'<div style="font-size:10px;color:#dc2626;font-weight:700;margin-top:2px;">▼{pct}%</div>'
+    if chg >= 3:
+        return f'<div style="font-size:10px;color:#16a34a;font-weight:700;margin-top:2px;">▲{pct}%</div>'
+    return ""
+
+
 def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '', exposure_data: dict = None, ref_date: str = '', competitor_notices: list = None, today_str: str = ''):
     exposure_data = exposure_data or {}
     now = datetime.now(timezone(timedelta(hours=9)))
@@ -1378,8 +1375,8 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                             f'<div style="font-size:9px;color:#94a3b8;margin-bottom:2px;">리스크 점수</div>'
                             f'<div style="font-size:13px;font-weight:700;color:#b45309;margin-bottom:2px;">{c_risk:.1f}<span style="font-size:9px;color:#94a3b8;font-weight:400;"> / 10</span></div>'
                             f'<div style="font-size:9px;color:#f59e0b;letter-spacing:1px;font-family:monospace;">{c_bar}</div>'
-                            f'{ ("<div style=\"font-size:10px;color:#dc2626;font-weight:700;margin-top:2px;\">▼" + str(round(abs(a.get("_price_change",0)),1)) + "%</div>") if (a.get("_price_change") or 0) <= -3 else ("<div style=\"font-size:10px;color:#16a34a;font-weight:700;margin-top:2px;\">▲" + str(round(abs(a.get("_price_change",0)),1)) + "%</div>") if (a.get("_price_change") or 0) >= 3 else "" }'
-                            f'</div>'
+                            + _price_badge(a)
+                            + f'</div>'
                         )
                     else:
                         c_score_html = ""
@@ -1418,8 +1415,8 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                             f'<div style="font-size:9px;color:#94a3b8;margin-bottom:2px;">리스크 점수</div>'
                             f'<div style="font-size:13px;font-weight:700;color:#c0392b;margin-bottom:2px;">{risk_score:.1f}<span style="font-size:9px;color:#94a3b8;font-weight:400;"> / 10</span></div>'
                             f'<div style="font-size:9px;color:#c0392b;letter-spacing:1px;font-family:monospace;">{bar_str}</div>'
-                            f'{ ("<div style=\"font-size:10px;color:#dc2626;font-weight:700;margin-top:2px;\">▼" + str(round(abs(a.get("_price_change",0)),1)) + "%</div>") if (a.get("_price_change") or 0) <= -3 else ("<div style=\"font-size:10px;color:#16a34a;font-weight:700;margin-top:2px;\">▲" + str(round(abs(a.get("_price_change",0)),1)) + "%</div>") if (a.get("_price_change") or 0) >= 3 else "" }'
-                            f'</div>'
+                            + _price_badge(a)
+                            + f'</div>'
                         )
                     else:
                         risk_score_html = ""
