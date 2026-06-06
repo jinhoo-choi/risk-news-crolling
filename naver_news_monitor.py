@@ -682,6 +682,8 @@ def fetch_article_body(url: str) -> str:
 # ─────────────────────────────────────────────
 TITLE_ONLY_PATTERNS = [
     "시황", "장마감", "마감 시황", "마감 종합", "마켓",
+    "베스트&워스트", "베스트 워스트", "주간 상승", "주간 하락",  # 주간 랭킹·요약 기사
+    "이주의 베스트", "이주의 워스트", "주간 수익률",
     "목표가", "목표주가", "투자의견", "매수", "매도", "중립",
     "브리핑", "뉴스브리핑", "이모저모",
     "특징주", "투자전략", "포트폴리오",
@@ -690,7 +692,7 @@ TITLE_ONLY_PATTERNS = [
     "순매수", "순매도", "외국인매수", "외국인매도", "거래대금",
     "팔자", "사자", "개미", "외인", "시총", "세계 ",
     "개인 투자", "개인투자자", "ETF",
-    "잔고 최고", "잔고 최대", "잔고 돌파", "잔고 역대",  # "사상 최대" 단독 제거 — 급락 기사 오차단 방지
+    "잔고 최고", "잔고 최대", "잔고 돌파", "잔고 역대", "잔고 사상 최대",
   
     "당기순익", "당기순이익", "영업이익", "순이익",
     "실적 개선", "실적 호조", "실적 발표", "연간 실적",
@@ -706,7 +708,7 @@ TITLE_ONLY_PATTERNS = [
   
     "가상자산", "암호화폐", "코인", "비트코인", "이더리움", "알트코인",
     "솔라나", "리플", "도지코인", "NFT", "디파이", "Web3",
-    "다우존스", "S&P500 하락", "나스닥 하락",
+    "다우존스", "S&P500 하락", "나스닥 하락세", "나스닥 소폭 하락",
     "나스닥 약세", "나스닥 혼조", "나스닥 하락세",
     "빅테크 약세", "빅테크 혼조", "빅테크 전반",
     "2금융권", "저축은행권", "캐피탈업",
@@ -1256,12 +1258,22 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
     sections = []
 
     if stock_rows:
-        sections.append(_section("주식잔고", "#fee2e2", "#c0392b",
+        _has_overseas_stock = any(r.get("종목유형","") == "해외주식" for r in stock_rows)
+        _has_domestic_stock = any(r.get("종목유형","") == "주식" for r in stock_rows)
+        if _has_overseas_stock and not _has_domestic_stock:
+            _stock_label = "해외주식잔고"
+        elif _has_overseas_stock and _has_domestic_stock:
+            _stock_label = "주식잔고"
+        else:
+            _stock_label = "주식잔고"
+        sections.append(_section(_stock_label, "#fee2e2", "#c0392b",
                                  "".join([_fmt_row(r) for r in stock_rows])))
         if not loan_rows:
             sections.append(_section("여신잔고", "#fef3c7", "#b45309", NONE_HTML))
         else:
-            sections.append(_section("여신잔고", "#fef3c7", "#b45309",
+            _has_overseas_loan = all(r.get("종목유형","") == "해외담보" for r in loan_rows)
+            _loan_label = "해외담보잔고" if _has_overseas_loan else "여신잔고"
+            sections.append(_section(_loan_label, "#fef3c7", "#b45309",
                                      "".join([_fmt_row(r) for r in loan_rows])))
 
     if bond_rows:
@@ -1269,7 +1281,9 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                                  "".join([_fmt_row(r) for r in bond_rows])))
 
     if not stock_rows and not bond_rows and loan_rows:
-        sections.append(_section("여신잔고", "#fef3c7", "#b45309",
+        _has_overseas_loan2 = all(r.get("종목유형","") == "해외담보" for r in loan_rows)
+        _loan_label2 = "해외담보잔고" if _has_overseas_loan2 else "여신잔고"
+        sections.append(_section(_loan_label2, "#fef3c7", "#b45309",
                                  "".join([_fmt_row(r) for r in loan_rows])))
 
     # sections 비어있으면 (알 수 없는 종목유형 등) → 잔고 없음
