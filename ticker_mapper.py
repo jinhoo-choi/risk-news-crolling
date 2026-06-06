@@ -10,9 +10,9 @@ from pathlib import Path
 # ── 설정 ──────────────────────────────────────────
 EXPOSURE_FILE  = os.environ.get("EXPOSURE_FILE", "exposure_data.csv")
 OUTPUT_FILE    = "ticker_map.json"
-MIN_BAL        = 1   # 1억 이상 종목만 매핑
+MIN_BAL        = 100  # 100억 이상 종목만 매핑 (소요시간 단축)
 BATCH_SIZE     = 10  # yfinance 배치 크기
-SLEEP_SEC      = 1.0 # 배치 간 딜레이
+SLEEP_SEC      = 0.3  # 배치 간 딜레이
 TICKER_RE      = re.compile(r'^[A-Z]{1,5}(\.[A-Z])?$')
 
 # ── 기본 매핑 (yfinance 실패 시 fallback) ─────────
@@ -87,8 +87,10 @@ def load_tickers_from_csv(fpath: str) -> dict:
     return tickers
 
 
+MAX_TOTAL_SEC  = 300  # 전체 yfinance 조회 최대 5분
+
 def fetch_names_yfinance(tickers: list) -> dict:
-    """yfinance로 티커 → 영문 종목명 조회"""
+    """yfinance로 티커 → 영문 종목명 조회 (최대 MAX_TOTAL_SEC초)"""
     try:
         import yfinance as yf
     except ImportError:
@@ -96,7 +98,12 @@ def fetch_names_yfinance(tickers: list) -> dict:
         return {}
 
     result = {}
+    t_start = time.time()
     for i in range(0, len(tickers), BATCH_SIZE):
+        # 전체 타임아웃 체크
+        if time.time() - t_start > MAX_TOTAL_SEC:
+            print(f"  [WARN] yfinance 타임아웃 — {i}개 처리 후 중단")
+            break
         batch = tickers[i:i+BATCH_SIZE]
         try:
             data = yf.Tickers(" ".join(batch))
@@ -106,12 +113,12 @@ def fetch_names_yfinance(tickers: list) -> dict:
                     name = info.get("longName") or info.get("shortName","")
                     if name:
                         result[t] = name
-                except:
+                except Exception:
                     pass
             time.sleep(SLEEP_SEC)
         except Exception as e:
             print(f"  [WARN] yfinance 배치 실패: {e}")
-            time.sleep(2)
+            time.sleep(1)
     return result
 
 
