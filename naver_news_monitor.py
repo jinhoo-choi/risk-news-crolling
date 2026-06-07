@@ -703,6 +703,7 @@ TITLE_ONLY_PATTERNS = [
     "보험사", "은행권", "저축은행", "캐피탈",
     "부고", "인사", "승진", "선임", "취임", "퇴임",
     "할인", "이벤트", "휴무일", "영업시간", "프로모션",  # 마케팅·이벤트 기사
+    "밸류에이션", "고평가", "저평가",  # 가치평가 분석·전망 기사
     "경고음", "빨간불", "신호탄",
     "가능성에", "가능성 제기", "우려 커", "걱정 커", "불안 커",
     "뉴욕증시", "나스닥 혼조", "뉴욕 혼조", "월가",
@@ -765,6 +766,12 @@ def is_hard_excluded(title: str, desc: str = "") -> tuple:
                    "기업회생", "MTS 장애", "MTS 접속 장애"]
     if any(kw in title for kw in CRITICAL_KW):
         return False, None  # 치명적 키워드 → AI 판단으로 넘김
+    # 대형 익스포저 섹터 + 리스크 표현 조합 → 밸류에이션 패턴 있어도 통과
+    SECTOR_KW  = ["반도체", "AI", "엔비디아", "테슬라", "배터리", "전기차",
+                  "바이오", "금융주", "은행주", "삼성전자", "하이닉스"]
+    RISK_EXPR  = ["급락", "쇼크", "위기", "리스크", "균열", "붕괴", "흔들", "패닉"]
+    if any(s in title for s in SECTOR_KW) and any(r in title for r in RISK_EXPR):
+        return False, None  # 섹터 리스크 기사 → AI 판단
 
     for pat in TITLE_ONLY_PATTERNS:
         if pat in title:
