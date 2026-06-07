@@ -991,13 +991,20 @@ RISK_PRIORITY = {
     "기업회생": 1.3, "워크아웃": 1.2,
 }
 
+# 당사 직접 이슈 키워드 — 익스포저 페널티 면제 + 긴급 강제 지정
+DIRECT_INCIDENT_KW = {
+    "한국투자증권", "MTS", "HTS",
+    "전산장애", "전산사고", "접속장애", "접속불가",
+}
+
 def calc_risk_score(article: dict, exposure_data: dict = None) -> float:
     """리스크 점수 = (confidence × 키워드 가중치 + 익스포저 보정) × 5 → 10점 만점
     익스포저 보정(exp_boost): 잔고 합산 구간별 차등
-      소규모 (10억 미만)    → +0.05
-      중규모 (10~100억)    → +0.10
-      대규모 (100~500억)   → +0.15
       초대규모 (500억 이상) → +0.20
+      대규모 (100~500억)   → +0.15
+      중규모 (10~100억)    → +0.10
+      소규모 (10억 미만)    → +0.05
+      없음 (일반 기사)      → -0.05  ※ 당사 직접 이슈(MTS·전산장애 등) 면제
     국내·해외 동일 기준 적용
     """
     conf  = article.get("_ai_confidence") or 0.3
@@ -1006,6 +1013,8 @@ def calc_risk_score(article: dict, exposure_data: dict = None) -> float:
         [v for k, v in RISK_PRIORITY.items() if k in title],
         default=1.0
     )
+    is_direct_incident = any(kw in title for kw in DIRECT_INCIDENT_KW)
+
     # 익스포저 잔고 합산 → 구간별 boost
     exp_boost = 0.0
     if exposure_data is not None:
@@ -1027,6 +1036,10 @@ def calc_risk_score(article: dict, exposure_data: dict = None) -> float:
                 exp_boost = 0.05
         elif article.get("_has_exposure"):
             exp_boost = 0.05
+        else:
+            # 익스포저 없음 — 당사 직접 이슈 아니면 소폭 페널티
+            if not is_direct_incident:
+                exp_boost = -0.05
     elif article.get("_has_exposure"):
         exp_boost = 0.05
     raw = conf * kw_weight + exp_boost
@@ -1036,6 +1049,15 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     """등급별 상한 초과 시 리스크 점수 기반으로 하위 등급 강등"""
     for a in articles:
         a["_risk_score"] = calc_risk_score(a, exposure_data)
+
+    # ── 당사 직접 이슈 긴급 강제 (confidence·GRADE_LIMITS 면제) ──────────
+    for a in articles:
+        if any(kw in a.get("title", "") for kw in DIRECT_INCIDENT_KW):
+            if a.get("grade") != "긴급":
+                print(f"  [직접이슈 강제긴급] {a['title'][:40]}")
+            a["grade"] = "긴급"
+            a["_force_urgent"] = True
+    # ─────────────────────────────────────────────────────────────────────
 
     urgent  = sorted([a for a in articles if a.get("grade") == "긴급"],
                      key=lambda x: x["_risk_score"], reverse=True)
@@ -1048,7 +1070,8 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
 
     for a in urgent[:]:
         conf = a.get("_ai_confidence") or 0
-        if conf < 0.85:
+        # _force_urgent 플래그 있으면 confidence 강등 면제
+        if not a.get("_force_urgent") and conf < 0.85:
             a["grade"] = "주의"
             a["customer_notice"] = None
             urgent.remove(a)
@@ -1064,7 +1087,8 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
             print(f"  [confidence 강등] 주의→참고 (conf={conf:.2f}): {a['title'][:30]}")
 
     for i, a in enumerate(urgent):
-        if i < GRADE_LIMITS["긴급"]:
+        # _force_urgent는 GRADE_LIMITS 상한도 면제
+        if a.get("_force_urgent") or i < GRADE_LIMITS["긴급"]:
             result.append(a)
         else:
             a["grade"] = "주의"
