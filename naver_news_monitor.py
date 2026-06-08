@@ -2025,7 +2025,7 @@ def main():
     if not raw_articles:
         print("신규 뉴스 없음 — 결과 없음 메일 발송 (특정인만)")
         now = datetime.now(timezone(timedelta(hours=9)))
-        subject = f"[리스크 탐지] {now_str_full} 기준 — 신규 뉴스 없음"
+        subject = f"🚨 [리스크 탐지] {now_str_full} 기준 — 신규 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
         save_seen_urls(set())
         return
@@ -2147,7 +2147,7 @@ def main():
     if not filtered:
         print("AI 필터링 결과 없음 — 결과 없음 메일 발송 (특정인만)")
         now = datetime.now(timezone(timedelta(hours=9)))
-        subject = f"[리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
+        subject = f"🚨 [리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
         save_seen_urls(set())
         return
@@ -2267,7 +2267,7 @@ def main():
         ref_date = ""
         print("  익스포저 데이터 없음 — CSV 파일 미확인")
 
-    subject = f"[리스크 탐지] {now_str_full} 기준"
+    subject = f"🚨 [리스크 탐지] {now_str_full} 기준"
     total_count = len(raw_articles) + len(hard_excluded_articles)
 
     urgent_cnt = len([a for a in filtered if a["grade"]=="긴급"])
