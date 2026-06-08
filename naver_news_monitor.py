@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# !! naver_news_monitor.py PART 1/2
+# 사용법: cat part1.py part2.py > naver_news_monitor.py
+
 RELATED_STOCK_MAP = {
     # 증권사 → 상장 지주·모회사
     "한국투자증권":   "한국금융지주",
@@ -906,6 +910,10 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                     article["entity"]     = info.get("entity", "").strip()
                     article["entities"]   = [e.strip() for e in info.get("entities", []) if e.strip()] or [info.get("entity","").strip()]
                     article["event_type"] = info.get("event_type", "")
+                    # event_key: "entity_eventtype" 형태로 생성 — 사건 단위 dedup 기준
+                    _ent = info.get("entity", "").strip()
+                    _evt = info.get("event_type", "").strip()
+                    article["event_key"]  = f"{_ent}_{_evt}" if _ent and _evt else ""
                     result.append(article)
             return result
         except Exception as e:
@@ -1190,19 +1198,31 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     ref_cnt     = sum(1 for a in result if a.get("grade") == "참고")
     print(f"  등급 조정 완료 → 긴급 {urgent_cnt}건 / 주의 {caution_cnt}건 / 참고 {ref_cnt}건")
 
-    # B안 — 동일 entity + 동일 grade 1건 제한 (리스크 점수 높은 것 유지)
-    entity_grade_seen = {}
+    # ── 사건단위 대표기사 선정 ──────────────────────────────────────
+    # 키: (entity, event_type, grade) — 동일 사건·동일 등급 내 1건만
+    # 우선순위: ① 리스크점수 높은 것 ② 동점 시 미디어 신뢰도 높은 것
+    event_seen = {}
     result_deduped = []
-    for a in sorted(result, key=lambda x: x.get("_risk_score") or 0, reverse=True):
-        eg_key = (a.get("entity","").strip(), a.get("grade",""))
-        if eg_key[0] and eg_key in entity_grade_seen:
-            print(f"  [B안 dedup] 동일entity 동일등급 제거: [{a['grade']}] {a['title'][:35]}")
-            continue
-        if eg_key[0]:
-            entity_grade_seen[eg_key] = True
-        result_deduped.append(a)
 
-    return result_deduped
+    def _media_score(url: str) -> float:
+        """MEDIA_TRUST 기반 미디어 점수 — 없으면 0.0"""
+        return get_media_boost(url) if url else 0.0
+
+    for a in sorted(result,
+                    key=lambda x: (x.get("_risk_score") or 0,
+                                   _media_score(x.get("url",""))),
+                    reverse=True):
+        entity     = a.get("entity","").strip()
+        event_type = a.get("event_type","").strip()
+        grade      = a.get("grade","")
+        event_key  = a.get("event_key","")
+
+        # event_key 기반 dedup — 같은 entity+event_type 조합
+        # event_key 없으면 (entity, grade) fallback
+        if event_key:
+# -*- coding: utf-8 -*-
+# !! naver_news_monitor.py PART 2/2
+# 사용법: cat part1.py part2.py > naver_news_monitor.py
 
 def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
     """전체 기사를 50건씩 배치로 나눠 AI 필터링 후 중복 제거"""
@@ -2112,6 +2132,13 @@ def main():
         matched  = False
         reason   = ""
 
+        # event_key 기반 seen 비교 (entity+event_type 조합, 가장 정밀)
+        event_key  = a.get("event_key", "").strip()
+        ek_combo   = ("ek", event_key) if event_key else None
+        if not matched and ek_combo and ek_combo in seen_combos:
+            if not is_next_stage(a.get("title",""), a.get("desc","")):
+                matched = True; reason = "동일 사건(event_key) 이미 발송"
+
         if combo and combo in seen_combos:
             if is_next_stage(a.get("title",""), a.get("desc","")):
                 pass
@@ -2317,6 +2344,10 @@ def main():
         entity     = a.get("entity", "").strip()
         keyword    = a.get("keyword", "").strip()
         event_type = a.get("event_type", "").strip()
+        event_key  = a.get("event_key", "").strip()
+        # event_key 우선 저장 → event_type → keyword 순 fallback
+        if event_key:
+            new_combos_this_run.add(("ek", event_key))
         if event_type and entity:
             new_combos_this_run.add((entity, event_type))
         elif keyword and entity:
@@ -2338,3 +2369,19 @@ if __name__ == "__main__":
         except Exception as _me:
             print(f"오류 메일 발송 실패: {_me}")
         raise
+
+            eg_key = ("ek", event_key, grade)
+        elif entity:
+            eg_key = ("et", entity, event_type or "", grade)
+        else:
+            eg_key = None
+
+        if eg_key and eg_key in event_seen:
+            print(f"  [사건단위 dedup] 동일사건 제거: [{grade}] {a['title'][:40]}")
+            continue
+        if eg_key:
+            event_seen[eg_key] = True
+        result_deduped.append(a)
+
+    return result_deduped
+
