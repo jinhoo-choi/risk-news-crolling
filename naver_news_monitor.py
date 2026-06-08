@@ -1907,7 +1907,7 @@ def send_email_error(error_msg: str, trace: str):
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"[리스크봇 오류] {now_str} 기준 — 런타임 오류 발생"
-    msg["From"]    = f"eBiz 리스크봇 <{EMAIL_SENDER}>"
+    msg["From"]    = f"🚨eBiz 리스크봇 <{EMAIL_SENDER}>"
     msg["To"]      = receiver
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     try:
