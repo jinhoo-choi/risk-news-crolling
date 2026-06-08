@@ -1147,7 +1147,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     for a in result:
         entity = a.get("entity","")
         exp_rows = find_exposure(entity, exposure_data or {})
-        if not any(r.get("종목유형","") in ("해외주식","해외담보") for r in exp_rows):
+        if not any(r.get("종목유형","") in ("해외주식","해외대출") for r in exp_rows):
             continue
         change = get_price_change(entity)
         if change is None:
@@ -1160,6 +1160,31 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
             a["_ai_confidence"] = min(a.get("_ai_confidence",0.7) + 0.05, 1.0)
             print(f"  [주가보정] {entity} {change:+.1f}% → conf+0.05")
 
+    # ── 익스포저 없음 등급 강등 ──────────────────────────────────────
+    # 당사직접 이슈(_force_urgent) 및 entity 없는 시장전체 이슈는 면제
+    # 긴급 → 주의, 주의 → 참고 (한 단계씩)
+    for a in result:
+        entity_val = a.get("entity", "").strip()
+        if a.get("_force_urgent"):
+            continue                         # 당사직접 면제
+        if not entity_val:
+            continue                         # 시장전체 이슈 면제 (반대매매·서킷브레이커 등)
+        if find_exposure(entity_val, exposure_data or {}):
+            continue                         # 익스포저 있음 — 강등 없음
+        # 익스포저 없음 → 한 단계 강등
+        if a.get("grade") == "긴급":
+            a["grade"] = "주의"
+            a["customer_notice"] = None      # 긴급 전용 고객안내 제거
+            print(f"  [익스포저없음 강등] 긴급→주의: {a['title'][:40]}")
+        elif a.get("grade") == "주의":
+            a["grade"] = "참고"
+            print(f"  [익스포저없음 강등] 주의→참고: {a['title'][:40]}")
+    # ─────────────────────────────────────────────────────────────────
+
+    # 강등 후 등급 카운트 재산출
+    urgent_cnt  = sum(1 for a in result if a.get("grade") == "긴급")
+    caution_cnt = sum(1 for a in result if a.get("grade") == "주의")
+    ref_cnt     = sum(1 for a in result if a.get("grade") == "참고")
     print(f"  등급 조정 완료 → 긴급 {urgent_cnt}건 / 주의 {caution_cnt}건 / 참고 {ref_cnt}건")
 
     # B안 — 동일 entity + 동일 grade 1건 제한 (리스크 점수 높은 것 유지)
@@ -1211,13 +1236,17 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
 
 def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color: str = "#c0392b") -> str:
     """익스포저 현황 HTML
-    태그 규칙:
-      주식 → 주식잔고 (빨강)
-      채권 → 채권잔고 (보라)
-      여신/신용융자/신용/신용공여/신용대출 → 여신잔고 (노랑)
+    종목유형 체계:
+      주식     → 주식잔고   (빨강)
+      해외주식 → 해외주식잔고 (빨강)
+      채권     → 채권잔고   (보라)
+      신용     → 여신잔고   (노랑)  ← 국내·해외 통합
+      대출     → 여신잔고   (노랑)  ← 신용+대출 합산
+      해외대출 → 여신잔고   (노랑)  ← 해외대출 포함
     표시 규칙:
-      - 주식잔고 있을 때 여신잔고 없으면 → 여신잔고 없음 명시
-      - rows 자체가 없으면 → 뱅키스 잔고 없음
+      - 국내주식 있을 때: 여신잔고 연결 (신용+대출 합산, 없으면 없음 명시)
+      - 해외주식 있을 때: 여신잔고 연결 (해외대출, 없으면 없음 명시)
+      - rows 자체 없으면 → 잔고 없음
     entities 리스트 지원: 복수 종목 합산
     """
     # entities 복수 지원
@@ -1250,11 +1279,11 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                     related_rows = cand_rows
                     break
         if related_name and related_rows:
-            L = {"여신","신용융자","신용","신용공여","신용대출","해외담보"}
-            B = {"채권"}
-            rs = [r for r in related_rows if r.get("종목유형","") not in L and r.get("종목유형","") not in B]
-            rl = [r for r in related_rows if r.get("종목유형","") in L]
-            rb = [r for r in related_rows if r.get("종목유형","") in B]
+            YEOSIN_L = {"신용", "대출", "해외대출"}
+            BOND_L   = {"채권"}
+            rs = [r for r in related_rows if r.get("종목유형","") not in YEOSIN_L and r.get("종목유형","") not in BOND_L]
+            rl = [r for r in related_rows if r.get("종목유형","") in YEOSIN_L]
+            rb = [r for r in related_rows if r.get("종목유형","") in BOND_L]
             def _rrow(r, rn):
                 bal = float(str(r.get("잔고(억)","0")).replace(",",""))
                 cus = int(float(str(r.get("고객수","0")).replace(",","")))
@@ -1281,12 +1310,29 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
       </td></tr>
     </table>'''
 
-    LOAN_TYPES  = {"여신", "신용융자", "신용", "신용공여", "신용대출", "해외담보"}
-    BOND_TYPES  = {"채권"}
+    # ── 종목유형 분류 ──────────────────────────────────────────────
+    STOCK_TYPES     = {"주식"}
+    OVERSEAS_TYPES  = {"해외주식"}
+    BOND_TYPES      = {"채권"}
+    YEOSIN_TYPES    = {"신용", "대출", "해외대출"}  # 여신 통합
 
-    stock_rows = [r for r in all_rows if r.get("종목유형","") not in LOAN_TYPES and r.get("종목유형","") not in BOND_TYPES]
-    bond_rows  = [r for r in all_rows if r.get("종목유형","") in BOND_TYPES]
-    loan_rows  = [r for r in all_rows if r.get("종목유형","") in LOAN_TYPES]
+    domestic_stock_rows = [r for r in all_rows if r.get("종목유형","") in STOCK_TYPES]
+    overseas_stock_rows = [r for r in all_rows if r.get("종목유형","") in OVERSEAS_TYPES]
+    bond_rows           = [r for r in all_rows if r.get("종목유형","") in BOND_TYPES]
+    yeosin_rows         = [r for r in all_rows if r.get("종목유형","") in YEOSIN_TYPES]
+
+    # 여신잔고 합산 — 종목명별 잔고·고객수 합계 (신용+대출+해외대출 통합)
+    def _merge_yeosin(rows):
+        merged = {}
+        for r in rows:
+            name = r.get("종목명","")
+            bal = float(str(r.get("잔고(억)","0")).replace(",",""))
+            cus = int(float(str(r.get("고객수","0")).replace(",","")))
+            if name not in merged:
+                merged[name] = {"잔고": 0, "고객수": 0}
+            merged[name]["잔고"] += bal
+            merged[name]["고객수"] += cus
+        return merged  # {종목명: {잔고, 고객수}}
 
     def _fmt_row(r):
         잔고 = float(str(r.get("잔고(억)","0")).replace(",",""))
@@ -1297,55 +1343,57 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             f' {잔고:,.0f}억원 / {고객:,}명</div>'
         )
 
+    def _fmt_merged(name, v):
+        return (
+            f'<div style="font-size:12px;color:#1e293b;line-height:1.7;">'
+            f'<span style="font-weight:700;">{name}</span>'
+            f' {v["잔고"]:,.0f}억원 / {v["고객수"]:,}명</div>'
+        )
+
     NONE_HTML = '<div style="font-size:12px;color:#94a3b8;line-height:1.7;">잔고 없음</div>'
 
     def _section(label, bg, color, rows_html):
-        return f'''
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:2px;">
-          <tr>
-            <td valign="top" style="padding-top:2px;width:52px;white-space:nowrap;">
-              <span style="font-size:9px;background:{bg};color:{color};padding:1px 6px;border-radius:2px;font-weight:700;">{label}</span>
-            </td>
-            <td style="padding-left:4px;">{rows_html}</td>
-          </tr>
-        </table>'''
+        return (
+            f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:2px;">'
+            f'<tr>'
+            f'<td valign="top" style="padding-top:2px;width:56px;white-space:nowrap;">'
+            f'<span style="font-size:9px;background:{bg};color:{color};padding:1px 5px;border-radius:2px;font-weight:700;">{label}</span>'
+            f'</td>'
+            f'<td style="padding-left:4px;">{rows_html}</td>'
+            f'</tr></table>'
+        )
 
-    DIVIDER = '''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0;">
-      <tr><td style="height:1px;background:#e2e8f0;font-size:0;line-height:0;">&nbsp;</td></tr>
-    </table>'''
+    DIVIDER = (
+        '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0;">'
+        '<tr><td style="height:1px;background:#e2e8f0;font-size:0;line-height:0;">&nbsp;</td></tr>'
+        '</table>'
+    )
 
     sections = []
+    yeosin_merged = _merge_yeosin(yeosin_rows)
+    yeosin_html = "".join([_fmt_merged(n, v) for n, v in yeosin_merged.items()]) if yeosin_merged else NONE_HTML
 
-    if stock_rows:
-        _has_overseas_stock = any(r.get("종목유형","") == "해외주식" for r in stock_rows)
-        _has_domestic_stock = any(r.get("종목유형","") == "주식" for r in stock_rows)
-        if _has_overseas_stock and not _has_domestic_stock:
-            _stock_label = "해외주식잔고"
-        elif _has_overseas_stock and _has_domestic_stock:
-            _stock_label = "주식잔고"
-        else:
-            _stock_label = "주식잔고"
-        sections.append(_section(_stock_label, "#fee2e2", "#c0392b",
-                                 "".join([_fmt_row(r) for r in stock_rows])))
-        if not loan_rows:
-            sections.append(_section("여신잔고", "#fef3c7", "#b45309", NONE_HTML))
-        else:
-            _has_overseas_loan = all(r.get("종목유형","") == "해외담보" for r in loan_rows)
-            _loan_label = "해외담보잔고" if _has_overseas_loan else "여신잔고"
-            sections.append(_section(_loan_label, "#fef3c7", "#b45309",
-                                     "".join([_fmt_row(r) for r in loan_rows])))
+    # ── 국내주식 블록 ────────────────────────────────────────────
+    if domestic_stock_rows:
+        sections.append(_section("주식잔고", "#fee2e2", "#c0392b",
+                                 "".join([_fmt_row(r) for r in domestic_stock_rows])))
+        sections.append(_section("여신잔고", "#fef3c7", "#b45309", yeosin_html))
 
+    # ── 해외주식 블록 ────────────────────────────────────────────
+    if overseas_stock_rows:
+        sections.append(_section("해외주식잔고", "#fee2e2", "#c0392b",
+                                 "".join([_fmt_row(r) for r in overseas_stock_rows])))
+        sections.append(_section("여신잔고", "#fef3c7", "#b45309", yeosin_html))
+
+    # ── 채권 블록 ────────────────────────────────────────────────
     if bond_rows:
         sections.append(_section("채권잔고", "#ede9fe", "#5b21b6",
                                  "".join([_fmt_row(r) for r in bond_rows])))
 
-    if not stock_rows and not bond_rows and loan_rows:
-        _has_overseas_loan2 = all(r.get("종목유형","") == "해외담보" for r in loan_rows)
-        _loan_label2 = "해외담보잔고" if _has_overseas_loan2 else "여신잔고"
-        sections.append(_section(_loan_label2, "#fef3c7", "#b45309",
-                                 "".join([_fmt_row(r) for r in loan_rows])))
+    # ── 주식 없고 여신만 있는 경우 ───────────────────────────────
+    if not domestic_stock_rows and not overseas_stock_rows and not bond_rows and yeosin_merged:
+        sections.append(_section("여신잔고", "#fef3c7", "#b45309", yeosin_html))
 
-    # sections 비어있으면 (알 수 없는 종목유형 등) → 잔고 없음
     if not sections:
         inner = '<div style="font-size:12px;color:#94a3b8;">잔고 없음</div>'
     else:
@@ -2139,7 +2187,7 @@ def main():
         keyword   = article.get("keyword", "")
         exp_rows  = find_exposure(entity, exposure_data)
         # 해외주식 여부 — 익스포저 rows의 시장 컬럼 또는 keyword 패턴으로 판단
-        is_overseas = any(r.get("시장","국내") == "해외" or r.get("종목유형","") in ("해외주식","해외담보") for r in exp_rows)
+        is_overseas = any(r.get("시장","국내") == "해외" or r.get("종목유형","") in ("해외주식","해외대출") for r in exp_rows)
         def _fmt_exp(r):
             잔고 = float(str(r.get('잔고(억)', '0')).replace(',', ''))
             고객 = int(float(str(r.get('고객수', '0')).replace(',', '')))
