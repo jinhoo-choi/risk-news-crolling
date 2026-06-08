@@ -1,7 +1,3 @@
-# -*- coding: utf-8 -*-
-# !! naver_news_monitor.py PART 1/2
-# 사용법: cat part1.py part2.py > naver_news_monitor.py
-
 RELATED_STOCK_MAP = {
     # 증권사 → 상장 지주·모회사
     "한국투자증권":   "한국금융지주",
@@ -1220,9 +1216,20 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
         # event_key 기반 dedup — 같은 entity+event_type 조합
         # event_key 없으면 (entity, grade) fallback
         if event_key:
-# -*- coding: utf-8 -*-
-# !! naver_news_monitor.py PART 2/2
-# 사용법: cat part1.py part2.py > naver_news_monitor.py
+            eg_key = ("ek", event_key, grade)
+        elif entity:
+            eg_key = ("et", entity, event_type or "", grade)
+        else:
+            eg_key = None
+
+        if eg_key and eg_key in event_seen:
+            print(f"  [사건단위 dedup] 동일사건 제거: [{grade}] {a['title'][:40]}")
+            continue
+        if eg_key:
+            event_seen[eg_key] = True
+        result_deduped.append(a)
+
+    return result_deduped
 
 def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
     """전체 기사를 50건씩 배치로 나눠 AI 필터링 후 중복 제거"""
@@ -2369,19 +2376,3 @@ if __name__ == "__main__":
         except Exception as _me:
             print(f"오류 메일 발송 실패: {_me}")
         raise
-
-            eg_key = ("ek", event_key, grade)
-        elif entity:
-            eg_key = ("et", entity, event_type or "", grade)
-        else:
-            eg_key = None
-
-        if eg_key and eg_key in event_seen:
-            print(f"  [사건단위 dedup] 동일사건 제거: [{grade}] {a['title'][:40]}")
-            continue
-        if eg_key:
-            event_seen[eg_key] = True
-        result_deduped.append(a)
-
-    return result_deduped
-
