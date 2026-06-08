@@ -767,6 +767,9 @@ TITLE_ONLY_PATTERNS += [
     # ── 정책·제도 발표 — 당사 직접 영향 없음 ──
     "공시 의무", "공시 강화", "제도 개선", "규정 개정",
     "금융위 발표", "금감원 발표",
+
+    # ── 법조계·칼럼·책임 논쟁 기사 ──
+    "법조계", "책임져라", "법적 책임", "배상 책임", "법원 판결",
 ]
 
 EXCLUDE_TITLE_RE_PATTERNS = [
@@ -1234,7 +1237,7 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
 
     return result
 
-def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color: str = "#c0392b") -> str:
+def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color: str = "#c0392b", article: dict = None) -> str:
     """익스포저 현황 HTML
     종목유형 체계:
       주식     → 주식잔고   (빨강)
@@ -1268,33 +1271,43 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
 
     # 3개 다 없으면 → 관련주 확인 후 없으면 잔고 없음
     if not all_rows:
+        # 관련주 표시 조건:
+        # entity가 RELATED_STOCK_MAP에 있어도 아래 경우에만 표시
+        # 1) _force_urgent (당사 직접 이슈 — MTS·전산장애 등)
+        # 2) event_type이 시스템장애·금감원제재인 경우
+        # → 시황·반대매매 등 시장 전체 이슈에서 단순 언급된 기관명의 관련주 오표시 방지
+        _art = article or {}
+        _event_type = _art.get("event_type", "")
+        _force = _art.get("_force_urgent", False)
+        _allow_related = _force or _event_type in ("시스템장애", "금감원제재", "상장폐지", "거래정지", "기업회생", "파산부도", "PF부실", "신용등급강등", "발행어음부실", "유동성위기", "대규모환매", "감사의견거절", "횡령배임", "차환실패")
         related_name = None
         related_rows = []
-        for ent in entities_list:
-            cand = RELATED_STOCK_MAP.get(ent)
-            if cand:
-                cand_rows = find_exposure(cand, exposure_data) if exposure_data else []
-                if cand_rows:
-                    related_name = cand
-                    related_rows = cand_rows
-                    break
+        if _allow_related:
+            for ent in entities_list:
+                cand = RELATED_STOCK_MAP.get(ent)
+                if cand:
+                    cand_rows = find_exposure(cand, exposure_data) if exposure_data else []
+                    if cand_rows:
+                        related_name = cand
+                        related_rows = cand_rows
+                        break
         if related_name and related_rows:
             YEOSIN_L = {"신용", "대출", "해외대출"}
             BOND_L   = {"채권"}
             rs = [r for r in related_rows if r.get("종목유형","") not in YEOSIN_L and r.get("종목유형","") not in BOND_L]
             rl = [r for r in related_rows if r.get("종목유형","") in YEOSIN_L]
             rb = [r for r in related_rows if r.get("종목유형","") in BOND_L]
-            def _rrow(r, rn):
-                bal = float(str(r.get("잔고(억)","0")).replace(",",""))
-                cus = int(float(str(r.get("고객수","0")).replace(",","")))
+            def _rrow_merged(rows, rn):
+                bal = sum(float(str(r.get("잔고(억)","0")).replace(",","")) for r in rows)
+                cus = sum(int(float(str(r.get("고객수","0")).replace(",",""))) for r in rows)
                 return f'<div style="font-size:12px;color:#374151;line-height:1.8;">{rn} {bal:,.0f}억원 / {cus:,}명</div>'
             inner_r = ""
             if rs:
-                inner_r += f'<div style="margin-bottom:4px;"><span style="font-size:9px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:2px;font-weight:700;">관련주·주식잔고</span> ' + "".join([_rrow(r, related_name) for r in rs]) + "</div>"
+                inner_r += f'<div style="margin-bottom:4px;"><span style="font-size:9px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:2px;font-weight:700;">관련주·주식잔고</span> ' + _rrow_merged(rs, related_name) + "</div>"
             if rl:
-                inner_r += f'<div style="margin-bottom:4px;"><span style="font-size:9px;background:#fef3c7;color:#b45309;padding:1px 6px;border-radius:2px;font-weight:700;">관련주·여신잔고</span> ' + "".join([_rrow(r, related_name) for r in rl]) + "</div>"
+                inner_r += f'<div style="margin-bottom:4px;"><span style="font-size:9px;background:#fef3c7;color:#b45309;padding:1px 6px;border-radius:2px;font-weight:700;">관련주·여신잔고</span> ' + _rrow_merged(rl, related_name) + "</div>"
             if rb:
-                inner_r += f'<div style="margin-bottom:4px;"><span style="font-size:9px;background:#ede9fe;color:#5b21b6;padding:1px 6px;border-radius:2px;font-weight:700;">관련주·채권잔고</span> ' + "".join([_rrow(r, related_name) for r in rb]) + "</div>"
+                inner_r += f'<div style="margin-bottom:4px;"><span style="font-size:9px;background:#ede9fe;color:#5b21b6;padding:1px 6px;border-radius:2px;font-weight:700;">관련주·채권잔고</span> ' + _rrow_merged(rb, related_name) + "</div>"
             return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:10px 16px;">
         <p style="margin:0 0 6px 0;font-size:10px;font-weight:700;color:#1e293b;">뱅키스 익스포저
@@ -1485,7 +1498,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 badges += _price_badge(a)  # 등락률 뱃지 — 키워드 옆
 
                 if grade == "주의":
-                    c_exp_html = build_exposure_html(a_entities, exposure_data or {}, ref_date, border_color=gs["border_left"])
+                    c_exp_html = build_exposure_html(a_entities, exposure_data or {}, ref_date, border_color=gs["border_left"], article=a)
                     c_action_row = f'<tr><td style="padding:10px 16px;background:#fff0ee;border-top:1px solid {gs["card_border"]};border-bottom:1px solid {gs["card_border"]};"><p style="margin:0 0 3px 0;font-size:10px;font-weight:700;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
                     c_exp_row   = f'<tr><td style="padding:0;">{c_exp_html}</td></tr>' if c_exp_html else ""
                     c_risk = a.get("_risk_score", "")
@@ -1523,7 +1536,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
           {c_action_row}{c_exp_row}
         </table>'''
                 else:
-                    exposure_html = build_exposure_html(a_entities, exposure_data or {}, ref_date)
+                    exposure_html = build_exposure_html(a_entities, exposure_data or {}, ref_date, article=a)
                     if exposure_html and "잔고 없음" not in exposure_html:
                         a["_has_exposure"] = True
                     risk_score = a.get("_risk_score", "")
@@ -1907,7 +1920,7 @@ def send_email_error(error_msg: str, trace: str):
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"[리스크봇 오류] {now_str} 기준 — 런타임 오류 발생"
-    msg["From"]    = f"🚨eBiz 리스크봇 <{EMAIL_SENDER}>"
+    msg["From"]    = f"eBiz 리스크봇 <{EMAIL_SENDER}>"
     msg["To"]      = receiver
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     try:
