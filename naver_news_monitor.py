@@ -190,16 +190,207 @@ def get_price_change(entity: str) -> float | None:
                     break
         if not ticker:
             return None
-        data = yf.Ticker(ticker).fast_info
-        change = getattr(data, "three_month_change", None)
+        fi = yf.Ticker(ticker).fast_info
+        # fast_info는 yfinance 버전에 따라 dict 또는 object — 양쪽 호환
+        def _fi_get(key_attr, key_dict):
+            v = getattr(fi, key_attr, None)
+            if v is None and isinstance(fi, dict):
+                v = fi.get(key_dict)
+            return v
         # 당일 등락률: (현재가 - 전일종가) / 전일종가 * 100
-        prev = getattr(data, "previous_close", None)
-        curr = getattr(data, "last_price", None)
+        prev = _fi_get("previous_close", "previousClose")
+        curr = _fi_get("last_price", "lastPrice")
         if prev and curr and prev > 0:
             return round((curr - prev) / prev * 100, 2)
     except Exception:
         pass
     return None
+
+
+def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
+    """여신잔고 리스크 현황 섹션 HTML
+    - 리스크종목 = Y + 종목유형 = 신용 행 추출 → 신용잔고 합산
+    - yfinance 당일 등락률 조회 → -5% 이하 종목만 표시
+    - 위험고객(리스크고객수 > 0) 컬럼 별도 표시
+    - 탐지 종목 없으면 빈 문자열 반환
+    - 모바일: 6컬럼 → font-size 10px + padding 축소로 대응
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        return ''
+
+    THRESHOLD = -5.0
+
+    # 잔고 기준일 파싱
+    bal_date = ref_date
+    if not bal_date:
+        for rows in exposure_data.values():
+            if rows:
+                bal_date = rows[0].get('기준일', '')
+                break
+    try:
+        from datetime import datetime as _dt
+        _d = _dt.strptime(bal_date, '%Y-%m-%d')
+        bal_date_label = f'{_d.month:02d}월 {_d.day:02d}일'
+    except Exception:
+        bal_date_label = bal_date
+
+    # 리스크종목 = Y + 종목유형 = 신용 행만 추출
+    credit_map: dict = {}
+    for rows in exposure_data.values():
+        for r in rows:
+            if r.get('종목유형', '') != '여신':
+                continue
+            if r.get('리스크종목', '').strip().upper() != 'Y':
+                continue
+            name = r.get('종목명', '').strip()
+            if not name:
+                continue
+            try:
+                bal   = float(str(r.get('잔고(억)', 0)).replace(',', ''))
+                cust  = int(float(str(r.get('고객수', 0)).replace(',', '')))
+                rcust = int(float(str(r.get('리스크고객수', 0)).replace(',', '')))
+                rbal  = float(str(r.get('리스크잔고(억)', 0)).replace(',', ''))
+            except (ValueError, TypeError):
+                bal = cust = rcust = 0; rbal = 0.0
+            if name not in credit_map:
+                credit_map[name] = {'bal': 0.0, 'cust': 0, 'rcust': 0, 'rbal': 0.0}
+            credit_map[name]['bal']   += bal
+            credit_map[name]['cust']  += cust
+            credit_map[name]['rcust'] += rcust
+            credit_map[name]['rbal']  += rbal
+
+    if not credit_map:
+        return ''
+
+    total_count = len(credit_map)
+
+    # ticker 매핑
+    stock_list = []
+    for name, info in sorted(credit_map.items(), key=lambda x: x[1]['bal'], reverse=True):
+        ticker = NAME_TO_TICKER.get(name)
+        if not ticker:
+            for t, n in TICKER_MAP_RUNTIME.items():
+                if n == name:
+                    ticker = t
+                    break
+        if ticker and not ticker.endswith('.KS') and not re.match(r'^[A-Z]{1,5}$', ticker):
+            ticker += '.KS'
+        stock_list.append((name, info['bal'], info['cust'], info['rcust'], info['rbal'], ticker))
+
+    valid_tickers = [s[5] for s in stock_list if s[5]]
+    if not valid_tickers:
+        return ''
+
+    # yfinance 일괄 조회
+    try:
+        raw = yf.download(
+            valid_tickers, period='2d', auto_adjust=True,
+            progress=False, threads=True, timeout=30
+        )
+        price_map = {}
+        for name, bal, cust, rcust, rbal, ticker in stock_list:
+            if not ticker:
+                continue
+            try:
+                closes = raw['Close'][ticker] if len(valid_tickers) > 1 else raw['Close']
+                prev = float(closes.iloc[-2])
+                curr = float(closes.iloc[-1])
+                if prev > 0:
+                    chg = round((curr - prev) / prev * 100, 2)
+                    price_map[name] = {'chg': chg, 'curr': curr, 'ticker': ticker}
+            except Exception:
+                continue
+    except Exception as e:
+        print(f'  [price_alert] yfinance 조회 실패: {e}')
+        return ''
+
+    # -5% 이하 필터
+    alerted = [
+        (name, bal, cust, rcust, rbal,
+         price_map[name]['chg'], price_map[name]['curr'], price_map[name]['ticker'])
+        for name, bal, cust, rcust, rbal, ticker in stock_list
+        if name in price_map and price_map[name]['chg'] <= THRESHOLD
+    ]
+
+    if not alerted:
+        return ''
+
+    def _fmt_price(curr, ticker):
+        if not ticker.endswith('.KS'):
+            return f'${curr:,.2f}'
+        return f'{int(curr):,}원' if curr >= 1000 else f'{curr:.2f}원'
+
+    def _risk_cell(rcust, rbal):
+        if rcust == 0:
+            return '<td style="padding:9px 6px;font-size:10px;color:#cbd5e1;text-align:right;white-space:nowrap;">없음</td>'
+        per = round(rbal / rcust, 2)
+        per_str = f'<br><span style="font-size:10px;font-weight:400;color:#b45309;">(인당 {per:.2f}억)</span>' if rcust > 1 else ''
+        return f'<td style="padding:9px 6px;font-size:11px;font-weight:600;color:#92400e;text-align:right;white-space:nowrap;">{rcust:,}명 / {rbal:.0f}억{per_str}</td>'
+
+    rows_html = ''
+    for i, (name, bal, cust, rcust, rbal, chg, curr, ticker) in enumerate(alerted):
+        bg = '#fafcff' if i % 2 == 0 else '#ffffff'
+        rows_html += f'''
+            <tr style="background:{bg};border-bottom:1px solid #f1f5f9;">
+              <td style="padding:9px 6px;font-size:12px;font-weight:600;color:#1e293b;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{name}</td>
+              <td style="padding:9px 6px;font-size:12px;color:#1e293b;text-align:right;white-space:nowrap;">{bal:,.0f}억</td>
+              <td style="padding:9px 6px;font-size:12px;color:#1e293b;text-align:right;white-space:nowrap;">{cust:,}명</td>
+              {_risk_cell(rcust, rbal)}
+              <td style="padding:9px 6px;font-size:12px;font-weight:600;color:#2563eb;text-align:right;white-space:nowrap;">▼{abs(chg):.1f}%</td>
+              <td style="padding:9px 6px;font-size:12px;color:#1e293b;text-align:right;white-space:nowrap;">{_fmt_price(curr, ticker)}</td>
+            </tr>'''
+
+    return f'''
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;border:1px solid #e2e8f0;border-top:3px solid #475569;">
+      <tr>
+        <td bgcolor="#1e293b" style="padding:10px 14px;background:#1e293b;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td style="font-size:14px;font-weight:500;color:#f8fafc;white-space:nowrap;">📉 여신잔고 리스크 현황</td>
+              <td align="right" style="font-size:10px;color:#94a3b8;padding-left:10px;white-space:nowrap;">뱅키스 단일종목 여신잔고 1억↑ 종목 {total_count}개 · {bal_date_label} 기준</td>
+            </tr>
+            <tr>
+              <td colspan="2" style="padding-top:5px;">
+                <span style="font-size:10px;color:#fbbf24;">⚠ 위험고객: 단일종목 여신잔고 1억원이상 · 담보유지비율 140%~150%</span>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+      <tr><td bgcolor="#ffffff" style="background:#ffffff;">
+        <!--[if mso]><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+          <td width="16%"><![endif]-->
+        <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;width:100%;">
+          <colgroup>
+            <col style="width:16.66%;">
+            <col style="width:13.33%;">
+            <col style="width:13.33%;">
+            <col style="width:16.66%;">
+            <col style="width:13.33%;">
+            <col style="width:13.33%;">
+          </colgroup>
+          <thead>
+            <tr bgcolor="#f8fafc" style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+              <th style="padding:7px 6px;font-size:11px;color:#64748b;font-weight:500;text-align:left;">종목명</th>
+              <th style="padding:7px 6px;font-size:11px;color:#64748b;font-weight:500;text-align:right;">여신잔고</th>
+              <th style="padding:7px 6px;font-size:11px;color:#64748b;font-weight:500;text-align:right;">고객수</th>
+              <th style="padding:7px 6px;font-size:11px;color:#d97706;font-weight:600;text-align:right;">⚠ 위험고객</th>
+              <th style="padding:7px 6px;font-size:11px;color:#64748b;font-weight:500;text-align:right;">등락률</th>
+              <th style="padding:7px 6px;font-size:11px;color:#64748b;font-weight:500;text-align:right;">현재가</th>
+            </tr>
+          </thead>
+          <tbody>{rows_html}
+            <tr bgcolor="#fafafa" style="background:#fafafa;">
+              <td colspan="6" style="padding:7px 10px;font-size:10px;color:#94a3b8;border-top:1px solid #e2e8f0;">
+                가격·등락률 출처: 야후파이낸스 (15분 지연)
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </td></tr>
+    </table>'''
 
 
 def normalize_ticker(name: str) -> str:
@@ -218,6 +409,7 @@ def load_exposure_data() -> dict:
     시장 컬럼 없으면 국내로 자동 처리 (하위 호환)
     헤더 깨진 경우 positional 파싱으로 자동 fallback"""
     if not os.path.exists(EXPOSURE_FILE):
+        print(f"  [경고] {EXPOSURE_FILE} 파일 없음 — 익스포저 매칭 비활성화 (리스크 점수 보정 불가)")
         return {}
     try:
         with open(EXPOSURE_FILE, "r", encoding="utf-8-sig") as f:
@@ -235,8 +427,8 @@ def load_exposure_data() -> dict:
                         row["시장"] = "국내"
                     result.setdefault(name, []).append(row)
                 return result
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [경고] {EXPOSURE_FILE} DictReader 파싱 실패: {e} — positional fallback 시도")
     # fallback: positional 파싱
     try:
         result = {}
@@ -259,8 +451,10 @@ def load_exposure_data() -> dict:
                 d["종목명"] = name
                 if name:
                     result.setdefault(name, []).append(d)
+        print(f"  [경고] {EXPOSURE_FILE} positional fallback 파싱 완료 ({len(result)}종목) — 헤더 확인 필요")
         return result
-    except Exception:
+    except Exception as e:
+        print(f"  [오류] {EXPOSURE_FILE} 파싱 완전 실패: {e} — 익스포저 매칭 비활성화")
         return {}
 
 def get_overseas_keywords(exposure_data: dict = None, top_n: int = 30) -> list:
@@ -610,7 +804,6 @@ def crawl_naver_news(keyword: str) -> list:
         if not items:
             break
 
-        stop = False
         for item in items:
             pub_date_str = item.get("pubDate", "")
             try:
@@ -621,8 +814,8 @@ def crawl_naver_news(keyword: str) -> list:
                 pub_date = today_kst
 
             if pub_dt < cutoff_kst:
-                stop = True
-                break
+                # stop 플래그 제거 — API가 날짜 비순서로 올 수 있으므로 skip만
+                continue
 
             title = BeautifulSoup(item.get("title", ""), "html.parser").get_text()
             desc  = BeautifulSoup(item.get("description", ""), "html.parser").get_text()
@@ -640,7 +833,7 @@ def crawl_naver_news(keyword: str) -> list:
 
         total = data.get("total", 0)
         start += 100
-        if stop or len(items) < 100 or start >= 301:
+        if len(items) < 100 or start >= 301:
             break
 
     return articles
@@ -770,19 +963,6 @@ TITLE_ONLY_PATTERNS += [
 
     # ── 법조계·칼럼·책임 논쟁 기사 ──
     "법조계", "책임져라", "법적 책임", "배상 책임", "법원 판결",
-
-    # ── 인물 소개·프로필·Who Is 기사 ──
-    "Who Is", "[Who Is", "Who is",
-
-    # ── 시위·집회·청원 기사 (새 법적 조치 미확정) ──
-    "구속하라", "규탄대회", "비대위",
-
-    # ── 레버리지·인버스 ETF 투자유의 ──
-    # 하드차단 제거 — 뱅키스에 ETF 익스포저 있으면 탐지 필요, AI+익스포저 매칭으로 처리
-
-    # ── 상폐 심의 연기·보류 (리스크 해소 방향) ──
-    "상장폐지 심의 연기", "상폐 심의 연기", "심의 연기", "심의 보류",
-    "상장폐지 심의,", "상폐 심의,",  # "이오플로우 상장폐지 심의, 8월 이후로 연기" 패턴
 ]
 
 EXCLUDE_TITLE_RE_PATTERNS = [
@@ -805,11 +985,7 @@ def is_hard_excluded(title: str, desc: str = "") -> tuple:
                    "기업회생", "MTS 장애", "MTS 접속 장애"]
     # 스팩·정상상폐·호재성 기사는 CRITICAL_KW bypass 면제 → 하드제외 적용
     CRITICAL_EXEMPT = ["스팩", "SPAC", "기업인수목적", "알짜", "체질 변신", "체질 개선",
-                       "방카", "인수 효과", "밸류업", "주식병합",
-                       "비대위", "집회", "구속하라",           # 집회·시위 → 하드제외 적용
-                       "심의 연기", "심의 보류",               # 상폐 심의 연기·보류 → 하드제외 적용
-                       "상장폐지 심의,", "상폐 심의,",         # "상폐 심의, N월 이후 연기" 패턴
-                       ]
+                       "방카", "인수 효과", "밸류업", "주식병합"]
     if any(kw in title for kw in CRITICAL_KW):
         if not any(ex in title for ex in CRITICAL_EXEMPT):
             return False, None  # 치명적 키워드 → AI 판단으로 넘김
@@ -939,8 +1115,8 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             if attempt < 2:
                 time.sleep(random.uniform(20, 45))
                 continue
-            return []
-    return []
+            return None  # 실패 (빈 결과 []와 구분)
+    return None  # 3회 실패
 
 def dedup_deterministic(articles: list) -> list:
     """3단계 중복 제거 — 제목 유사도 + 기업명·키워드 조합 + desc 유사도"""
@@ -1263,10 +1439,12 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
         batch = articles[i:i+batch_size]
         print(f"  배치 {i//batch_size+1}/{-(-len(articles)//batch_size)} 처리 중... ({len(batch)}건)")
         batch_result = ai_filter_batch(batch, offset=i)
-        if not batch_result and batch:
+        if batch_result is None:
+            # None = API 호출 실패 → circuit breaker 카운트
             ai_fail_count += 1
             print(f"  배치 실패 ({ai_fail_count}/{MAX_AI_FAILS})")
         else:
+            # [] = 정상 응답이지만 리스크 기사 없음 — 실패 아님
             ai_fail_count = 0
             result.extend(batch_result)
         if i + batch_size < len(articles):
@@ -1336,7 +1514,7 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                         related_rows = cand_rows
                         break
         if related_name and related_rows:
-            YEOSIN_L = {"신용", "대출", "해외대출"}
+            YEOSIN_L = {"여신", "해외대출"}
             BOND_L   = {"채권"}
             rs = [r for r in related_rows if r.get("종목유형","") not in YEOSIN_L and r.get("종목유형","") not in BOND_L]
             rl = [r for r in related_rows if r.get("종목유형","") in YEOSIN_L]
@@ -1371,7 +1549,7 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
     STOCK_TYPES     = {"주식"}
     OVERSEAS_TYPES  = {"해외주식"}
     BOND_TYPES      = {"채권"}
-    YEOSIN_TYPES    = {"신용", "대출", "해외대출"}  # 여신 통합
+    YEOSIN_TYPES    = {"여신", "해외대출"}  # 여신 통합 (신용+대출 → 여신으로 CSV 통일)
 
     domestic_stock_rows = [r for r in all_rows if r.get("종목유형","") in STOCK_TYPES]
     overseas_stock_rows = [r for r in all_rows if r.get("종목유형","") in OVERSEAS_TYPES]
@@ -1705,46 +1883,27 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
           </td>
         </tr>
       </table>
-      <div style="margin-bottom:12px;">
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:4px;">
-          <tr>
-            <td style="font-size:11px;color:#c8d8f0;">수집 {total_count}건</td>
-            <td align="right" style="font-size:11px;color:#6ee7b7;font-weight:600;">{len(articles)}건 선별 ({round((1 - len(articles)/max(total_count,1))*100)}% 필터링)</td>
-          </tr>
-        </table>
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#1e3370;border-radius:3px;overflow:hidden;">
-          <tr>
-            <td width="{max(1, round(len(sections["긴급"])/max(total_count,1)*100))}%" style="background:#ef4444;padding:3px 0;"></td>
-            <td width="{max(1, round(len(sections["주의"])/max(total_count,1)*100))}%" style="background:#f59e0b;padding:3px 0;"></td>
-            <td width="{max(1, round(len(sections["참고"])/max(total_count,1)*100))}%" style="background:#94a3b8;padding:3px 0;"></td>
-            <td style="background:#1e3370;padding:3px 0;"></td>
-          </tr>
-        </table>
-      </div>
-      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#2d4278;">
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:6px;">
         <tr>
-          <td width="33%" align="center" style="padding:10px 0;border-right:1px solid #4a6099;">
-            <p class="dash-num" style="margin:0 0 1px 0;font-size:26px;font-weight:bold;color:#ef4444;min-width:32px;display:block;">{len(sections['긴급'])}</p>
-            <p style="margin:0 0 2px 0;font-size:12px;color:#c8d8f0;">긴급</p>
-            <p style="margin:0;font-size:10px;color:#7a9abf;">당일 확인</p>
+          <td style="font-size:11px;color:#c8d8f0;">
+            수집 {total_count}건 &nbsp;·&nbsp; <span style="color:#6ee7b7;font-weight:600;">{len(articles)}건 선별</span>
           </td>
-          <td width="33%" align="center" style="padding:10px 0;border-right:1px solid #4a6099;">
-            <p class="dash-num" style="margin:0 0 1px 0;font-size:26px;font-weight:bold;color:#f59e0b;min-width:32px;display:block;">{len(sections['주의'])}</p>
-            <p style="margin:0 0 2px 0;font-size:12px;color:#c8d8f0;">주의</p>
-            <p style="margin:0;font-size:10px;color:#7a9abf;">모니터링</p>
-          </td>
-          <td width="34%" align="center" style="padding:10px 0;">
-            <p class="dash-num" style="margin:0 0 1px 0;font-size:26px;font-weight:bold;color:#94a3b8;min-width:32px;display:block;">{len(sections['참고'])}</p>
-            <p style="margin:0 0 2px 0;font-size:12px;color:#c8d8f0;">참고</p>
-            <p style="margin:0;font-size:10px;color:#7a9abf;">파악용</p>
+          <td align="right" style="font-size:12px;white-space:nowrap;">
+            <span style="color:#ef4444;font-weight:700;">긴급 {len(sections['긴급'])}</span>
+            <span style="color:#4a6099;margin:0 5px;">·</span>
+            <span style="color:#f59e0b;font-weight:700;">주의 {len(sections['주의'])}</span>
+            <span style="color:#4a6099;margin:0 5px;">·</span>
+            <span style="color:#94a3b8;font-weight:700;">참고 {len(sections['참고'])}</span>
           </td>
         </tr>
+        {f'<tr><td colspan="2" style="padding-top:5px;font-size:11px;color:#c8d8f0;letter-spacing:0.2px;">💡 {_esc(ai_summary)}</td></tr>' if ai_summary else ""}
       </table>
-      {f'<p style="margin:6px 0 0 0;font-size:11px;color:#c8d8f0;text-align:center;letter-spacing:0.2px;">💡 {_esc(ai_summary)}</p>' if ai_summary else ""}
     </td>
   </tr>
 
   {('<tr><td>' + build_competitor_html(competitor_notices or [], today_str) + '</td></tr>') if competitor_notices else ""}
+
+  <tr><td style="padding:0;">{build_price_alert_section(exposure_data, ref_date)}</td></tr>
 
   <tr><td class="rows-td" style="padding:0 18px 18px 18px;">{rows}</td></tr>
 
@@ -1940,7 +2099,7 @@ def send_email_error(error_msg: str, trace: str):
 <table width="640" cellpadding="0" cellspacing="0" border="0" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
   <tr>
     <td style="background:#7f1d1d;padding:20px 26px;">
-      <p style="margin:0 0 4px 0;font-size:18px;font-weight:bold;color:#ffffff;">🚨 eBiz본부 리스크 탐지봇 — 런타임 오류</p>
+      <p style="margin:0 0 4px 0;font-size:18px;font-weight:bold;color:#ffffff;">❗ eBiz본부 리스크 탐지봇 — 런타임 오류</p>
       <p style="margin:0;font-size:12px;color:#fca5a5;">{now_str} 기준 (KST)</p>
     </td>
   </tr>
@@ -2082,7 +2241,7 @@ def main():
     if not raw_articles:
         print("신규 뉴스 없음 — 결과 없음 메일 발송 (특정인만)")
         now = datetime.now(timezone(timedelta(hours=9)))
-        subject = f"🚨 [리스크 탐지] {now_str_full} 기준 — 신규 뉴스 없음"
+        subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 신규 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
         save_seen_urls(set())
         return
@@ -2211,7 +2370,7 @@ def main():
     if not filtered:
         print("AI 필터링 결과 없음 — 결과 없음 메일 발송 (특정인만)")
         now = datetime.now(timezone(timedelta(hours=9)))
-        subject = f"🚨 [리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
+        subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
         save_seen_urls(set())
         return
@@ -2331,13 +2490,37 @@ def main():
         ref_date = ""
         print("  익스포저 데이터 없음 — CSV 파일 미확인")
 
-    subject = f"🚨 [리스크 탐지] {now_str_full} 기준"
+    subject = f"❗ [리스크 탐지] {now_str_full} 기준"
     total_count = len(raw_articles) + len(hard_excluded_articles)
 
     urgent_cnt = len([a for a in filtered if a["grade"]=="긴급"])
     caution_cnt = len([a for a in filtered if a["grade"]=="주의"])
     ref_cnt = len([a for a in filtered if a["grade"]=="참고"])
+    # AI 요약 컨텍스트 — 기사 + 경쟁사 공지 + 여신 리스크 현황 통합
     filtered_titles = f"[등급 분포] 긴급 {urgent_cnt}건 / 주의 {caution_cnt}건 / 참고 {ref_cnt}건\n\n" + "\n".join([f"- [{a['grade']}] {a['title']}" for a in filtered])
+
+    # 경쟁사 공지 요약 추가
+    if competitor_notices:
+        competitor_summary = "\n".join([f"- [경쟁사] {n['company']}: {n['title']}" for n in competitor_notices[:3]])
+        filtered_titles += f"\n\n[경쟁사 신용·대출 특이사항]\n{competitor_summary}"
+
+    # 여신 리스크 현황 추가 (리스크종목 Y + -5% 이하 탐지 여부)
+    LOAN_RISK_TYPES = {'여신', '해외대출'}
+    risk_stocks = []
+    for rows in exposure_data.values():
+        for r in rows:
+            if r.get('종목유형', '') not in LOAN_RISK_TYPES:
+                continue
+            if r.get('리스크종목', '').strip().upper() != 'Y':
+                continue
+            name = r.get('종목명', '').strip()
+            rcust = int(float(str(r.get('리스크고객수', 0)).replace(',', '') or 0))
+            if name and rcust > 0 and name not in [s[0] for s in risk_stocks]:
+                risk_stocks.append((name, rcust))
+    if risk_stocks:
+        risk_summary = ", ".join([f"{name}(위험고객 {rcust}명)" for name, rcust in risk_stocks[:5]])
+        filtered_titles += f"\n\n[여신 위험고객 현황]\n- {risk_summary}"
+
     try:
         sum_res = requests.post(
             "https://api.anthropic.com/v1/messages",
@@ -2349,7 +2532,7 @@ def main():
             json={
                 "model": CLAUDE_MODEL,
                 "max_tokens": 80,
-                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 기사 목록을 보고, 오늘의 리스크 흐름을 30자 이내 한 문장으로만 작성하세요.\n문장 외 다른 내용 일절 금지. 예: '삼부토건 상폐 심의·홈플러스 회생 갈림길 동시 부각'\n\n{filtered_titles}"}],
+                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 현황을 보고, 전체 흐름을 40자 이내 한 문장으로만 작성하세요.\n문장 외 다른 내용 일절 금지. 기사·경쟁사·여신 리스크를 균형있게 반영. 예: '알테오젠 상폐·홈플러스 회생 부각, 경쟁사 신용한도 축소·여신 위험고객 다수'\n\n{filtered_titles}"}],
             },
             timeout=15,
         )
