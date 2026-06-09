@@ -559,38 +559,6 @@ def load_competitor_notices() -> list:
             seen_keys.add(key)
             deduped.append(item)
     return deduped
-
-def build_summary_html(ai_summary: str) -> str:
-    """AI 분석 요약을 테이블 형식으로 렌더링"""
-    lines = [l.strip() for l in ai_summary.split("\n") if l.strip()]
-    rows_html = ""
-    current_label = ""
-    current_items = []
-
-    def flush_row(label, items):
-        if not label:
-            return ""
-        content_html = "<br>".join(items) if items else ""
-        return f"""<div style="margin-bottom:10px;">
-          <p style="margin:0 0 3px 0;font-size:11px;font-weight:700;color:#334155;letter-spacing:0.3px;">{label}</p>
-          <p style="margin:0;font-size:12px;color:#334155;line-height:1.7;">{content_html}</p>
-        </div>"""
-
-    for line in lines:
-        if line.startswith("▸"):
-            rows_html += flush_row(current_label, current_items)
-            current_label = line.replace("▸", "").strip()
-            current_items = []
-        elif line.startswith("·") or line.startswith("•"):
-            current_items.append(line)
-        else:
-            current_items.append(line)
-
-    rows_html += flush_row(current_label, current_items)
-
-    return f"""<p style="margin:0 0 10px 0;font-size:13px;font-weight:bold;color:#334155;letter-spacing:0.3px;">AI 분석 요약</p>
-      <div>{rows_html}</div>"""
-
 def build_competitor_html(notices: list, today_str: str) -> str:
     """경쟁사 신용·대출 특이사항 HTML — 없으면 빈 문자열"""
     if not notices:
@@ -2243,7 +2211,7 @@ def main():
         now = datetime.now(timezone(timedelta(hours=9)))
         subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 신규 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
-        save_seen_urls(set())
+        save_seen_urls(seen_urls)
         return
 
     before_hard = len(raw_articles)
@@ -2372,7 +2340,7 @@ def main():
         now = datetime.now(timezone(timedelta(hours=9)))
         subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
-        save_seen_urls(set())
+        save_seen_urls(seen_urls)
         return
 
     print("  본문 크롤링 중... (긴급·주의만)")
