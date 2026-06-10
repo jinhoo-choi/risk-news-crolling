@@ -220,7 +220,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     except ImportError:
         return ''
 
-    THRESHOLD = -5.0
+    THRESHOLD = -3.0
 
     # 잔고 기준일 파싱
     bal_date = ref_date
@@ -319,15 +319,25 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         return ''
 
     # -5% 이하 필터
-    alerted = [
+    alerted_raw = [
         (name, bal, cust, rcust, rbal,
          price_map[name]['chg'], price_map[name]['curr'], price_map[name]['ticker'])
         for name, bal, cust, rcust, rbal, ticker in stock_list
         if name in price_map and price_map[name]['chg'] <= THRESHOLD
     ]
 
-    if not alerted:
+    if not alerted_raw:
         return ''
+
+    # 위험고객 있는 종목만 — 없으면 표시 불필요
+    # 정렬: ① 리스크잔고 내림차순 ② 리스크고객수 내림차순
+    alerted_sorted = sorted(
+        [a for a in alerted_raw if a[3] > 0],
+        key=lambda x: (-x[4], -x[3])
+    )
+    MAX_DISPLAY = 5
+    display_alerted = alerted_sorted[:MAX_DISPLAY]
+    extra_alerted   = alerted_sorted[MAX_DISPLAY:]
 
     def _fmt_price(curr, ticker):
         if not ticker.endswith('.KS'):
@@ -342,7 +352,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         return f'<td style="padding:9px 6px;font-size:11px;font-weight:600;color:#92400e;text-align:right;white-space:nowrap;">{rcust:,}명 / {rbal:.0f}억{per_str}</td>'
 
     rows_html = ''
-    for i, (name, bal, cust, rcust, rbal, chg, curr, ticker) in enumerate(alerted):
+    for i, (name, bal, cust, rcust, rbal, chg, curr, ticker) in enumerate(display_alerted):
         bg = '#fafcff' if i % 2 == 0 else '#ffffff'
         rows_html += f'''
             <tr style="background:{bg};border-bottom:1px solid #f1f5f9;">
@@ -394,9 +404,15 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             </tr>
           </thead>
           <tbody>{rows_html}
+            {f'''<tr style="background:#fff3cd;">
+              <td colspan="6" style="padding:8px 10px;font-size:11px;color:#92400e;font-weight:600;border-top:1px solid #fde68a;">
+                ⚠ 외 {len(extra_alerted)}개 종목 추가 탐지 — eBiz고객부 담당자 즉시 확인
+                <span style="font-weight:400;color:#b45309;font-size:10px;">&nbsp;({", ".join([x[0] for x in extra_alerted[:5]])}{"..." if len(extra_alerted)>5 else ""})</span>
+              </td>
+            </tr>''' if extra_alerted else ''}
             <tr bgcolor="#fafafa" style="background:#fafafa;">
               <td colspan="6" style="padding:7px 10px;font-size:10px;color:#94a3b8;border-top:1px solid #e2e8f0;">
-                가격·등락률 출처: 야후파이낸스 (15분 지연)
+                가격·등락률 출처: 야후파이낸스 (15분 지연) &nbsp;·&nbsp; 당일 -3% 초과 하락 + 위험고객 보유 종목만 표시
               </td>
             </tr>
           </tbody>
