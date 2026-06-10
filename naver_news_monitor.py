@@ -255,7 +255,8 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             except (ValueError, TypeError):
                 bal = cust = rcust = 0; rbal = 0.0
             if name not in credit_map:
-                credit_map[name] = {'bal': 0.0, 'cust': 0, 'rcust': 0, 'rbal': 0.0}
+                code = str(r.get('종목코드', '')).strip()
+                credit_map[name] = {'bal': 0.0, 'cust': 0, 'rcust': 0, 'rbal': 0.0, 'code': code}
             credit_map[name]['bal']   += bal
             credit_map[name]['cust']  += cust
             credit_map[name]['rcust'] += rcust
@@ -266,17 +267,28 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
 
     total_count = len(credit_map)
 
-    # ticker 매핑
+    # ticker 매핑 — CSV 종목코드 우선, 없으면 TICKER_MAP_RUNTIME 역방향
     stock_list = []
     for name, info in sorted(credit_map.items(), key=lambda x: x[1]['bal'], reverse=True):
-        ticker = NAME_TO_TICKER.get(name)
+        # CSV row에서 종목코드 직접 추출
+        raw_code = info.get('code', '')  # credit_map에 code 저장
+        ticker = None
+        if raw_code:
+            if raw_code.isdigit():
+                ticker = raw_code.zfill(6) + '.KS'  # 국내: 000660 → 000660.KS
+            else:
+                ticker = raw_code  # 해외: 이미 TSLA 등
         if not ticker:
-            for t, n in TICKER_MAP_RUNTIME.items():
-                if n == name:
-                    ticker = t
-                    break
-        if ticker and not ticker.endswith('.KS') and not re.match(r'^[A-Z]{1,5}$', ticker):
-            ticker += '.KS'
+            # fallback: TICKER_MAP_RUNTIME 역방향
+            ticker = NAME_TO_TICKER.get(name)
+            if not ticker:
+                for t, n in TICKER_MAP_RUNTIME.items():
+                    if n == name:
+                        ticker = t
+                        break
+            # 해외 ticker .KS 미부착 확인
+            if ticker and not ticker.endswith('.KS') and ticker.isdigit():
+                ticker += '.KS'
         stock_list.append((name, info['bal'], info['cust'], info['rcust'], info['rbal'], ticker))
 
     valid_tickers = [s[5] for s in stock_list if s[5]]
@@ -405,8 +417,7 @@ def normalize_ticker(name: str) -> str:
 
 def load_exposure_data() -> dict:
     """CSV에서 eBiz본부 익스포저 데이터 로드 — {종목명: [row, ...]} 리스트 딕셔너리 반환
-    컬럼 순서: 기준일, 종목명, 종목유형, 잔고(억), 고객수[, 시장]
-    시장 컬럼 없으면 국내로 자동 처리 (하위 호환)
+    컬럼 순서: 기준일, 종목명, 종목코드, 종목유형, 잔고(억), 고객수, 리스크종목, 리스크고객수, 리스크잔고(억)
     헤더 깨진 경우 positional 파싱으로 자동 fallback"""
     if not os.path.exists(EXPOSURE_FILE):
         print(f"  [경고] {EXPOSURE_FILE} 파일 없음 — 익스포저 매칭 비활성화 (리스크 점수 보정 불가)")
@@ -435,17 +446,19 @@ def load_exposure_data() -> dict:
         with open(EXPOSURE_FILE, "r", encoding="utf-8", errors="replace") as f:
             reader = csv.reader(f)
             header = next(reader, [])
-            has_market = "시장" in header
             for row in reader:
                 if len(row) < 5:
                     continue
                 d = {
-                    "기준일":   row[0].strip(),
-                    "종목명":   row[1].strip(),
-                    "종목유형": row[2].strip(),
-                    "잔고(억)": row[3].strip(),
-                    "고객수":   row[4].strip(),
-                    "시장":     row[5].strip() if has_market and len(row) > 5 else "국내",
+                    "기준일":      row[0].strip(),
+                    "종목명":      row[1].strip(),
+                    "종목코드":    str(row[2]).strip().zfill(6) if len(row) > 2 and row[2] else "",
+                    "종목유형":    row[3].strip() if len(row) > 3 else "",
+                    "잔고(억)":    row[4].strip() if len(row) > 4 else "0",
+                    "고객수":      row[5].strip() if len(row) > 5 else "0",
+                    "리스크종목":  row[6].strip() if len(row) > 6 else "",
+                    "리스크고객수": row[7].strip() if len(row) > 7 else "0",
+                    "리스크잔고(억)": row[8].strip() if len(row) > 8 else "0",
                 }
                 name = normalize_ticker(d["종목명"])
                 d["종목명"] = name
@@ -1402,7 +1415,7 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
     MAX_AI_FAILS = 3
     for i in range(0, len(articles), batch_size):
         if ai_fail_count >= MAX_AI_FAILS:
-            print(f"  ⚠️ AI 연속 {MAX_AI_FAILS}회 실패 — circuit breaker 작동, 필터링 중단")
+            print(f"  🔴 AI 연속 {MAX_AI_FAILS}회 실패 — circuit breaker 작동, 필터링 중단")
             break
         batch = articles[i:i+batch_size]
         print(f"  배치 {i//batch_size+1}/{-(-len(articles)//batch_size)} 처리 중... ({len(batch)}건)")
@@ -2090,8 +2103,8 @@ def send_email_error(error_msg: str, trace: str):
 </body></html>"""
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"🚨 [리스크봇 오류] {now_str} 기준 — 런타임 오류 발생"
-    msg["From"]    = f"🚨 eBiz 리스크봇 <{EMAIL_SENDER}>"
+    msg["Subject"] = f"🔴 [리스크봇 오류] {now_str} 기준 — 런타임 오류 발생"
+    msg["From"]    = f"🔴 eBiz 리스크봇 <{EMAIL_SENDER}>"
     msg["To"]      = receiver
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     try:
@@ -2108,7 +2121,7 @@ def send_email_no_result(subject: str, html_body: str):
     receiver = NO_RESULT_RECEIVER if NO_RESULT_RECEIVER else EMAIL_SENDER
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = f"🚨 eBiz 리스크봇 <{EMAIL_SENDER}>"
+    msg["From"]    = f"🔴 eBiz 리스크봇 <{EMAIL_SENDER}>"
     msg["To"]      = receiver
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     try:
@@ -2127,7 +2140,7 @@ def send_email_no_result(subject: str, html_body: str):
 def send_email(subject: str, html_body: str):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = f"🚨 eBiz 리스크봇 <{EMAIL_SENDER}>"
+    msg["From"]    = f"🔴 eBiz 리스크봇 <{EMAIL_SENDER}>"
     msg["To"]      = ", ".join(EMAIL_RECEIVERS)
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     for attempt in range(3):
@@ -2209,7 +2222,7 @@ def main():
     if not raw_articles:
         print("신규 뉴스 없음 — 결과 없음 메일 발송 (특정인만)")
         now = datetime.now(timezone(timedelta(hours=9)))
-        subject = f"🚨 [리스크 탐지] {now_str_full} 기준 — 신규 뉴스 없음"
+        subject = f"🔴 [리스크 탐지] {now_str_full} 기준 — 신규 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
         save_seen_urls(seen_urls)
         return
@@ -2338,7 +2351,7 @@ def main():
     if not filtered:
         print("AI 필터링 결과 없음 — 결과 없음 메일 발송 (특정인만)")
         now = datetime.now(timezone(timedelta(hours=9)))
-        subject = f"🚨 [리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
+        subject = f"🔴 [리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
         save_seen_urls(seen_urls)
         return
@@ -2458,7 +2471,7 @@ def main():
         ref_date = ""
         print("  익스포저 데이터 없음 — CSV 파일 미확인")
 
-    subject = f"🚨 [리스크 탐지] {now_str_full} 기준"
+    subject = f"🔴 [리스크 탐지] {now_str_full} 기준"
     total_count = len(raw_articles) + len(hard_excluded_articles)
 
     urgent_cnt = len([a for a in filtered if a["grade"]=="긴급"])
