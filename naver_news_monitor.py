@@ -295,10 +295,19 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     if not valid_tickers:
         return ''
 
-    # yfinance 일괄 조회
+    # yfinance 일괄 조회 — period='5d'로 충분한 거래일 확보
+    try:
+        from datetime import datetime as _dt2
+        import pytz as _pytz
+        _kst = _pytz.timezone('Asia/Seoul')
+        _today_kst = _dt2.now(_kst).date()
+    except Exception:
+        from datetime import datetime as _dt2, timezone as _tz2, timedelta as _td2
+        _today_kst = _dt2.now(_tz2(+_td2(hours=9))).date()
+
     try:
         raw = yf.download(
-            valid_tickers, period='2d', auto_adjust=True,
+            valid_tickers, period='5d', auto_adjust=True,
             progress=False, threads=True, timeout=30
         )
         price_map = {}
@@ -307,8 +316,20 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
                 continue
             try:
                 closes = raw['Close'][ticker] if len(valid_tickers) > 1 else raw['Close']
-                prev = float(closes.iloc[-2])
-                curr = float(closes.iloc[-1])
+                closes = closes.dropna()
+                if len(closes) < 2:
+                    continue
+                # 오늘 데이터 있으면 오늘 현재가 / 없으면 마지막 거래일
+                curr_idx = -1
+                prev_idx = -2
+                # 마지막 인덱스가 오늘이면 그대로, 아니면 전전일 대비 계산 방지
+                last_date = closes.index[-1]
+                last_date_d = last_date.date() if hasattr(last_date, 'date') else last_date
+                if last_date_d < _today_kst:
+                    # 오늘 데이터 미수신 — 당일 등락률 산출 불가
+                    continue
+                curr = float(closes.iloc[curr_idx])
+                prev = float(closes.iloc[prev_idx])
                 if prev > 0:
                     chg = round((curr - prev) / prev * 100, 2)
                     price_map[name] = {'chg': chg, 'curr': curr, 'ticker': ticker}
