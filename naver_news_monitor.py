@@ -406,7 +406,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
           <tbody>{rows_html}
             {f'''<tr style="background:#fff3cd;">
               <td colspan="6" style="padding:8px 10px;font-size:11px;color:#92400e;font-weight:600;border-top:1px solid #fde68a;">
-                ⚠ 외 {len(extra_alerted)}개 종목 추가 탐지 — eBiz고객부 담당자 즉시 확인
+                &#9888; 외 {len(extra_alerted)}개 종목 추가 탐지 — eBiz고객부 담당자 즉시 확인
                 <span style="font-weight:400;color:#b45309;font-size:10px;">&nbsp;({", ".join([x[0] for x in extra_alerted[:5]])}{"..." if len(extra_alerted)>5 else ""})</span>
               </td>
             </tr>''' if extra_alerted else ''}
