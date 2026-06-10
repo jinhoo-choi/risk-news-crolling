@@ -346,9 +346,9 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         bg = '#fafcff' if i % 2 == 0 else '#ffffff'
         rows_html += f'''
             <tr style="background:{bg};border-bottom:1px solid #f1f5f9;">
-              <td style="padding:9px 6px;font-size:12px;font-weight:600;color:#1e293b;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{name}</td>
-              <td style="padding:9px 6px;font-size:12px;color:#1e293b;text-align:right;white-space:nowrap;">{bal:,.0f}억</td>
-              <td style="padding:9px 6px;font-size:12px;color:#1e293b;text-align:right;white-space:nowrap;">{cust:,}명</td>
+              <td class="price-alert-td" style="padding:9px 6px;font-size:12px;font-weight:600;color:#1e293b;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{name}</td>
+              <td class="price-alert-td" style="padding:9px 6px;font-size:12px;color:#1e293b;text-align:right;white-space:nowrap;">{bal:,.0f}억</td>
+              <td class="price-alert-td" style="padding:9px 6px;font-size:12px;color:#1e293b;text-align:right;white-space:nowrap;">{cust:,}명</td>
               {_risk_cell(rcust, rbal)}
               <td style="padding:9px 6px;font-size:12px;font-weight:600;color:#2563eb;text-align:right;white-space:nowrap;">▼{abs(chg):.1f}%</td>
               <td style="padding:9px 6px;font-size:12px;color:#1e293b;text-align:right;white-space:nowrap;">{_fmt_price(curr, ticker)}</td>
@@ -1695,9 +1695,9 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
             else:
                 badges = ""
                 if a.get("keyword"):
-                    badges += f'<span style="display:inline-block;font-size:10px;color:#3b5491;background:#e8f0fe;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;">{a["keyword"]}</span>'
+                    badges += f'<span style="display:inline-block;font-size:10px;color:#3b5491;background:#e8f0fe;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;white-space:nowrap;">{a["keyword"]}</span>'
                 if a.get("entity") and a.get("entity") != a.get("keyword"):
-                    badges += f'<span style="display:inline-block;font-size:10px;color:#7a9abf;background:#f1f5f9;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;">{a["entity"]}</span>'
+                    badges += f'<span style="display:inline-block;font-size:10px;color:#7a9abf;background:#f1f5f9;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;white-space:nowrap;">{a["entity"]}</span>'
                 badges += _price_badge(a)  # 등락률 뱃지 — 키워드 옆
 
                 if grade == "주의":
@@ -1723,8 +1723,8 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
             <td style="padding:12px 16px;border-bottom:1px solid {gs["card_border"]};">
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:{f'6px' if badges else '0'};">
                 <tr>
-                  <td>{badges}</td>
-                  <td align="right" valign="top">{c_score_html}</td>
+                  <td class="badge-wrap" style="word-break:keep-all;">{badges}</td>
+                  <td align="right" valign="top" style="white-space:nowrap;padding-left:8px;">{c_score_html}</td>
                 </tr>
               </table>
               <a href="{_esc(a['url'])}" class="title-link caution-title" style="font-weight:bold;font-size:14px;text-decoration:none;color:#1e293b;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
@@ -1758,9 +1758,9 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                         risk_score_html = ""
                     urgent_badges = ""
                     if a.get("keyword"):
-                        urgent_badges += f'<span style="font-size:10px;background:#e8f0fe;color:#3b5491;padding:2px 7px;border-radius:3px;margin-right:4px;font-weight:600;">{a["keyword"]}</span>'
+                        urgent_badges += f'<span style="font-size:10px;background:#e8f0fe;color:#3b5491;padding:2px 7px;border-radius:3px;margin-right:4px;margin-bottom:4px;font-weight:600;white-space:nowrap;display:inline-block;">{a["keyword"]}</span>'
                     if a.get("entity") and a.get("entity") != a.get("keyword"):
-                        urgent_badges += f'<span style="font-size:10px;background:#f1f5f9;color:#4a6099;padding:2px 7px;border-radius:3px;font-weight:600;">{a["entity"]}</span>'
+                        urgent_badges += f'<span style="font-size:10px;background:#f1f5f9;color:#4a6099;padding:2px 7px;border-radius:3px;font-weight:600;white-space:nowrap;display:inline-block;">{a["entity"]}</span>'
                     urgent_badges += _price_badge(a)  # 등락률 뱃지 — 키워드 옆
                     action_row = f'<tr><td class="action-td" bgcolor="#fef2f2" style="padding:10px 16px;border-bottom:1px solid {gs["card_border"]};background:#fef2f2;"><p style="margin:0 0 3px 0;font-size:10px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
                     exposure_row = f'<tr><td style="padding:0;border-bottom:1px solid {gs["card_border"]};background:#ffffff;">{exposure_html}</td></tr>' if exposure_html else ""
@@ -1772,11 +1772,11 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     rows += f'''
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {gs["card_border"]};border-top:none;background:{gs["card_bg"]};margin-bottom:0;">
           <tr>
-            <td class="card-bg" bgcolor="#fff8f8" style="padding:12px 16px;background:#fff8f8;border-bottom:1px solid #f5c6c6;">
+            <td class="card-bg card-inner" bgcolor="#fff8f8" style="padding:12px 16px;background:#fff8f8;border-bottom:1px solid #f5c6c6;">
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:8px;">
                 <tr>
-                  <td>{f"{urgent_badges}" if urgent_badges else ""}</td>
-                  <td align="right" valign="top">{risk_score_html}</td>
+                  <td class="badge-wrap" style="word-break:keep-all;">{f"{urgent_badges}" if urgent_badges else ""}</td>
+                  <td align="right" valign="top" style="white-space:nowrap;padding-left:8px;">{risk_score_html}</td>
                 </tr>
               </table>
               <a href="{_esc(a['url'])}" class="title-link" style="font-weight:700;font-size:15px;text-decoration:none;color:#1e293b;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
@@ -1833,17 +1833,24 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
     .outer {{ padding: 8px !important; }}
     .main {{ width: 100% !important; max-width: 100% !important; }}
     .header-td {{ padding: 16px 16px !important; }}
-    .card-td {{ padding: 10px 14px !important; }}
-    .summary-td {{ padding: 12px 14px !important; }}
-    .rows-td {{ padding: 0 12px 12px 12px !important; }}
-    .footer-td {{ padding: 12px 14px !important; }}
-    .title-link {{ font-size: 15px !important; line-height: 1.5 !important; }}
+    .card-td {{ padding: 10px 12px !important; }}
+    .summary-td {{ padding: 12px 12px !important; }}
+    .rows-td {{ padding: 0 8px 12px 8px !important; }}
+    .footer-td {{ padding: 12px 12px !important; }}
+    .title-link {{ font-size: 14px !important; line-height: 1.5 !important; }}
     .caution-title {{ font-size: 13px !important; }}
     .desc-p {{ font-size: 12px !important; }}
     .action-p {{ font-size: 13px !important; }}
     .dash-num {{ font-size: 20px !important; }}
-    .grade-header-right {{ font-size: 10px !important; white-space: normal !important; }}
+    .grade-header-right {{ font-size: 10px !important; white-space: normal !important; word-break: keep-all !important; }}
     .ref-date {{ display: none !important; }}
+    .card-inner {{ padding: 10px 12px !important; }}
+    .action-inner {{ padding: 8px 12px !important; }}
+    .care-inner {{ padding: 8px 12px !important; }}
+    .badge-wrap {{ word-break: keep-all !important; }}
+    .badge-wrap span {{ white-space: nowrap !important; display: inline-block !important; margin-bottom: 4px !important; }}
+    .score-num {{ font-size: 12px !important; }}
+    .price-alert-td {{ font-size: 10px !important; padding: 6px 4px !important; }}
   }}
 </style>
 </head>
