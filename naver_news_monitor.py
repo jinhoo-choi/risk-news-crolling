@@ -1394,14 +1394,12 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
             continue                         # 시장전체 이슈 면제 (반대매매·서킷브레이커 등)
         if find_exposure(entity_val, exposure_data or {}):
             continue                         # 익스포저 있음 — 강등 없음
-        # 익스포저 없음 → 한 단계 강등
-        if a.get("grade") == "긴급":
-            a["grade"] = "주의"
-            a["customer_notice"] = None      # 긴급 전용 고객안내 제거
-            print(f"  [익스포저없음 강등] 긴급→주의: {a['title'][:40]}")
-        elif a.get("grade") == "주의":
+        # 익스포저 없음 → 참고로 직행 (긴급/주의 불문)
+        if a.get("grade") in ("긴급", "주의"):
+            prev_grade = a["grade"]
             a["grade"] = "참고"
-            print(f"  [익스포저없음 강등] 주의→참고: {a['title'][:40]}")
+            a["customer_notice"] = None
+            print(f"  [익스포저없음 강등] {prev_grade}→참고: {a['title'][:40]}")
     # ─────────────────────────────────────────────────────────────────
 
     # 강등 후 등급 카운트 재산출
