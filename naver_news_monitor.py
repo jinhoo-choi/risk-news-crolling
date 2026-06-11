@@ -305,26 +305,39 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     if not valid_tickers:
         return ''
 
-    # yfinance fast_info로 현재가·전일종가 직접 조회 (15분 지연)
+    # yfinance history(period='2d') 방식 — 날짜 기반 오늘 데이터 검증
+    from datetime import datetime as _dt2, timezone as _tz2, timedelta as _td2
+    _kst_now = _dt2.now(_tz2(_td2(hours=9)))
+    _today_str = _kst_now.strftime('%Y-%m-%d')
+
     price_map = {}
     for name, bal, cust, rcust, rbal, ticker, top_rbal, top_cust, top_ratio in stock_list:
         if not ticker:
             continue
         try:
-            fi = yf.Ticker(ticker).fast_info
-            curr = getattr(fi, 'last_price', None)
-            prev = getattr(fi, 'previous_close', None)
-            if not curr and isinstance(fi, dict):
-                curr = fi.get('lastPrice')
-                prev = fi.get('previousClose')
-            if curr and prev and float(prev) > 0:
-                chg = round((float(curr) - float(prev)) / float(prev) * 100, 2)
-                price_map[name] = {'chg': chg, 'curr': float(curr), 'ticker': ticker,
+            hist = yf.Ticker(ticker).history(period='2d', interval='1d', auto_adjust=True)
+            if hist is None or len(hist) < 2:
+                continue
+            hist = hist.dropna(subset=['Close'])
+            if len(hist) < 2:
+                continue
+            # 마지막 행이 오늘 날짜인지 확인 (KST 기준)
+            last_date = hist.index[-1]
+            if hasattr(last_date, 'tz_convert'):
+                last_date = last_date.tz_convert('Asia/Seoul')
+            last_date_str = last_date.strftime('%Y-%m-%d')
+            if last_date_str != _today_str:
+                continue  # 오늘 데이터 없으면 스킵
+            curr = float(hist['Close'].iloc[-1])
+            prev = float(hist['Close'].iloc[-2])
+            if prev > 0:
+                chg = round((curr - prev) / prev * 100, 2)
+                price_map[name] = {'chg': chg, 'curr': curr, 'ticker': ticker,
                                    'top_rbal': top_rbal, 'top_cust': top_cust, 'top_ratio': top_ratio}
         except Exception:
             continue
     if not price_map:
-        print(f'  [price_alert] fast_info 전체 조회 실패')
+        print(f'  [price_alert] yfinance 조회 실패 또는 오늘 데이터 없음')
         return ''
 
     # -5% 이하 필터
