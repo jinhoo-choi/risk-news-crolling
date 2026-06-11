@@ -404,7 +404,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
           <table width="100%" cellpadding="0" cellspacing="0" border="0">
             <tr>
               <td style="font-size:14px;font-weight:500;color:#f8fafc;white-space:nowrap;">📉 여신잔고 리스크 현황</td>
-              <td align="right" style="font-size:12px;color:#94a3b8;padding-left:10px;white-space:nowrap;">뱅키스 단일종목 여신잔고 1억↑ 종목 {total_count}개 · {bal_date_label} 기준</td>
+              <td align="right" class="loan-hdr-right" style="font-size:12px;color:#94a3b8;padding-left:10px;white-space:nowrap;">뱅키스 단일종목 여신잔고 1억↑ 종목 {total_count}개 · {bal_date_label} 기준</td>
             </tr>
             <tr>
               <td colspan="2" style="padding-top:5px;">
@@ -417,14 +417,8 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
       <tr><td bgcolor="#ffffff" style="background:#ffffff;">
         <!--[if mso]><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
           <td width="16%"><![endif]-->
-        <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;width:100%;">
-          <colgroup>
-            <col style="width:25%;">
-            <col style="width:14%;">
-            <col style="width:12%;">
-            <col style="width:24%;">
-            <col style="width:25%;">
-          </colgroup>
+        <table cellpadding="0" cellspacing="0" border="0" class="price-alert-table" style="border-collapse:collapse;width:100%;">
+
           <thead>
             <tr bgcolor="#f8fafc" style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
               <th style="padding:7px 6px;font-size:12px;color:#64748b;font-weight:500;text-align:center;">종목명 (등락)</th>
@@ -1890,14 +1884,19 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
     .badge-wrap {{ word-break: keep-all !important; }}
     .badge-wrap span {{ white-space: nowrap !important; display: inline-block !important; margin-bottom: 4px !important; }}
     .score-num {{ font-size: 12px !important; }}
-    .price-alert-td {{ font-size: 10px !important; padding: 6px 4px !important; }}
+    /* 여신잔고 표 모바일 최적화 */
+    .price-alert-td {{ font-size: 11px !important; padding: 7px 4px !important; white-space: normal !important; }}
+    .price-alert-wrap {{ overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }}
+    .price-alert-table th {{ font-size: 10px !important; padding: 6px 3px !important; white-space: normal !important; word-break: keep-all !important; }}
+    .price-alert-table td {{ font-size: 11px !important; padding: 7px 3px !important; white-space: normal !important; word-break: keep-all !important; }}
+    .loan-hdr-right {{ display: none !important; }}
   }}
 </style>
 </head>
 <body style="margin:0;padding:0;background:#f1f5f9;color-scheme:light only;font-family:'Apple SD Gothic Neo','Malgun Gothic',Arial,sans-serif;">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f1f5f9;">
 <tr><td align="center" class="outer" style="padding:0;">
-<table width="640" cellpadding="0" cellspacing="0" border="0" class="main" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" class="main" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
 
   <!-- 헤더 H-3 -->
   <tr>
@@ -1994,7 +1993,7 @@ def build_empty_html(now) -> str:
 <body style="margin:0;padding:0;background:#f1f5f9;color-scheme:light only;font-family:'Apple SD Gothic Neo','Malgun Gothic',Arial,sans-serif;">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f1f5f9;">
 <tr><td align="center" class="outer" style="padding:0;">
-<table width="640" cellpadding="0" cellspacing="0" border="0" class="main" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" class="main" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
   <tr>
     <td class="header-td" style="background:#3b5491;padding:22px 26px;">
       <p style="margin:0 0 6px 0;font-size:20px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇
@@ -2135,7 +2134,7 @@ def send_email_error(error_msg: str, trace: str):
 <body style="margin:0;padding:0;background:#f1f5f9;font-family:'Apple SD Gothic Neo','Malgun Gothic',Arial,sans-serif;">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f1f5f9;">
 <tr><td align="center" style="padding:16px;">
-<table width="640" cellpadding="0" cellspacing="0" border="0" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
   <tr>
     <td style="background:#7f1d1d;padding:20px 26px;">
       <p style="margin:0 0 4px 0;font-size:19px;font-weight:bold;color:#ffffff;">❗ eBiz본부 리스크 탐지봇 — 런타임 오류</p>
