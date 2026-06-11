@@ -1870,12 +1870,12 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
     a           {{ color: #4a6099 !important; }}
   }}
   @media only screen and (max-width: 600px) {{
-    .outer {{ padding: 8px !important; }}
+    .outer {{ padding: 0 !important; }}
     .main {{ width: 100% !important; max-width: 100% !important; }}
     .header-td {{ padding: 16px 16px !important; }}
     .card-td {{ padding: 10px 12px !important; }}
     .summary-td {{ padding: 12px 12px !important; }}
-    .rows-td {{ padding: 0 8px 12px 8px !important; }}
+    .rows-td {{ padding: 0 0 12px 0 !important; }}
     .footer-td {{ padding: 12px 12px !important; }}
     .title-link {{ font-size: 14px !important; line-height: 1.5 !important; }}
     .caution-title {{ font-size: 13px !important; }}
@@ -1896,7 +1896,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
 </head>
 <body style="margin:0;padding:0;background:#f1f5f9;color-scheme:light only;font-family:'Apple SD Gothic Neo','Malgun Gothic',Arial,sans-serif;">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f1f5f9;">
-<tr><td align="center" class="outer" style="padding:16px;">
+<tr><td align="center" class="outer" style="padding:0;">
 <table width="640" cellpadding="0" cellspacing="0" border="0" class="main" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
 
   <!-- 헤더 H-3 -->
@@ -1933,14 +1933,26 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
 
   <tr><td style="padding:0;">{build_price_alert_section(exposure_data, ref_date)}</td></tr>
 
-  <tr><td class="rows-td" style="padding:0 18px 18px 18px;">{rows}</td></tr>
+  <tr><td style="padding:0 18px;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;border-top:3px solid #3b5491;border-bottom:1px solid #e2e8f0;background:#f8fafc;">
+      <tr>
+        <td style="padding:10px 14px;">
+          <span style="font-size:15px;font-weight:700;color:#3b5491;">📰 리스크 뉴스</span>
+        </td>
+        <td align="right" style="padding:10px 14px;font-size:10px;color:#94a3b8;white-space:nowrap;">
+          긴급 {len(sections['긴급'])} &nbsp;·&nbsp; 주의 {len(sections['주의'])} &nbsp;·&nbsp; 참고 {len(sections['참고'])}
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+
+  <tr><td class="rows-td" style="padding:0 0 12px 0;">{rows}</td></tr>
 
   <tr>
     <td class="footer-td" style="padding:14px 22px;background:#fff;border-top:1px solid #e2e8f0;">
       <p style="margin:0;font-size:12px;color:#94a3b8;line-height:2.0;">
         본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
-        담당자<br>
-        &nbsp;&nbsp;최진후 차장
+        담당자 &nbsp;최진후 차장
       </p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
         <tr>
@@ -1981,7 +1993,7 @@ def build_empty_html(now) -> str:
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
 <body style="margin:0;padding:0;background:#f1f5f9;color-scheme:light only;font-family:'Apple SD Gothic Neo','Malgun Gothic',Arial,sans-serif;">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f1f5f9;">
-<tr><td align="center" class="outer" style="padding:16px;">
+<tr><td align="center" class="outer" style="padding:0;">
 <table width="640" cellpadding="0" cellspacing="0" border="0" class="main" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
   <tr>
     <td class="header-td" style="background:#3b5491;padding:22px 26px;">
@@ -2000,8 +2012,7 @@ def build_empty_html(now) -> str:
     <td style="padding:14px 22px;border-top:1px solid #e2e8f0;">
       <p style="margin:0;font-size:12px;color:#94a3b8;line-height:2.0;">
         본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
-        담당자<br>
-        &nbsp;&nbsp;최진후 차장
+        담당자 &nbsp;최진후 차장
       </p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
         <tr>
