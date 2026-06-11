@@ -356,32 +356,30 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
 
     def _risk_cell(rcust, rbal):
         if rcust == 0:
-            return '<td style="padding:9px 6px;font-size:10px;color:#cbd5e1;text-align:right;white-space:nowrap;">없음</td>'
-        per = round(rbal / rcust, 2)
-        per_str = f'<br><span style="font-size:10px;font-weight:400;color:#b45309;">(인당 {per:.2f}억)</span>' if rcust > 1 else ''
-        return f'<td style="padding:9px 6px;font-size:11px;font-weight:600;color:#92400e;text-align:right;white-space:nowrap;">{rcust:,}명 / {rbal:.0f}억{per_str}</td>'
+            return '<td style="padding:8px 6px;font-size:11px;color:#cbd5e1;text-align:center;white-space:nowrap;">없음</td>'
+        per = round(rbal / rcust, 1) if rcust > 0 else 0
+        per_str = f' <span style="font-size:10px;color:#b45309;">(인당 {per:.1f}억)</span>' if rcust > 1 else ''
+        return f'<td style="padding:8px 6px;font-size:11px;font-weight:600;color:#92400e;text-align:center;white-space:nowrap;">{rcust:,}명 / {rbal:.0f}억{per_str}</td>'
 
     def _top_risk_cell(top_rbal, top_cust, top_ratio):
         if not top_rbal and not top_cust:
-            return '<td style="padding:9px 6px;font-size:10px;color:#cbd5e1;text-align:right;white-space:nowrap;">-</td>'
+            return '<td style="padding:8px 6px;font-size:10px;color:#cbd5e1;text-align:center;white-space:nowrap;">-</td>'
         parts = []
         if top_rbal: parts.append(f'{top_rbal}억')
-        if top_cust:
-            # 이름 마스킹: 성 + * 처리 (이미 마스킹된 형태로 CSV에서 올 예정)
-            parts.append(str(top_cust))
+        if top_cust: parts.append(str(top_cust))
         if top_ratio: parts.append(f'<span style="color:#ef4444;font-weight:700;">{top_ratio}%</span>')
-        return f'<td style="padding:9px 6px;font-size:11px;font-weight:600;color:#92400e;text-align:right;white-space:nowrap;line-height:1.6;">{" / ".join(parts)}</td>'
+        return f'<td style="padding:8px 6px;font-size:11px;font-weight:600;color:#92400e;text-align:center;white-space:nowrap;">{" / ".join(parts)}</td>'
 
     rows_html = ''
     for i, (name, bal, cust, rcust, rbal, chg, curr, ticker, top_rbal, top_cust, top_ratio) in enumerate(display_alerted):
         bg = '#fafcff' if i % 2 == 0 else '#ffffff'
         rows_html += f'''
             <tr style="background:{bg};border-bottom:1px solid #f1f5f9;">
-              <td class="price-alert-td" style="padding:9px 6px;font-size:12px;font-weight:600;color:#1e293b;text-align:left;">
-                {name}<br><span style="font-size:11px;font-weight:700;color:#2563eb;">▼{abs(chg):.1f}%</span>
+              <td class="price-alert-td" style="padding:8px 6px;font-size:12px;font-weight:600;color:#1e293b;text-align:center;white-space:nowrap;">
+                {name} <span style="font-size:11px;font-weight:700;color:#2563eb;">▼{abs(chg):.1f}%</span>
               </td>
-              <td class="price-alert-td" style="padding:9px 6px;font-size:12px;color:#1e293b;text-align:right;white-space:nowrap;">{bal:,.0f}억</td>
-              <td class="price-alert-td" style="padding:9px 6px;font-size:12px;color:#1e293b;text-align:right;white-space:nowrap;">{cust:,}명</td>
+              <td class="price-alert-td" style="padding:8px 6px;font-size:11px;color:#1e293b;text-align:center;white-space:nowrap;">{bal:,.0f}억</td>
+              <td class="price-alert-td" style="padding:8px 6px;font-size:11px;color:#1e293b;text-align:center;white-space:nowrap;">{cust:,}명</td>
               {_risk_cell(rcust, rbal)}
               {_top_risk_cell(top_rbal, top_cust, top_ratio)}
             </tr>'''
@@ -408,23 +406,23 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
           <td width="16%"><![endif]-->
         <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;width:100%;">
           <colgroup>
-            <col style="width:22%;">
-            <col style="width:15%;">
-            <col style="width:13%;">
-            <col style="width:22%;">
-            <col style="width:28%;">
+            <col style="width:25%;">
+            <col style="width:14%;">
+            <col style="width:12%;">
+            <col style="width:24%;">
+            <col style="width:25%;">
           </colgroup>
           <thead>
             <tr bgcolor="#f8fafc" style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
-              <th style="padding:7px 6px;font-size:11px;color:#64748b;font-weight:500;text-align:left;">종목명 (등락)</th>
-              <th style="padding:7px 6px;font-size:11px;color:#64748b;font-weight:500;text-align:right;">여신잔고</th>
-              <th style="padding:7px 6px;font-size:11px;color:#64748b;font-weight:500;text-align:right;">고객수</th>
-              <th style="padding:7px 6px;font-size:11px;color:#d97706;font-weight:600;text-align:right;">⚠ 위험고객</th>
-              <th style="padding:7px 6px;font-size:11px;color:#dc2626;font-weight:600;text-align:right;">최고 리스크</th>
+              <th style="padding:7px 6px;font-size:10px;color:#64748b;font-weight:500;text-align:center;">종목명 (등락)</th>
+              <th style="padding:7px 6px;font-size:10px;color:#64748b;font-weight:500;text-align:center;">여신잔고</th>
+              <th style="padding:7px 6px;font-size:10px;color:#64748b;font-weight:500;text-align:center;">고객수</th>
+              <th style="padding:7px 6px;font-size:10px;color:#d97706;font-weight:600;text-align:center;">⚠ 위험고객</th>
+              <th style="padding:7px 6px;font-size:10px;color:#dc2626;font-weight:600;text-align:center;">최고 리스크</th>
             </tr>
           </thead>
           <tbody>{rows_html}
-            {('<tr style="background:#fff3cd;"><td colspan="5" style="padding:8px 10px;font-size:11px;color:#92400e;font-weight:600;border-top:1px solid #fde68a;">&#9888; 외 ' + str(len(extra_alerted)) + '개 종목 추가 탐지 — eBiz고객부 담당자 즉시 확인 <span style="font-weight:400;color:#b45309;font-size:10px;">(' + ", ".join([x[0] for x in extra_alerted[:5]]) + ("..." if len(extra_alerted) > 5 else "") + ')</span></td></tr>') if extra_alerted else ''}
+            {('<tr style="background:#fff3cd;"><td colspan="5" style="padding:8px 10px;font-size:11px;color:#92400e;font-weight:600;border-top:1px solid #fde68a;">&#9888; 외 ' + str(len(extra_alerted)) + '개 종목 추가 탐지 — eBiz고객부 담당자 즉시 확인 <span style="font-weight:400;color:#b45309;font-size:10px;">(' + ", ".join([x[0] for x in sorted(extra_alerted, key=lambda x: x[4], reverse=True)[:5]]) + ("..." if len(extra_alerted) > 5 else "") + ')</span></td></tr>') if extra_alerted else ''}
             <tr bgcolor="#fafafa" style="background:#fafafa;">
               <td colspan="5" style="padding:7px 10px;font-size:10px;color:#94a3b8;border-top:1px solid #e2e8f0;">
                 가격·등락률 출처: 야후파이낸스 (15분 지연) &nbsp;·&nbsp; 당일 -3% 초과 하락 + 위험고객 보유 종목만 표시
