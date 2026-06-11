@@ -332,7 +332,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         (name, bal, cust, rcust, rbal,
          price_map[name]['chg'], price_map[name]['curr'], price_map[name]['ticker'],
          price_map[name].get('top_rbal',''), price_map[name].get('top_cust',''), price_map[name].get('top_ratio',''))
-        for name, bal, cust, rcust, rbal, ticker in stock_list
+        for name, bal, cust, rcust, rbal, ticker, top_rbal, top_cust, top_ratio in stock_list
         if name in price_map and price_map[name]['chg'] <= THRESHOLD
     ]
 
