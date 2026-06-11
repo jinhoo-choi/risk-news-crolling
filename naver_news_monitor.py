@@ -1929,7 +1929,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
       <p style="margin:0;font-size:12px;color:#94a3b8;line-height:2.0;">
         본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
         담당자<br>
-        &nbsp;&nbsp;(정) 최진후 차장&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
+        &nbsp;&nbsp;최진후 차장
       </p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
         <tr>
@@ -1990,7 +1990,7 @@ def build_empty_html(now) -> str:
       <p style="margin:0;font-size:12px;color:#94a3b8;line-height:2.0;">
         본 이메일은 네이버API로 수집한 뉴스를 Claude AI가 eBiz본부의 관점으로 리스크 분석하여 선별, 발송하였습니다.<br>
         담당자<br>
-        &nbsp;&nbsp;(정) 최진후 차장&nbsp;&nbsp;&nbsp;(부) 이원세 대리 · 장인호 대리
+        &nbsp;&nbsp;최진후 차장
       </p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
         <tr>
