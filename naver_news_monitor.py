@@ -220,7 +220,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     except ImportError:
         return ''
 
-    THRESHOLD = -3.0
+    THRESHOLD = -5.0
 
     # 잔고 기준일 파싱
     bal_date = ref_date
@@ -425,7 +425,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             {('<tr style="background:#fff3cd;"><td colspan="5" style="padding:8px 10px;font-size:11px;color:#92400e;font-weight:600;border-top:1px solid #fde68a;">&#9888; 외 ' + str(len(extra_alerted)) + '개 종목 추가 탐지 — eBiz고객부 담당자 즉시 확인 <span style="font-weight:400;color:#b45309;font-size:10px;">(' + ", ".join([x[0] for x in sorted(extra_alerted, key=lambda x: x[4], reverse=True)[:5]]) + ("..." if len(extra_alerted) > 5 else "") + ')</span></td></tr>') if extra_alerted else ''}
             <tr bgcolor="#fafafa" style="background:#fafafa;">
               <td colspan="5" style="padding:7px 10px;font-size:10px;color:#94a3b8;border-top:1px solid #e2e8f0;">
-                가격·등락률 출처: 야후파이낸스 (15분 지연) &nbsp;·&nbsp; 당일 -3% 초과 하락 + 위험고객 보유 종목만 표시
+                가격·등락률 출처: 야후파이낸스 (15분 지연) &nbsp;·&nbsp; 당일 -5% 초과 하락 + 위험고객 보유 종목만 표시
               </td>
             </tr>
           </tbody>
