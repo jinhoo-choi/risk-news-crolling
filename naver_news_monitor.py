@@ -256,11 +256,20 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
                 bal = cust = rcust = 0; rbal = 0.0
             if name not in credit_map:
                 code = str(r.get('종목코드', '')).strip()
-                credit_map[name] = {'bal': 0.0, 'cust': 0, 'rcust': 0, 'rbal': 0.0, 'code': code}
+                credit_map[name] = {'bal': 0.0, 'cust': 0, 'rcust': 0, 'rbal': 0.0, 'code': code,
+                                    'top_rbal': 0.0, 'top_cust': '', 'top_ratio': ''}
             credit_map[name]['bal']   += bal
             credit_map[name]['cust']  += cust
             credit_map[name]['rcust'] += rcust
             credit_map[name]['rbal']  += rbal
+            # 최고리스크 컬럼 (CSV에 없으면 빈값 유지)
+            _top_rbal  = r.get('최고리스크잔고', '')
+            _top_cust  = r.get('최고리스크고객', '')
+            _top_ratio = r.get('담보유지비율', '')
+            if _top_rbal:
+                credit_map[name]['top_rbal']  = _top_rbal
+                credit_map[name]['top_cust']  = _top_cust
+                credit_map[name]['top_ratio'] = _top_ratio
 
     if not credit_map:
         return ''
@@ -289,60 +298,40 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             # 해외 ticker .KS 미부착 확인
             if ticker and not ticker.endswith('.KS') and ticker.isdigit():
                 ticker += '.KS'
-        stock_list.append((name, info['bal'], info['cust'], info['rcust'], info['rbal'], ticker))
+        stock_list.append((name, info['bal'], info['cust'], info['rcust'], info['rbal'], ticker,
+                           info.get('top_rbal',''), info.get('top_cust',''), info.get('top_ratio','')))
 
     valid_tickers = [s[5] for s in stock_list if s[5]]
     if not valid_tickers:
         return ''
 
-    # yfinance 일괄 조회 — period='5d'로 충분한 거래일 확보
-    try:
-        from datetime import datetime as _dt2
-        import pytz as _pytz
-        _kst = _pytz.timezone('Asia/Seoul')
-        _today_kst = _dt2.now(_kst).date()
-    except Exception:
-        from datetime import datetime as _dt2, timezone as _tz2, timedelta as _td2
-        _today_kst = _dt2.now(_tz2(+_td2(hours=9))).date()
-
-    try:
-        raw = yf.download(
-            valid_tickers, period='5d', auto_adjust=True,
-            progress=False, threads=True, timeout=30
-        )
-        price_map = {}
-        for name, bal, cust, rcust, rbal, ticker in stock_list:
-            if not ticker:
-                continue
-            try:
-                closes = raw['Close'][ticker] if len(valid_tickers) > 1 else raw['Close']
-                closes = closes.dropna()
-                if len(closes) < 2:
-                    continue
-                # 오늘 데이터 있으면 오늘 현재가 / 없으면 마지막 거래일
-                curr_idx = -1
-                prev_idx = -2
-                # 마지막 인덱스가 오늘이면 그대로, 아니면 전전일 대비 계산 방지
-                last_date = closes.index[-1]
-                last_date_d = last_date.date() if hasattr(last_date, 'date') else last_date
-                if last_date_d < _today_kst:
-                    # 오늘 데이터 미수신 — 당일 등락률 산출 불가
-                    continue
-                curr = float(closes.iloc[curr_idx])
-                prev = float(closes.iloc[prev_idx])
-                if prev > 0:
-                    chg = round((curr - prev) / prev * 100, 2)
-                    price_map[name] = {'chg': chg, 'curr': curr, 'ticker': ticker}
-            except Exception:
-                continue
-    except Exception as e:
-        print(f'  [price_alert] yfinance 조회 실패: {e}')
+    # yfinance fast_info로 현재가·전일종가 직접 조회 (15분 지연)
+    price_map = {}
+    for name, bal, cust, rcust, rbal, ticker, top_rbal, top_cust, top_ratio in stock_list:
+        if not ticker:
+            continue
+        try:
+            fi = yf.Ticker(ticker).fast_info
+            curr = getattr(fi, 'last_price', None)
+            prev = getattr(fi, 'previous_close', None)
+            if not curr and isinstance(fi, dict):
+                curr = fi.get('lastPrice')
+                prev = fi.get('previousClose')
+            if curr and prev and float(prev) > 0:
+                chg = round((float(curr) - float(prev)) / float(prev) * 100, 2)
+                price_map[name] = {'chg': chg, 'curr': float(curr), 'ticker': ticker,
+                                   'top_rbal': top_rbal, 'top_cust': top_cust, 'top_ratio': top_ratio}
+        except Exception:
+            continue
+    if not price_map:
+        print(f'  [price_alert] fast_info 전체 조회 실패')
         return ''
 
     # -5% 이하 필터
     alerted_raw = [
         (name, bal, cust, rcust, rbal,
-         price_map[name]['chg'], price_map[name]['curr'], price_map[name]['ticker'])
+         price_map[name]['chg'], price_map[name]['curr'], price_map[name]['ticker'],
+         price_map[name].get('top_rbal',''), price_map[name].get('top_cust',''), price_map[name].get('top_ratio',''))
         for name, bal, cust, rcust, rbal, ticker in stock_list
         if name in price_map and price_map[name]['chg'] <= THRESHOLD
     ]
@@ -356,7 +345,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         [a for a in alerted_raw if a[3] > 0],
         key=lambda x: (-x[4], -x[3])
     )
-    MAX_DISPLAY = 5
+    MAX_DISPLAY = 3
     display_alerted = alerted_sorted[:MAX_DISPLAY]
     extra_alerted   = alerted_sorted[MAX_DISPLAY:]
 
@@ -372,17 +361,29 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         per_str = f'<br><span style="font-size:10px;font-weight:400;color:#b45309;">(인당 {per:.2f}억)</span>' if rcust > 1 else ''
         return f'<td style="padding:9px 6px;font-size:11px;font-weight:600;color:#92400e;text-align:right;white-space:nowrap;">{rcust:,}명 / {rbal:.0f}억{per_str}</td>'
 
+    def _top_risk_cell(top_rbal, top_cust, top_ratio):
+        if not top_rbal and not top_cust:
+            return '<td style="padding:9px 6px;font-size:10px;color:#cbd5e1;text-align:right;white-space:nowrap;">-</td>'
+        parts = []
+        if top_rbal: parts.append(f'{top_rbal}억')
+        if top_cust:
+            # 이름 마스킹: 성 + * 처리 (이미 마스킹된 형태로 CSV에서 올 예정)
+            parts.append(str(top_cust))
+        if top_ratio: parts.append(f'<span style="color:#ef4444;font-weight:700;">{top_ratio}%</span>')
+        return f'<td style="padding:9px 6px;font-size:11px;font-weight:600;color:#92400e;text-align:right;white-space:nowrap;line-height:1.6;">{" / ".join(parts)}</td>'
+
     rows_html = ''
-    for i, (name, bal, cust, rcust, rbal, chg, curr, ticker) in enumerate(display_alerted):
+    for i, (name, bal, cust, rcust, rbal, chg, curr, ticker, top_rbal, top_cust, top_ratio) in enumerate(display_alerted):
         bg = '#fafcff' if i % 2 == 0 else '#ffffff'
         rows_html += f'''
             <tr style="background:{bg};border-bottom:1px solid #f1f5f9;">
-              <td class="price-alert-td" style="padding:9px 6px;font-size:12px;font-weight:600;color:#1e293b;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{name}</td>
+              <td class="price-alert-td" style="padding:9px 6px;font-size:12px;font-weight:600;color:#1e293b;text-align:left;">
+                {name}<br><span style="font-size:11px;font-weight:700;color:#2563eb;">▼{abs(chg):.1f}%</span>
+              </td>
               <td class="price-alert-td" style="padding:9px 6px;font-size:12px;color:#1e293b;text-align:right;white-space:nowrap;">{bal:,.0f}억</td>
               <td class="price-alert-td" style="padding:9px 6px;font-size:12px;color:#1e293b;text-align:right;white-space:nowrap;">{cust:,}명</td>
               {_risk_cell(rcust, rbal)}
-              <td style="padding:9px 6px;font-size:12px;font-weight:600;color:#2563eb;text-align:right;white-space:nowrap;">▼{abs(chg):.1f}%</td>
-              <td style="padding:9px 6px;font-size:12px;color:#1e293b;text-align:right;white-space:nowrap;">{_fmt_price(curr, ticker)}</td>
+              {_top_risk_cell(top_rbal, top_cust, top_ratio)}
             </tr>'''
 
     return f'''
@@ -407,27 +408,25 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
           <td width="16%"><![endif]-->
         <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;width:100%;">
           <colgroup>
-            <col style="width:16.66%;">
-            <col style="width:13.33%;">
-            <col style="width:13.33%;">
-            <col style="width:16.66%;">
-            <col style="width:13.33%;">
-            <col style="width:13.33%;">
+            <col style="width:22%;">
+            <col style="width:15%;">
+            <col style="width:13%;">
+            <col style="width:22%;">
+            <col style="width:28%;">
           </colgroup>
           <thead>
             <tr bgcolor="#f8fafc" style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
-              <th style="padding:7px 6px;font-size:11px;color:#64748b;font-weight:500;text-align:left;">종목명</th>
+              <th style="padding:7px 6px;font-size:11px;color:#64748b;font-weight:500;text-align:left;">종목명 (등락)</th>
               <th style="padding:7px 6px;font-size:11px;color:#64748b;font-weight:500;text-align:right;">여신잔고</th>
               <th style="padding:7px 6px;font-size:11px;color:#64748b;font-weight:500;text-align:right;">고객수</th>
               <th style="padding:7px 6px;font-size:11px;color:#d97706;font-weight:600;text-align:right;">⚠ 위험고객</th>
-              <th style="padding:7px 6px;font-size:11px;color:#64748b;font-weight:500;text-align:right;">등락률</th>
-              <th style="padding:7px 6px;font-size:11px;color:#64748b;font-weight:500;text-align:right;">현재가</th>
+              <th style="padding:7px 6px;font-size:11px;color:#dc2626;font-weight:600;text-align:right;">최고 리스크</th>
             </tr>
           </thead>
           <tbody>{rows_html}
-            {('<tr style="background:#fff3cd;"><td colspan="6" style="padding:8px 10px;font-size:11px;color:#92400e;font-weight:600;border-top:1px solid #fde68a;">&#9888; 외 ' + str(len(extra_alerted)) + '개 종목 추가 탐지 — eBiz고객부 담당자 즉시 확인 <span style="font-weight:400;color:#b45309;font-size:10px;">(' + ", ".join([x[0] for x in extra_alerted[:5]]) + ("..." if len(extra_alerted) > 5 else "") + ')</span></td></tr>') if extra_alerted else ''}
+            {('<tr style="background:#fff3cd;"><td colspan="5" style="padding:8px 10px;font-size:11px;color:#92400e;font-weight:600;border-top:1px solid #fde68a;">&#9888; 외 ' + str(len(extra_alerted)) + '개 종목 추가 탐지 — eBiz고객부 담당자 즉시 확인 <span style="font-weight:400;color:#b45309;font-size:10px;">(' + ", ".join([x[0] for x in extra_alerted[:5]]) + ("..." if len(extra_alerted) > 5 else "") + ')</span></td></tr>') if extra_alerted else ''}
             <tr bgcolor="#fafafa" style="background:#fafafa;">
-              <td colspan="6" style="padding:7px 10px;font-size:10px;color:#94a3b8;border-top:1px solid #e2e8f0;">
+              <td colspan="5" style="padding:7px 10px;font-size:10px;color:#94a3b8;border-top:1px solid #e2e8f0;">
                 가격·등락률 출처: 야후파이낸스 (15분 지연) &nbsp;·&nbsp; 당일 -3% 초과 하락 + 위험고객 보유 종목만 표시
               </td>
             </tr>
@@ -2551,7 +2550,7 @@ def main():
             },
             json={
                 "model": CLAUDE_MODEL,
-                "max_tokens": 80,
+                "max_tokens": 100,
                 "messages": [{"role": "user", "content": f"아래 오늘의 리스크 현황을 보고, 전체 흐름을 40자 이내 한 문장으로만 작성하세요.\n문장 외 다른 내용 일절 금지. 기사·경쟁사·여신 리스크를 균형있게 반영. 예: '알테오젠 상폐·홈플러스 회생 부각, 경쟁사 신용한도 축소·여신 위험고객 다수'\n\n{filtered_titles}"}],
             },
             timeout=15,
