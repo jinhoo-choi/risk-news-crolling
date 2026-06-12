@@ -84,7 +84,7 @@ jobs:
           NAVER_CLIENT_ID:      ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET:  ${{ secrets.NAVER_CLIENT_SECRET }}
           GOOGLE_API_KEY:       ${{ secrets.GOOGLE_API_KEY }}
-          EMAIL_BCC:            ${{ secrets.EMAIL_BCC }}
+          EMAIL_CC:             ${{ secrets.EMAIL_CC }}
         run: python naver_news_monitor.py
 
       - name: 티커 매핑 갱신 (탐지 후)
