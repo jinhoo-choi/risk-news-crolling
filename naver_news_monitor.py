@@ -72,6 +72,7 @@ EMAIL_PASSWORD    = os.environ["EMAIL_PASSWORD"]
 EMAIL_RECEIVERS   = [e.strip() for e in os.environ["EMAIL_RECEIVER"].split(",")]
 NO_RESULT_RECEIVER = os.environ.get("NO_RESULT_RECEIVER", "").strip()  # 결과 없을 때 수신자
 ANTHROPIC_KEY     = os.environ["ANTHROPIC_API_KEY"]
+GOOGLE_API_KEY    = os.environ.get("GOOGLE_API_KEY", "")       # Gemini 필터링용 (없으면 Claude fallback)
 NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
 NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
@@ -95,7 +96,9 @@ USER_AGENTS = [
 ]
 SEEN_FILE = "seen_news.json"
 EXPOSURE_FILE = "exposure_data.csv"
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL",        "claude-haiku-4-5-20251001")  # Gemini fallback·재검증용
+CLAUDE_ACTION_MODEL = os.environ.get("CLAUDE_ACTION_MODEL", "claude-haiku-4-5-20251001")  # action 생성 전용
+GEMINI_MODEL        = os.environ.get("GEMINI_MODEL",        "gemini-1.5-flash")
 
 # 중복 제거 유사도 임계값 — 운영 중 조정 가능
 TITLE_SIM_THRESHOLD = 0.92  # 제목 유사도 (연합뉴스 재인용 대응)
@@ -311,18 +314,18 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     _kst = _pytz.timezone('Asia/Seoul')
     _today_str = _dt2.now(_kst).strftime('%Y-%m-%d')
 
-    price_map = {}
-    for name, bal, cust, rcust, rbal, ticker, top_rbal, top_cust, top_ratio in stock_list:
-        if not ticker:
-            continue
+    def _fetch_price(item):
+        """단일 종목 yfinance 조회 — (name, result_dict or None) 반환"""
+        _n, _bal, _cu, _rc, _rb, _tk, _tr, _tc, _trat = item
+        if not _tk:
+            return _n, None
         try:
-            hist = yf.Ticker(ticker).history(period='2d', interval='1d', auto_adjust=True)
+            hist = yf.Ticker(_tk).history(period='2d', interval='1d', auto_adjust=True)
             if hist is None or len(hist) < 2:
-                continue
+                return _n, None
             hist = hist.dropna(subset=['Close'])
             if len(hist) < 2:
-                continue
-            # 마지막 행 날짜 KST 변환 (UTC naive/aware 모두 대응)
+                return _n, None
             last_date = hist.index[-1]
             try:
                 if last_date.tzinfo is None:
@@ -333,15 +336,29 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             except Exception:
                 last_date_str = str(last_date)[:10]
             if last_date_str != _today_str:
-                continue  # 오늘 KST 데이터 없으면 스킵
+                return _n, None
             curr = float(hist['Close'].iloc[-1])
             prev = float(hist['Close'].iloc[-2])
             if prev > 0:
                 chg = round((curr - prev) / prev * 100, 2)
-                price_map[name] = {'chg': chg, 'curr': curr, 'ticker': ticker,
-                                   'top_rbal': top_rbal, 'top_cust': top_cust, 'top_ratio': top_ratio}
+                return _n, {'chg': chg, 'curr': curr, 'ticker': _tk,
+                            'top_rbal': _tr, 'top_cust': _tc, 'top_ratio': _trat}
         except Exception:
-            continue
+            pass
+        return _n, None
+
+    # ThreadPoolExecutor 병렬 조회 (순차 최대 90초 → 5~8초)
+    price_map = {}
+    _valid_items = [s for s in stock_list if s[5]]
+    with ThreadPoolExecutor(max_workers=10) as _pex:
+        _pfuts = {_pex.submit(_fetch_price, s): s for s in _valid_items}
+        for _pf in as_completed(_pfuts):
+            try:
+                _pname, _pres = _pf.result()
+                if _pres is not None:
+                    price_map[_pname] = _pres
+            except Exception:
+                continue
     if not price_map:
         print(f'  [price_alert] yfinance 조회 실패 또는 오늘 데이터 없음')
         return ''
@@ -1033,6 +1050,108 @@ def is_hard_excluded(title: str, desc: str = "") -> tuple:
             return True, pat
     return False, None
 
+
+def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
+    """Gemini Flash 1차 필터링 — response_schema 강제로 JSON 파싱 오류 원천 차단
+    반환: list(성공) | None(실패 → Claude fallback 트리거)
+    인터페이스: ai_filter_batch와 완전 동일
+    """
+    if not batch or not GOOGLE_API_KEY:
+        return None
+
+    try:
+        from google import genai as _genai
+        from google.genai import types as _gtypes
+    except ImportError:
+        print("  [Gemini] google-genai 미설치 — Claude fallback")
+        return None
+
+    numbered = "\n".join([
+        f"{i+offset+1}. {a['title']}\n   요약: {a.get('desc','')}"
+        for i, a in enumerate(batch)
+    ])
+    _fp = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+               "filter_prompt_gemini.txt"), encoding="utf-8").read()
+    prompt = _fp.replace("{numbered}", numbered)
+
+    # response_schema — 모든 필드 타입 명시, entities는 ARRAY(STRING)
+    _item_schema = _gtypes.Schema(
+        type=_gtypes.Type.OBJECT,
+        properties={
+            "id":         _gtypes.Schema(type=_gtypes.Type.INTEGER),
+            "relevant":   _gtypes.Schema(type=_gtypes.Type.BOOLEAN),
+            "grade":      _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
+            "reason":     _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
+            "confidence": _gtypes.Schema(type=_gtypes.Type.NUMBER),
+            "action":     _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
+            "entity":     _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
+            "entities":   _gtypes.Schema(
+                              type=_gtypes.Type.ARRAY,
+                              items=_gtypes.Schema(type=_gtypes.Type.STRING),
+                              nullable=True,
+                          ),
+            "event_type": _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
+        },
+        required=["id", "relevant", "confidence"],
+    )
+    _schema = _gtypes.Schema(type=_gtypes.Type.ARRAY, items=_item_schema)
+
+    for attempt in range(3):
+        try:
+            _t0 = time.time()
+            _client = _genai.Client(api_key=GOOGLE_API_KEY)
+            _resp = _client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=_gtypes.GenerateContentConfig(
+                    temperature=0.0,
+                    response_mime_type="application/json",
+                    response_schema=_schema,
+                ),
+            )
+            print(f"  [Gemini] 배치 {offset//50+1} 응답 {time.time()-_t0:.1f}초")
+
+            grades = json.loads(_resp.text)
+            if not isinstance(grades, list):
+                raise ValueError(f"Gemini 응답 list 아님: {type(grades)}")
+
+            # 파싱 후 article 필드 세팅 — ai_filter_batch와 동일 로직
+            grade_map = {g["id"]: g for g in grades}
+            result = []
+            for i, article in enumerate(batch):
+                info = grade_map.get(i + offset + 1, {})
+                article["_ai_confidence"] = info.get("confidence", None)
+                if info.get("relevant") and info.get("grade"):
+                    _ent = (info.get("entity") or "").strip()
+                    if not _ent:
+                        print(f"  [entity 빈값] relevant 무효화: {article.get('title','')[:30]}")
+                        continue
+                    article["grade"]      = info["grade"]
+                    article["reason"]     = info.get("reason") or ""
+                    article["action"]     = info.get("action") or ""
+                    article["entity"]     = _ent
+                    _ents_raw = info.get("entities") or []
+                    article["entities"]   = [e.strip() for e in _ents_raw if e and e.strip()] or [_ent]
+                    article["event_type"] = info.get("event_type") or ""
+                    _evt = article["event_type"]
+                    article["event_key"]  = f"{_ent}_{_evt}" if _ent and _evt else ""
+                    article["_gemini_filtered"] = True  # Claude 재검증 트리거용
+                    result.append(article)
+            return result
+
+        except Exception as e:
+            _es = str(e)
+            # 429·503·quota → 즉시 None (Claude fallback)
+            if any(x in _es for x in ["429", "503", "quota", "RESOURCE_EXHAUSTED"]):
+                print(f"  [Gemini] 할당량/서버 오류 → Claude fallback: {_es[:60]}")
+                return None
+            print(f"  [Gemini] 오류 시도 {attempt+1}/3: {_es[:80]}")
+            if attempt < 2:
+                time.sleep(random.uniform(5, 15))
+                continue
+            return None
+    return None
+
 def ai_filter_batch(batch: list, offset: int = 0) -> list:
     """50건씩 배치로 AI 필터링"""
     if not batch:
@@ -1447,6 +1566,65 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
 
     return result_deduped
 
+
+def _verify_urgent_by_claude(urgent_articles: list):
+    """Gemini 긴급 분류 기사를 Claude가 재검증 — 인플레이스 등급 수정
+    _force_urgent(당사 직접 이슈)는 호출 전에 이미 제외됨
+    """
+    if not urgent_articles:
+        return
+
+    lines_txt = "\n".join(
+        f"{i+1}. [{a.get('entity','')}] {a['title']} "
+        f"(reason: {a.get('reason','')}, conf: {a.get('_ai_confidence',0):.2f})"
+        for i, a in enumerate(urgent_articles)
+    )
+    prompt = (
+        "당신은 한국투자증권 eBiz본부 리스크 담당자입니다.\n"
+        "Gemini AI가 아래 기사들을 '긴급'으로 분류했습니다.\n"
+        "각 기사가 정말 긴급(손실·부실 확정, 즉각 대응 필요)인지,\n"
+        "주의(가능성·조사 착수 단계)로 낮춰야 하는지 검토하세요.\n\n"
+        "긴급 유지 기준: 상장폐지·거래정지·부도·파산·회생 확정, MTS 장애, 당사 직접 제재\n"
+        "주의 강등 기준: 심의 예정·가능성·우려·조사 착수·감사의견 미확정\n\n"
+        f"{lines_txt}\n\n"
+        'JSON 배열만 반환. 예시: [{"id":1,"grade":"긴급"},{"id":2,"grade":"주의"}]'
+    )
+    try:
+        _res = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": CLAUDE_MODEL,
+                "max_tokens": 300,
+                "temperature": 0.0,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=20,
+        )
+        _res.raise_for_status()
+        _raw = _res.json().get("content", [{}])[0].get("text", "").strip()
+        _raw = _raw.replace("```json", "").replace("```", "").strip()
+        _s = _raw.find("["); _e = _raw.rfind("]") + 1
+        if _s != -1 and _e > _s:
+            _raw = _raw[_s:_e]
+        _verdicts = json.loads(_raw)
+        _vmap = {v["id"]: v.get("grade", "긴급") for v in _verdicts if isinstance(v, dict)}
+        for i, a in enumerate(urgent_articles):
+            _vg = _vmap.get(i + 1, "긴급")
+            if _vg != "긴급":
+                a["grade"] = "주의"
+                a["customer_notice"] = None
+                print(f"  [Claude 재검증] 긴급→주의: {a['title'][:40]}")
+            else:
+                print(f"  [Claude 재검증] 긴급 유지: {a['title'][:40]}")
+    except Exception as e:
+        print(f"  [Claude 재검증] 오류 — 원래 등급 유지: {e}")
+
+
 def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
     """전체 기사를 50건씩 배치로 나눠 AI 필터링 후 중복 제거"""
     if not articles:
@@ -1455,19 +1633,28 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
     batch_size = 50
     ai_fail_count = 0
     MAX_AI_FAILS = 3
+    _used_gemini = False  # 긴급 재검증 트리거용
     for i in range(0, len(articles), batch_size):
         if ai_fail_count >= MAX_AI_FAILS:
             print(f"  ❗ AI 연속 {MAX_AI_FAILS}회 실패 — circuit breaker 작동, 필터링 중단")
             break
         batch = articles[i:i+batch_size]
         print(f"  배치 {i//batch_size+1}/{-(-len(articles)//batch_size)} 처리 중... ({len(batch)}건)")
-        batch_result = ai_filter_batch(batch, offset=i)
+        # ── 1차: Gemini Flash / 실패 시 Claude fallback ──────────────
+        if GOOGLE_API_KEY:
+            batch_result = ai_filter_batch_gemini(batch, offset=i)
+            if batch_result is None:
+                print(f"  [Gemini 실패] Claude fallback (배치 {i//batch_size+1})")
+                batch_result = ai_filter_batch(batch, offset=i)
+            else:
+                _used_gemini = True
+        else:
+            batch_result = ai_filter_batch(batch, offset=i)
+        # ─────────────────────────────────────────────────────────────
         if batch_result is None:
-            # None = API 호출 실패 → circuit breaker 카운트
             ai_fail_count += 1
             print(f"  배치 실패 ({ai_fail_count}/{MAX_AI_FAILS})")
         else:
-            # [] = 정상 응답이지만 리스크 기사 없음 — 실패 아님
             ai_fail_count = 0
             result.extend(batch_result)
         if i + batch_size < len(articles):
@@ -1479,6 +1666,15 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
         print(f"  dedup 후 {len(result)}건")
 
     result = regrade_by_score(result, exposure_data=exposure_data)
+
+    # ── Gemini 사용 시 긴급 기사 Claude 재검증 ────────────────────────
+    if _used_gemini:
+        _to_verify = [a for a in result
+                      if a.get('grade') == '긴급' and not a.get('_force_urgent')]
+        if _to_verify:
+            print(f"  [Claude 재검증] 긴급 {len(_to_verify)}건 검증 중...")
+            _verify_urgent_by_claude(_to_verify)
+    # ─────────────────────────────────────────────────────────────────
 
     return result
 
@@ -2471,7 +2667,7 @@ def main():
                     "content-type": "application/json",
                 },
                 json={
-                    "model": CLAUDE_MODEL,
+                    "model": CLAUDE_ACTION_MODEL,
                     "max_tokens": 800,
                     "temperature": 0.0,
                     "messages": [{"role": "user", "content": (
