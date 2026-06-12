@@ -223,7 +223,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     except ImportError:
         return ''
 
-    THRESHOLD = -5.0
+    THRESHOLD = -3.0
 
     # 잔고 기준일 파싱
     bal_date = ref_date
@@ -462,7 +462,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             {('<tr style="background:#fff3cd;"><td colspan="5" style="padding:8px 10px;font-size:11px;color:#92400e;font-weight:600;border-top:1px solid #fde68a;">&#9888; 외 ' + str(len(extra_alerted)) + '개 종목 추가 탐지 — eBiz고객부 담당자 즉시 확인 <span style="font-weight:400;color:#b45309;font-size:10px;">(' + ", ".join([x[0] for x in sorted(extra_alerted, key=lambda x: x[4], reverse=True)[:5]]) + ("..." if len(extra_alerted) > 5 else "") + ')</span></td></tr>') if extra_alerted else ''}
             <tr bgcolor="#fafafa" style="background:#fafafa;">
               <td colspan="5" style="padding:7px 10px;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
-                가격·등락률 출처: 야후파이낸스 (15분 지연) &nbsp;·&nbsp; 당일 -5% 초과 하락 + 위험고객 보유 종목만 표시
+                가격·등락률 출처: 야후파이낸스 (15분 지연) &nbsp;·&nbsp; 당일 -3% 초과 하락 + 위험고객 보유 종목만 표시
               </td>
             </tr>
           </tbody>
@@ -2114,7 +2114,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         <tr>
           <td valign="middle">
             <p style="margin:0 0 4px 0;font-size:19px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇</p>
-            <p style="margin:0 0 3px 0;font-size:10px;color:#c8d8f0;text-align:right;">Powered by Claude AI</p>
+            <p style="margin:0 0 3px 0;font-size:10px;color:#c8d8f0;text-align:right;">Claude {CLAUDE_MODEL.split("-")[1].capitalize()} / Gemini {GEMINI_MODEL.split("-")[-1].capitalize()}</p>
             <p style="margin:0;font-size:13px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (KST)</p>
           </td>
         </tr>
@@ -2159,7 +2159,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
   <tr>
     <td class="footer-td" style="padding:14px 22px;background:#fff;border-top:1px solid #e2e8f0;">
       <p style="margin:0;font-size:13px;color:#94a3b8;line-height:2.0;">
-        네이버API 수집 뉴스를 Claude AI가 eBiz본부 관점으로 분석·선별하여 발송합니다.<br>
+        본 이메일은 Claude, Gemini가 심층 분석·선별하여 발송합니다.<br>
         담당자 &nbsp;최진후 차장
       </p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
@@ -2206,7 +2206,7 @@ def build_empty_html(now) -> str:
   <tr>
     <td class="header-td" style="background:#3b5491;padding:22px 26px;">
       <p style="margin:0 0 6px 0;font-size:20px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇
-        <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">Powered by Claude AI</span>
+        <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">Claude {{CLAUDE_MODEL.split('-')[1].capitalize()}} / Gemini {{GEMINI_MODEL.split('-')[-1].capitalize()}}</span>
       </p>
       <p style="margin:0;font-size:14px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</p>
     </td>
@@ -2219,7 +2219,7 @@ def build_empty_html(now) -> str:
   <tr>
     <td style="padding:14px 22px;border-top:1px solid #e2e8f0;">
       <p style="margin:0;font-size:13px;color:#94a3b8;line-height:2.0;">
-        네이버API 수집 뉴스를 Claude AI가 eBiz본부 관점으로 분석·선별하여 발송합니다.<br>
+        본 이메일은 Claude, Gemini가 심층 분석·선별하여 발송합니다.<br>
         담당자 &nbsp;최진후 차장
       </p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
