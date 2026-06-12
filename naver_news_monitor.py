@@ -305,10 +305,11 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     if not valid_tickers:
         return ''
 
-    # yfinance history(period='2d') 방식 — 날짜 기반 오늘 데이터 검증
+    # yfinance history — KST 오늘 날짜 기준, 장중 데이터 포함
     from datetime import datetime as _dt2, timezone as _tz2, timedelta as _td2
-    _kst_now = _dt2.now(_tz2(_td2(hours=9)))
-    _today_str = _kst_now.strftime('%Y-%m-%d')
+    import pytz as _pytz
+    _kst = _pytz.timezone('Asia/Seoul')
+    _today_str = _dt2.now(_kst).strftime('%Y-%m-%d')
 
     price_map = {}
     for name, bal, cust, rcust, rbal, ticker, top_rbal, top_cust, top_ratio in stock_list:
@@ -321,13 +322,18 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             hist = hist.dropna(subset=['Close'])
             if len(hist) < 2:
                 continue
-            # 마지막 행이 오늘 날짜인지 확인 (KST 기준)
+            # 마지막 행 날짜 KST 변환 (UTC naive/aware 모두 대응)
             last_date = hist.index[-1]
-            if hasattr(last_date, 'tz_convert'):
-                last_date = last_date.tz_convert('Asia/Seoul')
-            last_date_str = last_date.strftime('%Y-%m-%d')
+            try:
+                if last_date.tzinfo is None:
+                    last_date = last_date.tz_localize('UTC').tz_convert('Asia/Seoul')
+                else:
+                    last_date = last_date.tz_convert('Asia/Seoul')
+                last_date_str = last_date.strftime('%Y-%m-%d')
+            except Exception:
+                last_date_str = str(last_date)[:10]
             if last_date_str != _today_str:
-                continue  # 오늘 데이터 없으면 스킵
+                continue  # 오늘 KST 데이터 없으면 스킵
             curr = float(hist['Close'].iloc[-1])
             prev = float(hist['Close'].iloc[-2])
             if prev > 0:
@@ -358,6 +364,8 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         [a for a in alerted_raw if a[3] > 0],
         key=lambda x: (-x[4], -x[3])
     )
+    if not alerted_sorted:
+        return ''
     MAX_DISPLAY = 3
     display_alerted = alerted_sorted[:MAX_DISPLAY]
     extra_alerted   = alerted_sorted[MAX_DISPLAY:]
@@ -2492,7 +2500,19 @@ def main():
             if not raw:
                 return
             raw = raw.replace("```json", "").replace("```", "").strip()
-            result = json.loads(raw)
+            # JSON 객체 범위만 추출 (Extra data 방어)
+            _s = raw.find("{")
+            _e = raw.rfind("}") + 1
+            if _s != -1 and _e > _s:
+                raw = raw[_s:_e]
+            try:
+                result = json.loads(raw)
+            except Exception:
+                try:
+                    from json_repair import repair_json
+                    result = json.loads(repair_json(raw))
+                except Exception:
+                    result = {}
             if result.get("action"):
                 action_text = result["action"]
                 if _body_failed:
