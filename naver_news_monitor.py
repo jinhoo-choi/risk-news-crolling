@@ -2158,7 +2158,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
     </table>
   </td></tr>
 
-  <tr><td class="rows-td" style="padding:0 0 12px 0;">{rows}</td></tr>
+  <tr><td class="rows-td" style="padding:0 0 12px 0;">{rows if rows else '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;"><tr><td style="padding:32px 24px;text-align:center;"><p style="margin:0;font-size:15px;color:#94a3b8;line-height:1.8;">리스크에 해당하는 뉴스가 없습니다.<br><span style="font-size:13px;color:#cbd5e1;">여신잔고 위험고객 현황을 확인하시기 바랍니다.</span></p></td></tr></table>'}</td></tr>
 
   <tr>
     <td class="footer-td" style="padding:14px 22px;background:#fff;border-top:1px solid #e2e8f0;">
@@ -2619,10 +2619,23 @@ def main():
     print(f"필터링 후 {len(filtered)}건 선별")
 
     if not filtered:
-        print("AI 필터링 결과 없음 — 결과 없음 메일 발송 (특정인만)")
         now = datetime.now(timezone(timedelta(hours=9)))
-        subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
-        send_email_no_result(subject, build_empty_html(now))
+        # 여신잔고 위험고객 여부 확인 — 있으면 전체 발송
+        _price_section = build_price_alert_section(exposure_data, "")
+        if _price_section:
+            print("AI 필터링 결과 없음 — 여신잔고 위험고객 있음, 전체 발송")
+            subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 여신잔고 위험고객 탐지"
+            _ref_date = next(iter(exposure_data.values()))[0].get("기준일", "") if exposure_data else ""
+            _today_str = now.strftime("%m월 %d일")
+            _ai_summary = "금일 리스크 뉴스 없음 — 여신잔고 위험고객 현황 확인 필요"
+            _html = build_email_html([], total_count=total_count, ai_summary=_ai_summary,
+                                     exposure_data=exposure_data, ref_date=_ref_date,
+                                     competitor_notices=None, today_str=_today_str)
+            send_email(subject, _html)
+        else:
+            print("AI 필터링 결과 없음 — 결과 없음 메일 발송 (특정인만)")
+            subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
+            send_email_no_result(subject, build_empty_html(now))
         save_seen_urls(seen_urls)
         return
 
