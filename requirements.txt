@@ -4,3 +4,4 @@ pandas
 rapidfuzz
 json-repair
 yfinance
+pytz
