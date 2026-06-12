@@ -1151,8 +1151,18 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
         except Exception as e:
             _es = str(e)
             # 429·503·quota → 즉시 None (Claude fallback)
-            if any(x in _es for x in ["404", "429", "503", "quota", "RESOURCE_EXHAUSTED", "NOT_FOUND"]):
-                print(f"  [Gemini] 할당량/서버 오류 → Claude fallback: {_es[:60]}")
+            if any(x in _es for x in ["404", "NOT_FOUND"]):
+                print(f"  [Gemini] 모델 오류 → Claude fallback: {_es[:60]}")
+                return None
+            if any(x in _es for x in ["429", "quota", "RESOURCE_EXHAUSTED"]):
+                if attempt < 2:
+                    print(f"  [Gemini] 429 한도초과 — 60초 대기 후 재시도 ({attempt+1}/3)")
+                    time.sleep(60)
+                    continue
+                print(f"  [Gemini] 429 재시도 소진 → Claude fallback")
+                return None
+            if "503" in _es:
+                print(f"  [Gemini] 503 서버오류 → Claude fallback: {_es[:60]}")
                 return None
             print(f"  [Gemini] 오류 시도 {attempt+1}/3: {_es[:80]}")
             if attempt < 2:
@@ -1250,11 +1260,11 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                     article["reason"]     = info.get("reason", "")
                     article["action"]     = info.get("action", "")
                     article["entity"]     = info.get("entity", "").strip()
-                    article["entities"]   = [e.strip() for e in info.get("entities", []) if e.strip()] or [info.get("entity","").strip()]
+                    article["entities"]   = [e.strip() for e in (info.get("entities") or []) if e and e.strip()] or [info.get("entity","").strip()]
                     article["event_type"] = info.get("event_type", "")
                     # event_key: "entity_eventtype" 형태로 생성 — 사건 단위 dedup 기준
                     _ent = info.get("entity", "").strip()
-                    _evt = info.get("event_type", "").strip()
+                    _evt = (info.get("event_type") or "").strip()
                     article["event_key"]  = f"{_ent}_{_evt}" if _ent and _evt else ""
                     result.append(article)
             return result
@@ -2210,7 +2220,7 @@ def build_empty_html(now) -> str:
   <tr>
     <td class="header-td" style="background:#3b5491;padding:22px 26px;">
       <p style="margin:0 0 6px 0;font-size:20px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇
-        <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">Claude {{CLAUDE_MODEL.split('-')[1].capitalize()}} / Gemini {{GEMINI_MODEL.split('-')[-1].capitalize()}}</span>
+        <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">Claude {CLAUDE_MODEL.split("-")[1].capitalize()} / Gemini {GEMINI_MODEL.split("-")[-1].capitalize()}</span>
       </p>
       <p style="margin:0;font-size:14px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</p>
     </td>
