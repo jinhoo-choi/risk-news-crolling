@@ -1101,9 +1101,9 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
     )
     _schema = _gtypes.Schema(type=_gtypes.Type.ARRAY, items=_item_schema)
 
-    # 분당 15회 제한 대응 — 첫 배치 제외, 이후 배치는 4초 간격
+    # TPM 분산 — 첫 배치 제외, 이후 배치는 10초 간격
     if offset > 0:
-        time.sleep(4)
+        time.sleep(10)
 
     for attempt in range(3):
         try:
@@ -1151,18 +1151,8 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
         except Exception as e:
             _es = str(e)
             # 429·503·quota → 즉시 None (Claude fallback)
-            if any(x in _es for x in ["404", "NOT_FOUND"]):
-                print(f"  [Gemini] 모델 오류 → Claude fallback: {_es[:60]}")
-                return None
-            if any(x in _es for x in ["429", "quota", "RESOURCE_EXHAUSTED"]):
-                if attempt < 2:
-                    print(f"  [Gemini] 429 한도초과 — 60초 대기 후 재시도 ({attempt+1}/3)")
-                    time.sleep(60)
-                    continue
-                print(f"  [Gemini] 429 재시도 소진 → Claude fallback")
-                return None
-            if "503" in _es:
-                print(f"  [Gemini] 503 서버오류 → Claude fallback: {_es[:60]}")
+            if any(x in _es for x in ["404", "429", "503", "quota", "RESOURCE_EXHAUSTED", "NOT_FOUND"]):
+                print(f"  [Gemini] 할당량/서버 오류 → Claude fallback: {_es[:60]}")
                 return None
             print(f"  [Gemini] 오류 시도 {attempt+1}/3: {_es[:80]}")
             if attempt < 2:
