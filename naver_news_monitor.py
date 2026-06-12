@@ -98,7 +98,7 @@ SEEN_FILE = "seen_news.json"
 EXPOSURE_FILE = "exposure_data.csv"
 CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL",        "claude-haiku-4-5-20251001")  # Gemini fallback·재검증용
 CLAUDE_ACTION_MODEL = os.environ.get("CLAUDE_ACTION_MODEL", "claude-haiku-4-5-20251001")  # action 생성 전용
-GEMINI_MODEL        = os.environ.get("GEMINI_MODEL",        "gemini-1.5-flash")
+GEMINI_MODEL        = os.environ.get("GEMINI_MODEL",        "gemini-2.0-flash")
 
 # 중복 제거 유사도 임계값 — 운영 중 조정 가능
 TITLE_SIM_THRESHOLD = 0.92  # 제목 유사도 (연합뉴스 재인용 대응)
@@ -308,11 +308,14 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     if not valid_tickers:
         return ''
 
-    # yfinance history — KST 오늘 날짜 기준, 장중 데이터 포함
+    # yfinance history — KST 기준 최근 거래일 데이터 사용
+    # 날짜 일치 대신 '2거래일 이내' 조건 — 장중/장전/주말 모두 대응
     from datetime import datetime as _dt2, timezone as _tz2, timedelta as _td2
     import pytz as _pytz
     _kst = _pytz.timezone('Asia/Seoul')
-    _today_str = _dt2.now(_kst).strftime('%Y-%m-%d')
+    _now_kst = _dt2.now(_kst)
+    # 최대 허용 데이터 연령: 평일 2일 (주말/공휴일 포함 최대 4일)
+    _max_age_days = 4
 
     def _fetch_price(item):
         """단일 종목 yfinance 조회 — (name, result_dict or None) 반환"""
@@ -320,22 +323,24 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         if not _tk:
             return _n, None
         try:
-            hist = yf.Ticker(_tk).history(period='2d', interval='1d', auto_adjust=True)
+            hist = yf.Ticker(_tk).history(period='5d', interval='1d', auto_adjust=True)
             if hist is None or len(hist) < 2:
                 return _n, None
             hist = hist.dropna(subset=['Close'])
             if len(hist) < 2:
                 return _n, None
+            # 마지막 거래일 KST 변환
             last_date = hist.index[-1]
             try:
                 if last_date.tzinfo is None:
-                    last_date = last_date.tz_localize('UTC').tz_convert('Asia/Seoul')
+                    last_dt_kst = last_date.tz_localize('UTC').tz_convert('Asia/Seoul')
                 else:
-                    last_date = last_date.tz_convert('Asia/Seoul')
-                last_date_str = last_date.strftime('%Y-%m-%d')
+                    last_dt_kst = last_date.tz_convert('Asia/Seoul')
             except Exception:
-                last_date_str = str(last_date)[:10]
-            if last_date_str != _today_str:
+                last_dt_kst = _now_kst  # 변환 실패 시 오늘로 가정
+            # 최근 거래일이 너무 오래됐으면 제외 (상장폐지·거래정지 종목 방어)
+            age_days = (_now_kst.replace(tzinfo=None) - last_dt_kst.replace(tzinfo=None)).days
+            if age_days > _max_age_days:
                 return _n, None
             curr = float(hist['Close'].iloc[-1])
             prev = float(hist['Close'].iloc[-2])
@@ -1142,7 +1147,7 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
         except Exception as e:
             _es = str(e)
             # 429·503·quota → 즉시 None (Claude fallback)
-            if any(x in _es for x in ["429", "503", "quota", "RESOURCE_EXHAUSTED"]):
+            if any(x in _es for x in ["404", "429", "503", "quota", "RESOURCE_EXHAUSTED", "NOT_FOUND"]):
                 print(f"  [Gemini] 할당량/서버 오류 → Claude fallback: {_es[:60]}")
                 return None
             print(f"  [Gemini] 오류 시도 {attempt+1}/3: {_es[:80]}")
