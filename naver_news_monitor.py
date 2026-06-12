@@ -265,7 +265,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             # 최고리스크 컬럼 (CSV에 없으면 빈값 유지)
             _top_rbal  = r.get('최고리스크잔고', '')
             _top_cust  = r.get('최고리스크고객', '')
-            _top_ratio = r.get('담보유지비율', '')
+            _top_ratio = r.get('유지담보비율', '')
             if _top_rbal:
                 credit_map[name]['top_rbal']  = _top_rbal
                 credit_map[name]['top_cust']  = _top_cust
@@ -2472,7 +2472,7 @@ def main():
                 },
                 json={
                     "model": CLAUDE_MODEL,
-                    "max_tokens": 500,
+                    "max_tokens": 800,
                     "temperature": 0.0,
                     "messages": [{"role": "user", "content": (
                         open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
