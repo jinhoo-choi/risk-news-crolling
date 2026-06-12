@@ -2412,13 +2412,16 @@ def send_email(subject: str, html_body: str):
     msg["Subject"] = subject
     msg["From"]    = f"❗ eBiz 리스크봇 <{EMAIL_SENDER}>"
     msg["To"]      = ", ".join(EMAIL_RECEIVERS)
+    if EMAIL_BCC:
+        msg["Bcc"] = ", ".join(EMAIL_BCC)
     msg.attach(MIMEText(html_body, "html", "utf-8"))
+    _all_rcv = EMAIL_RECEIVERS + EMAIL_BCC
     for attempt in range(3):
         try:
             with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
                 server.ehlo()
                 server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-                server.sendmail(EMAIL_SENDER, EMAIL_RECEIVERS, msg.as_string())
+                server.sendmail(EMAIL_SENDER, _all_rcv, msg.as_string())
             print("이메일 발송 완료")
             return
         except smtplib.SMTPAuthenticationError as e:
