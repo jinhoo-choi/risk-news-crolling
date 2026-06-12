@@ -1101,6 +1101,10 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
     )
     _schema = _gtypes.Schema(type=_gtypes.Type.ARRAY, items=_item_schema)
 
+    # 분당 15회 제한 대응 — 첫 배치 제외, 이후 배치는 4초 간격
+    if offset > 0:
+        time.sleep(4)
+
     for attempt in range(3):
         try:
             _t0 = time.time()
@@ -1185,7 +1189,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 },
                 json={
                     "model": CLAUDE_MODEL,
-                    "max_tokens": 6000,
+                    "max_tokens": 8000,
                     "temperature": 0.0,
                     "messages": [{"role": "user", "content": [
                         {"type": "text", "text": _fp_static,
