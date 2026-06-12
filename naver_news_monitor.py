@@ -2412,10 +2412,10 @@ def send_email(subject: str, html_body: str):
     msg["Subject"] = subject
     msg["From"]    = f"❗ eBiz 리스크봇 <{EMAIL_SENDER}>"
     msg["To"]      = ", ".join(EMAIL_RECEIVERS)
-    if EMAIL_BCC:
-        msg["Bcc"] = ", ".join(EMAIL_BCC)
+    if EMAIL_CC:
+        msg["Cc"] = ", ".join(EMAIL_CC)
     msg.attach(MIMEText(html_body, "html", "utf-8"))
-    _all_rcv = EMAIL_RECEIVERS + EMAIL_BCC
+    _all_rcv = EMAIL_RECEIVERS + EMAIL_CC
     for attempt in range(3):
         try:
             with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
