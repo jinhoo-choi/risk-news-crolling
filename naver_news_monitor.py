@@ -1192,6 +1192,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                     "model": CLAUDE_MODEL,
                     "max_tokens": 8000,
                     "temperature": 0.0,
+                    "system": "당신은 JSON API입니다. 설명·요약·표·마크다운 없이 JSON 배열만 출력하세요. 출력은 반드시 [ 로 시작하고 ] 로 끝나야 합니다. 코드블록(```)도 사용하지 마세요.",
                     "messages": [{"role": "user", "content": [
                         {"type": "text", "text": _fp_static,
                          "cache_control": {"type": "ephemeral"}},
@@ -1238,6 +1239,8 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 raise ValueError(f"JSON 파싱 실패: {je}") from je
             if not isinstance(grades, list):
                 raise ValueError(f"grades가 list가 아님: {type(grades)}")
+            if grades and not all(isinstance(g, dict) for g in grades):
+                raise ValueError(f"grades 요소가 dict가 아님 (markdown 응답 가능성): {type(grades[0])}")
             grade_map = {g["id"]: g for g in grades}
             result = []
             for i, article in enumerate(batch):
@@ -1611,6 +1614,7 @@ def _verify_urgent_by_claude(urgent_articles: list):
                 "model": CLAUDE_MODEL,
                 "max_tokens": 300,
                 "temperature": 0.0,
+                "system": "당신은 JSON API입니다. 설명 없이 JSON 배열만 출력하세요.",
                 "messages": [{"role": "user", "content": prompt}],
             },
             timeout=20,
@@ -2622,6 +2626,8 @@ def main():
         print(f"  중복 사건 제거: {before_combo}건 → {len(filtered)}건")
     print(f"필터링 후 {len(filtered)}건 선별")
 
+    total_count = len(raw_articles) + len(hard_excluded_articles)
+
     if not filtered:
         now = datetime.now(timezone(timedelta(hours=9)))
         # 여신잔고 위험고객 여부 확인 — 있으면 전체 발송
@@ -2771,7 +2777,6 @@ def main():
         print("  익스포저 데이터 없음 — CSV 파일 미확인")
 
     subject = f"❗ [리스크 탐지] {now_str_full} 기준"
-    total_count = len(raw_articles) + len(hard_excluded_articles)
 
     urgent_cnt = len([a for a in filtered if a["grade"]=="긴급"])
     caution_cnt = len([a for a in filtered if a["grade"]=="주의"])
