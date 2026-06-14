@@ -1,3 +1,17 @@
+ENTITY_ALIAS_MAP = {
+    # AI가 영문/약어로 추출하는 경우 → CSV 종목명 한글 표기 매핑
+    "JTBC": "제이티비씨",
+    "CJ": "씨제이",
+    "LG": "엘지",
+    "SK": "에스케이",
+    "GS": "지에스",
+    "DB": "디비",
+    "KB": "케이비",
+    "KT": "케이티",
+    "HD": "에이치디",
+    "HL": "에이치엘",
+}
+
 RELATED_STOCK_MAP = {
     # 증권사 → 상장 지주·모회사
     "한국투자증권":   "한국금융지주",
@@ -555,6 +569,16 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
     # 1) 정확 매칭 — O(1)
     if entity in exposure_data:
         return exposure_data[entity]
+
+    # 1.5) 영문/약어 별칭 변환 후 재시도 (예: JTBC → 제이티비씨)
+    for alias, kor in ENTITY_ALIAS_MAP.items():
+        if entity.upper().startswith(alias):
+            converted = kor + entity[len(alias):]
+            if converted in exposure_data:
+                return exposure_data[converted]
+            results_alias = find_exposure(converted, exposure_data)
+            if results_alias:
+                return results_alias
 
     # 2) 부분포함 + prefix 6자 — entity가 name에 포함되거나 그 반대
     #    정규식 컴파일 1회만 수행 (루프 밖)
@@ -2503,6 +2527,7 @@ def main():
         subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 신규 뉴스 없음"
         send_email_no_result(subject, build_empty_html(now))
         save_seen_urls(seen_urls)
+        save_filter_log([], [], [], [])
         return
 
     before_hard = len(raw_articles)
@@ -2647,6 +2672,7 @@ def main():
             subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
             send_email_no_result(subject, build_empty_html(now))
         save_seen_urls(seen_urls)
+        save_filter_log(raw_articles, hard_excluded_articles, ai_filtered_articles, filtered)
         return
 
     print("  본문 크롤링 중... (긴급·주의만)")
