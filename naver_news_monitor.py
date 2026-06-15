@@ -580,38 +580,46 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
     """entity와 종목명 딕셔너리 매칭 — O(1) 정확 매칭 우선, fallback prefix 6자
     성능 최적화: 정확 매칭(O1) → 부분포함 문자열(O(n)) → prefix 6자(O(n))
     2만행에서도 정확 매칭은 즉시, 미등록 종목도 빠르게 반환
+    정확 매칭이 있어도, entity를 포함하는 다른 종목명(법인명 표기차이: "중앙일보"↔"중앙일보(주)",
+    "에스엘엘중앙"↔"에스엘엘중앙 주식회사")이 있으면 함께 병합 — 누락 방지
     """
     if not entity or not exposure_data:
         return []
 
-    # 1) 정확 매칭 — O(1)
+    results = []
+    seen_names = set()
+
+    # 1) 정확 매칭 — O(1). 있어도 즉시 반환하지 않고 2)에서 추가 매칭 계속 탐색
     if entity in exposure_data:
-        return exposure_data[entity]
+        results.extend(exposure_data[entity])
+        seen_names.add(entity)
+    else:
+        # 1.5) 영문/약어 별칭 변환 후 재시도 (예: JTBC → 제이티비씨) — 검증된 사전, 최우선
+        for alias, kor in ENTITY_ALIAS_MAP.items():
+            if entity.upper().startswith(alias):
+                converted = kor + entity[len(alias):]
+                if converted in exposure_data:
+                    results.extend(exposure_data[converted])
+                    seen_names.add(converted)
+                    break
+                results_alias = find_exposure(converted, exposure_data)
+                if results_alias:
+                    return results_alias
 
-    # 1.5) 영문/약어 별칭 변환 후 재시도 (예: JTBC → 제이티비씨) — 검증된 사전, 최우선
-    for alias, kor in ENTITY_ALIAS_MAP.items():
-        if entity.upper().startswith(alias):
-            converted = kor + entity[len(alias):]
-            if converted in exposure_data:
-                return exposure_data[converted]
-            results_alias = find_exposure(converted, exposure_data)
-            if results_alias:
-                return results_alias
-
-    # 1.6) 사전에 없는 영문 약어 — 알파벳 음역 fallback (예: NEW123 → 엔이더블유...)
-    if re.match(r'^[A-Za-z]', entity):
-        translit = _alpha_to_korean(entity)
-        if translit != entity.upper():
-            if translit in exposure_data:
-                return exposure_data[translit]
-            results_translit = find_exposure(translit, exposure_data)
-            if results_translit:
-                return results_translit
+        # 1.6) 사전에 없는 영문 약어 — 알파벳 음역 fallback (예: NEW123 → 엔이더블유...)
+        if not results and re.match(r'^[A-Za-z]', entity):
+            translit = _alpha_to_korean(entity)
+            if translit != entity.upper():
+                if translit in exposure_data:
+                    results.extend(exposure_data[translit])
+                    seen_names.add(translit)
+                else:
+                    results_translit = find_exposure(translit, exposure_data)
+                    if results_translit:
+                        return results_translit
 
     # 2) 부분포함 + prefix 6자 — entity가 name에 포함되거나 그 반대
     #    정규식 컴파일 1회만 수행 (루프 밖)
-    results = []
-    seen_names = set()
     clean_e = re.sub(r'[(주)㈜\s]', '', entity)
     ce_len = len(clean_e)
 
@@ -1784,7 +1792,7 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
     seen_row_keys = set()
     for ent in entities_list:
         for row in find_exposure(ent, exposure_data):
-            row_key = (row.get("종목명",""), row.get("종목유형",""))
+            row_key = (row.get("종목명",""), row.get("종목유형",""), row.get("종목코드",""))
             if row_key not in seen_row_keys:
                 seen_row_keys.add(row_key)
                 all_rows.append(row)
@@ -1856,11 +1864,20 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
     bond_rows           = [r for r in all_rows if r.get("종목유형","") in BOND_TYPES]
     yeosin_rows         = [r for r in all_rows if r.get("종목유형","") in YEOSIN_TYPES]
 
-    # 여신잔고 합산 — 종목명별 잔고·고객수 합계 (신용+대출+해외대출 통합)
-    def _merge_yeosin(rows):
+    # 종목명 정규화 — 법인 표기차이 제거 후 그룹핑 키로 사용
+    #   "에스엘엘중앙 주식회사" / "에스엘엘중앙" → "에스엘엘중앙"
+    #   "중앙일보(주)" / "중앙일보" → "중앙일보"
+    _LEGAL_SUFFIX_RE = re.compile(r'(\(주\)|㈜|주식회사)')
+
+    def _canon_name(name: str) -> str:
+        return _LEGAL_SUFFIX_RE.sub('', name).strip()
+
+    # 종목명별 잔고·고객수 합계 (법인 표기차이·종목코드 상이 — 분할발행 등 통합)
+    # 표시명은 정규화된(법인 표기 제거) 이름 사용
+    def _merge_by_name(rows):
         merged = {}
         for r in rows:
-            name = r.get("종목명","")
+            name = _canon_name(r.get("종목명",""))
             bal = float(str(r.get("잔고(억)","0")).replace(",",""))
             cus = int(float(str(r.get("고객수","0")).replace(",","")))
             if name not in merged:
@@ -1869,14 +1886,8 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             merged[name]["고객수"] += cus
         return merged  # {종목명: {잔고, 고객수}}
 
-    def _fmt_row(r):
-        잔고 = float(str(r.get("잔고(억)","0")).replace(",",""))
-        고객 = int(float(str(r.get("고객수","0")).replace(",","")))
-        return (
-            f'<div style="font-size:13px;color:#1e293b;line-height:1.7;">'
-            f'<span style="font-weight:700;">{r.get("종목명","")}</span>'
-            f' {잔고:,.0f}억원 / {고객:,}명</div>'
-        )
+    # 여신잔고 합산 — 종목명별 잔고·고객수 합계 (신용+대출+해외대출 통합)
+    _merge_yeosin = _merge_by_name
 
     def _fmt_merged(name, v):
         return (
@@ -1884,6 +1895,23 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             f'<span style="font-weight:700;">{name}</span>'
             f' {v["잔고"]:,.0f}억원 / {v["고객수"]:,}명</div>'
         )
+
+    MAX_DISPLAY_ITEMS = 2
+
+    def _fmt_merged_limited(merged: dict) -> str:
+        """종목명별 합산 딱셔너리 → 잔고 내림차순 상위 N개 표시 + 초과분 '外 N개 종목 X억 Y명(중복포함)' 요약"""
+        items = sorted(merged.items(), key=lambda kv: -kv[1]["잔고"])
+        shown = items[:MAX_DISPLAY_ITEMS]
+        rest = items[MAX_DISPLAY_ITEMS:]
+        html = "".join([_fmt_merged(n, v) for n, v in shown])
+        if rest:
+            rest_bal = sum(v["잔고"] for _, v in rest)
+            rest_cus = sum(v["고객수"] for _, v in rest)
+            html += (
+                f'<div style="font-size:12px;color:#94a3b8;line-height:1.7;">'
+                f'外 {len(rest)}개 종목 {rest_bal:,.0f}억원 / {rest_cus:,}명 (중복포함)</div>'
+            )
+        return html
 
     NONE_HTML = '<div style="font-size:13px;color:#94a3b8;line-height:1.7;">잔고 없음</div>'
 
@@ -1906,24 +1934,24 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
 
     sections = []
     yeosin_merged = _merge_yeosin(yeosin_rows)
-    yeosin_html = "".join([_fmt_merged(n, v) for n, v in yeosin_merged.items()]) if yeosin_merged else NONE_HTML
+    yeosin_html = _fmt_merged_limited(yeosin_merged) if yeosin_merged else NONE_HTML
 
     # ── 국내주식 블록 ────────────────────────────────────────────
     if domestic_stock_rows:
         sections.append(_section("주식잔고", "#fee2e2", "#c0392b",
-                                 "".join([_fmt_row(r) for r in domestic_stock_rows])))
+                                 _fmt_merged_limited(_merge_by_name(domestic_stock_rows))))
         sections.append(_section("여신잔고", "#fef3c7", "#b45309", yeosin_html))
 
     # ── 해외주식 블록 ────────────────────────────────────────────
     if overseas_stock_rows:
         sections.append(_section("해외주식잔고", "#fee2e2", "#c0392b",
-                                 "".join([_fmt_row(r) for r in overseas_stock_rows])))
+                                 _fmt_merged_limited(_merge_by_name(overseas_stock_rows))))
         sections.append(_section("여신잔고", "#fef3c7", "#b45309", yeosin_html))
 
     # ── 채권 블록 ────────────────────────────────────────────────
     if bond_rows:
         sections.append(_section("채권잔고", "#ede9fe", "#5b21b6",
-                                 "".join([_fmt_row(r) for r in bond_rows])))
+                                 _fmt_merged_limited(_merge_by_name(bond_rows))))
 
     # ── 주식 없고 여신만 있는 경우 ───────────────────────────────
     if not domestic_stock_rows and not overseas_stock_rows and not bond_rows and yeosin_merged:
