@@ -338,12 +338,15 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         if not _tk:
             return _n, None
         try:
-            hist = yf.Ticker(_tk).history(period='5d', interval='1d', auto_adjust=True)
+            hist = yf.Ticker(_tk).history(period='5d', interval='1d', auto_adjust=False)
             if hist is None or len(hist) < 2:
                 return _n, None
             hist = hist.dropna(subset=['Close'])
             if len(hist) < 2:
                 return _n, None
+            if _n in ('LS ELECTRIC','삼성전기','LG이노텍'):
+                _dbg = ', '.join(f'{str(i)[:10]}:{c:.0f}' for i, c in zip(hist.index, hist['Close']))
+                print(f'  [DEBUG] {_n} ({_tk}) hist: {_dbg}')
             # 마지막 거래일 KST 변환
             last_date = hist.index[-1]
             try:
@@ -359,8 +362,11 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
                 return _n, None
             curr = float(hist['Close'].iloc[-1])
             prev = float(hist['Close'].iloc[-2])
+            curr_date = str(hist.index[-1])[:10]
+            prev_date = str(hist.index[-2])[:10]
             if prev > 0:
                 chg = round((curr - prev) / prev * 100, 2)
+                print(f'  [price_alert] {_n}: {prev_date}({prev:.0f}) → {curr_date}({curr:.0f}) = {chg:+.2f}%')
                 return _n, {'chg': chg, 'curr': curr, 'ticker': _tk,
                             'top_rbal': _tr, 'top_cust': _tc, 'top_ratio': _trat}
         except Exception:
