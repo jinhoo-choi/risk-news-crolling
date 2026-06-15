@@ -1,5 +1,5 @@
 ENTITY_ALIAS_MAP = {
-    # AI가 영문/약어로 추출하는 경우 → CSV 종목명 한글 표기 매핑
+    # AI가 영문/약어로 추출하는 경우 → CSV 종목명 한글 표기 매핑 (검증된 매핑, 최우선 적용)
     "JTBC": "제이티비씨",
     "CJ": "씨제이",
     "LG": "엘지",
@@ -11,6 +11,26 @@ ENTITY_ALIAS_MAP = {
     "HD": "에이치디",
     "HL": "에이치엘",
 }
+
+# 알파벳 → 한글 음역 (ENTITY_ALIAS_MAP에 없는 새 약어용 fallback)
+ALPHA_TO_KOREAN = {
+    'A':'에이','B':'비','C':'씨','D':'디','E':'이','F':'에프','G':'지',
+    'H':'에이치','I':'아이','J':'제이','K':'케이','L':'엘','M':'엠',
+    'N':'엔','O':'오','P':'피','Q':'큐','R':'알','S':'에스','T':'티',
+    'U':'유','V':'브이','W':'더블유','X':'엑스','Y':'와이','Z':'제트'
+}
+
+def _alpha_to_korean(text: str) -> str:
+    """영문 약어를 한글 음역으로 변환 (예: JTBC → 제이티비씨)
+    영문이 아닌 문자(한글/숫자 등)는 그대로 유지
+    """
+    result = []
+    for ch in text.upper():
+        if ch in ALPHA_TO_KOREAN:
+            result.append(ALPHA_TO_KOREAN[ch])
+        else:
+            result.append(ch)
+    return "".join(result)
 
 RELATED_STOCK_MAP = {
     # 증권사 → 상장 지주·모회사
@@ -329,8 +349,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     import pytz as _pytz
     _kst = _pytz.timezone('Asia/Seoul')
     _now_kst = _dt2.now(_kst)
-    # 최대 허용 데이터 연령: 평일 2일 (주말/공휴일 포함 최대 4일)
-    _max_age_days = 4
+    _today_str = _now_kst.strftime('%Y-%m-%d')
 
     def _fetch_price(item):
         """단일 종목 yfinance 조회 — (name, result_dict or None) 반환"""
@@ -353,9 +372,8 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
                     last_dt_kst = last_date.tz_convert('Asia/Seoul')
             except Exception:
                 last_dt_kst = _now_kst  # 변환 실패 시 오늘로 가정
-            # 최근 거래일이 너무 오래됐으면 제외 (상장폐지·거래정지 종목 방어)
-            age_days = (_now_kst.replace(tzinfo=None) - last_dt_kst.replace(tzinfo=None)).days
-            if age_days > _max_age_days:
+            # 오늘(KST) 데이터가 아니면 표시하지 않음 (주말·휴장일 등)
+            if last_dt_kst.strftime('%Y-%m-%d') != _today_str:
                 return _n, None
             curr = float(hist['Close'].iloc[-1])
             prev = float(hist['Close'].iloc[-2])
@@ -570,7 +588,7 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
     if entity in exposure_data:
         return exposure_data[entity]
 
-    # 1.5) 영문/약어 별칭 변환 후 재시도 (예: JTBC → 제이티비씨)
+    # 1.5) 영문/약어 별칭 변환 후 재시도 (예: JTBC → 제이티비씨) — 검증된 사전, 최우선
     for alias, kor in ENTITY_ALIAS_MAP.items():
         if entity.upper().startswith(alias):
             converted = kor + entity[len(alias):]
@@ -579,6 +597,16 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
             results_alias = find_exposure(converted, exposure_data)
             if results_alias:
                 return results_alias
+
+    # 1.6) 사전에 없는 영문 약어 — 알파벳 음역 fallback (예: NEW123 → 엔이더블유...)
+    if re.match(r'^[A-Za-z]', entity):
+        translit = _alpha_to_korean(entity)
+        if translit != entity.upper():
+            if translit in exposure_data:
+                return exposure_data[translit]
+            results_translit = find_exposure(translit, exposure_data)
+            if results_translit:
+                return results_translit
 
     # 2) 부분포함 + prefix 6자 — entity가 name에 포함되거나 그 반대
     #    정규식 컴파일 1회만 수행 (루프 밖)
