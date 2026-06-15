@@ -1150,7 +1150,11 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
                 raise ValueError(f"Gemini 응답 list 아님: {type(grades)}")
 
             # 파싱 후 article 필드 세팅 — ai_filter_batch와 동일 로직
-            grade_map = {g["id"]: g for g in grades}
+            grade_map = {}
+            for g in grades:
+                _gid = g.get("id", g.get("news_id"))
+                if _gid is not None:
+                    grade_map[_gid] = g
             result = []
             for i, article in enumerate(batch):
                 info = grade_map.get(i + offset + 1, {})
@@ -1216,7 +1220,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                     "model": CLAUDE_MODEL,
                     "max_tokens": 8000,
                     "temperature": 0.0,
-                    "system": "당신은 JSON API입니다. 설명·요약·표·마크다운 없이 JSON 배열만 출력하세요. 출력은 반드시 [ 로 시작하고 ] 로 끝나야 합니다. 코드블록(```)도 사용하지 마세요.",
+                    "system": "당신은 JSON API입니다. 설명·요약·표·마크다운 없이 JSON 배열만 출력하세요. 출력은 반드시 [ 로 시작하고 ] 로 끝나야 합니다. 코드블록(```)도 사용하지 마세요. 각 객체의 식별자 키는 반드시 \"id\"여야 하며 \"news_id\" 등 다른 이름을 사용하지 마세요. 필드명은 정확히 id, relevant, grade, reason, confidence, action, entity, entities, event_type 만 사용하세요.",
                     "messages": [{"role": "user", "content": [
                         {"type": "text", "text": _fp_static,
                          "cache_control": {"type": "ephemeral"}},
@@ -1265,7 +1269,11 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 raise ValueError(f"grades가 list가 아님: {type(grades)}")
             if grades and not all(isinstance(g, dict) for g in grades):
                 raise ValueError(f"grades 요소가 dict가 아님 (markdown 응답 가능성): {type(grades[0])}")
-            grade_map = {g["id"]: g for g in grades}
+            grade_map = {}
+            for g in grades:
+                _gid = g.get("id", g.get("news_id"))
+                if _gid is not None:
+                    grade_map[_gid] = g
             result = []
             for i, article in enumerate(batch):
                 info = grade_map.get(i + offset + 1, {})
