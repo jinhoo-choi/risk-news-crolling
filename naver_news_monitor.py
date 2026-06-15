@@ -113,7 +113,7 @@ SEEN_FILE = "seen_news.json"
 EXPOSURE_FILE = "exposure_data.csv"
 CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL",        "claude-haiku-4-5-20251001")  # Gemini fallback·재검증용
 CLAUDE_ACTION_MODEL = os.environ.get("CLAUDE_ACTION_MODEL", "claude-haiku-4-5-20251001")  # action 생성 전용
-GEMINI_MODEL        = os.environ.get("GEMINI_MODEL",        "gemini-2.0-flash")
+GEMINI_MODEL        = os.environ.get("GEMINI_MODEL",        "gemini-2.5-flash-lite")  # 무료 15 RPM (2.0-flash는 5 RPM으로 축소됨)
 
 # 중복 제거 유사도 임계값 — 운영 중 조정 가능
 TITLE_SIM_THRESHOLD = 0.92  # 제목 유사도 (연합뉴스 재인용 대응)
@@ -1132,9 +1132,9 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
     )
     _schema = _gtypes.Schema(type=_gtypes.Type.ARRAY, items=_item_schema)
 
-    # TPM 분산 — 첫 배치 제외, 이후 배치는 10초 간격
+    # 15 RPM 기준 — 첫 배치 제외, 이후 배치는 5초 간격
     if offset > 0:
-        time.sleep(10)
+        time.sleep(5)
 
     for attempt in range(3):
         try:
@@ -2161,7 +2161,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         <tr>
           <td valign="middle">
             <p style="margin:0 0 4px 0;font-size:19px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇</p>
-            <p style="margin:0 0 3px 0;font-size:10px;color:#c8d8f0;text-align:right;">Claude {CLAUDE_MODEL.split("-")[1].capitalize()} / Gemini {GEMINI_MODEL.split("-")[-1].capitalize()}</p>
+            <p style="margin:0 0 3px 0;font-size:10px;color:#c8d8f0;text-align:right;">Claude {CLAUDE_MODEL.split("-")[1].capitalize()} / Gemini {GEMINI_MODEL.replace("gemini-","")}</p>
             <p style="margin:0;font-size:13px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (KST)</p>
           </td>
         </tr>
@@ -2253,7 +2253,7 @@ def build_empty_html(now) -> str:
   <tr>
     <td class="header-td" style="background:#3b5491;padding:22px 26px;">
       <p style="margin:0 0 6px 0;font-size:20px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇
-        <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">Claude {CLAUDE_MODEL.split("-")[1].capitalize()} / Gemini {GEMINI_MODEL.split("-")[-1].capitalize()}</span>
+        <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">Claude {CLAUDE_MODEL.split("-")[1].capitalize()} / Gemini {GEMINI_MODEL.replace("gemini-","")}</span>
       </p>
       <p style="margin:0;font-size:14px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</p>
     </td>
