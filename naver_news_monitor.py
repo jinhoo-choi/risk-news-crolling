@@ -344,9 +344,6 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             hist = hist.dropna(subset=['Close'])
             if len(hist) < 2:
                 return _n, None
-            if _n in ('LS ELECTRIC','삼성전기','LG이노텍'):
-                _dbg = ', '.join(f'{str(i)[:10]}:{c:.0f}' for i, c in zip(hist.index, hist['Close']))
-                print(f'  [DEBUG] {_n} ({_tk}) hist: {_dbg}')
             # 마지막 거래일 KST 변환
             last_date = hist.index[-1]
             try:
@@ -362,11 +359,8 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
                 return _n, None
             curr = float(hist['Close'].iloc[-1])
             prev = float(hist['Close'].iloc[-2])
-            curr_date = str(hist.index[-1])[:10]
-            prev_date = str(hist.index[-2])[:10]
             if prev > 0:
                 chg = round((curr - prev) / prev * 100, 2)
-                print(f'  [price_alert] {_n}: {prev_date}({prev:.0f}) → {curr_date}({curr:.0f}) = {chg:+.2f}%')
                 return _n, {'chg': chg, 'curr': curr, 'ticker': _tk,
                             'top_rbal': _tr, 'top_cust': _tc, 'top_ratio': _trat}
         except Exception:
@@ -1175,7 +1169,10 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
                     article["action"]     = info.get("action") or ""
                     article["entity"]     = _ent
                     _ents_raw = info.get("entities") or []
-                    article["entities"]   = [e.strip() for e in _ents_raw if e and e.strip()] or [_ent]
+                    _ents_clean = [e.strip() for e in _ents_raw if e and e.strip()] or [_ent]
+                    if _ent not in _ents_clean:
+                        _ents_clean = [_ent] + _ents_clean
+                    article["entities"]   = _ents_clean
                     article["event_type"] = info.get("event_type") or ""
                     _evt = article["event_type"]
                     article["event_key"]  = f"{_ent}_{_evt}" if _ent and _evt else ""
@@ -1292,7 +1289,11 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                     article["reason"]     = info.get("reason", "")
                     article["action"]     = info.get("action", "")
                     article["entity"]     = info.get("entity", "").strip()
-                    article["entities"]   = [e.strip() for e in (info.get("entities") or []) if e and e.strip()] or [info.get("entity","").strip()]
+                    _ent2 = info.get("entity","").strip()
+                    _ents_clean2 = [e.strip() for e in (info.get("entities") or []) if e and e.strip()] or [_ent2]
+                    if _ent2 not in _ents_clean2:
+                        _ents_clean2 = [_ent2] + _ents_clean2
+                    article["entities"]   = _ents_clean2
                     article["event_type"] = info.get("event_type", "")
                     # event_key: "entity_eventtype" 형태로 생성 — 사건 단위 dedup 기준
                     _ent = info.get("entity", "").strip()
