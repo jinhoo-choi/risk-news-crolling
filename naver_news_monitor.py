@@ -12,6 +12,18 @@ ENTITY_ALIAS_MAP = {
     "HL": "에이치엘",
 }
 
+# 그룹 계열사 강제 매핑 — AI가 entity 하나만 추출해도 코드에서 계열사 익스포저 추가 조회
+# key: AI가 추출하는 entity명 (별칭 포함), value: 함께 조회할 종목명 리스트
+GROUP_ENTITIES_MAP = {
+    # 중앙그룹
+    "JTBC":      ["제이티비씨", "중앙일보", "콘텐트리중앙", "에스엘엘중앙", "중앙홀딩스", "메가박스중앙"],
+    "제이티비씨": ["중앙일보", "콘텐트리중앙", "에스엘엘중앙", "중앙홀딩스", "메가박스중앙"],
+    "중앙홀딩스": ["제이티비씨", "중앙일보", "콘텐트리중앙", "에스엘엘중앙", "메가박스중앙"],
+    "콘텐트리중앙": ["제이티비씨", "중앙일보", "에스엘엘중앙", "중앙홀딩스"],
+    "에스엘엘중앙": ["제이티비씨", "중앙일보", "콘텐트리중앙", "중앙홀딩스"],
+    "중앙일보":   ["제이티비씨", "콘텐트리중앙", "에스엘엘중앙", "중앙홀딩스"],
+}
+
 # 알파벳 → 한글 음역 (ENTITY_ALIAS_MAP에 없는 새 약어용 fallback)
 ALPHA_TO_KOREAN = {
     'A':'에이','B':'비','C':'씨','D':'디','E':'이','F':'에프','G':'지',
@@ -2021,6 +2033,14 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         for a in display_items:
             # entities 복수 지원 — 없으면 entity 단수로 fallback
             a_entities = a.get("entities") or ([a.get("entity","")] if a.get("entity") else [])
+            # GROUP_ENTITIES_MAP — entity 하나만 잡혀도 계열사 익스포저 자동 추가
+            _group_extra = []
+            for _ent in list(a_entities):
+                for _extra in GROUP_ENTITIES_MAP.get(_ent, []):
+                    if _extra not in a_entities and _extra not in _group_extra:
+                        _group_extra.append(_extra)
+            if _group_extra:
+                a_entities = list(a_entities) + _group_extra
             if grade == "참고":
                 r_risk = a.get("_risk_score", "")
                 if r_risk:
@@ -2771,7 +2791,8 @@ def main():
     print("  대응방안·고객안내 생성 중... (긴급만)")
 
     def generate_action_and_notice(article):
-        if article.get("grade") != "긴급":
+        grade = article.get("grade")
+        if grade not in ("긴급", "주의"):
             return
         _body_failed = article.get("_body_failed", False)
         if _body_failed:
@@ -2843,7 +2864,7 @@ def main():
                 if _body_failed:
                     action_text += " *(본문 크롤링 실패, 제목 기반 생성)"
                 article["action"] = action_text
-            if result.get("customer_notice"):
+            if result.get("customer_notice") and grade == "긴급":
                 notice_text = result["customer_notice"]
                 if _body_failed:
                     notice_text += "\n*(본문 크롤링 실패, 제목 기반 생성)"
