@@ -2819,8 +2819,14 @@ def main():
         # 해외주식 여부 — 익스포저 rows의 시장 컬럼 또는 keyword 패턴으로 판단
         is_overseas = any(r.get("시장","국내") == "해외" or r.get("종목유형","") in ("해외주식","해외대출") for r in exp_rows)
         def _fmt_exp(r):
-            잔고 = float(str(r.get('잔고(억)', '0')).replace(',', ''))
-            고객 = int(float(str(r.get('고객수', '0')).replace(',', '')))
+            try:
+                잔고 = float(str(r.get('잔고(억)', '0') or '0').replace(',', ''))
+            except (ValueError, TypeError):
+                잔고 = 0.0
+            try:
+                고객 = int(float(str(r.get('고객수', '0') or '0').replace(',', '')))
+            except (ValueError, TypeError):
+                고객 = 0
             return f"{r.get('종목유형','')} {잔고:,.0f}억원/{고객:,}명"
         exp_str = ", ".join([_fmt_exp(r) for r in exp_rows]) if exp_rows else ""
         try:
