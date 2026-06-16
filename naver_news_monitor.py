@@ -2788,7 +2788,7 @@ def main():
             except Exception as e:
                 print(f"  본문 크롤링 오류: {e}")
 
-    print("  대응방안·고객안내 생성 중... (긴급만)")
+    print("  대응방안·고객안내 생성 중... (긴급·주의)")
 
     def generate_action_and_notice(article):
         grade = article.get("grade")
@@ -2800,7 +2800,22 @@ def main():
         body_text = article.get("body", "") or article.get("desc", "")
         entity    = article.get("entity", "")
         keyword   = article.get("keyword", "")
-        exp_rows  = find_exposure(entity, exposure_data)
+        # GROUP_ENTITIES_MAP 계열사 포함한 전체 entities로 익스포저 산출
+        _act_entities = article.get("entities") or ([entity] if entity else [])
+        _act_extra = []
+        for _e in list(_act_entities):
+            for _x in GROUP_ENTITIES_MAP.get(_e, []):
+                if _x not in _act_entities and _x not in _act_extra:
+                    _act_extra.append(_x)
+        _act_entities_full = list(_act_entities) + _act_extra
+        exp_rows = []
+        _seen_exp = set()
+        for _ae in _act_entities_full:
+            for r in find_exposure(_ae, exposure_data):
+                _rk = (r.get("종목명",""), r.get("종목코드",""))
+                if _rk not in _seen_exp:
+                    _seen_exp.add(_rk)
+                    exp_rows.append(r)
         # 해외주식 여부 — 익스포저 rows의 시장 컬럼 또는 keyword 패턴으로 판단
         is_overseas = any(r.get("시장","국내") == "해외" or r.get("종목유형","") in ("해외주식","해외대출") for r in exp_rows)
         def _fmt_exp(r):
