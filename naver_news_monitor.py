@@ -1464,8 +1464,16 @@ RISK_PRIORITY = {
 
 # 당사 직접 이슈 키워드 — 익스포저 페널티 면제 + 긴급 강제 지정
 DIRECT_INCIDENT_KW = {
-    "한국투자증권", "MTS", "HTS",
+    "MTS", "HTS",
     "전산장애", "전산사고", "접속장애", "접속불가",
+}
+
+# 당사 직접 언급 + 부정적 이슈 복합 조건 — 제목에 둘 다 있을 때만 force_urgent
+DIRECT_COMPANY_KW = "한국투자증권"
+DIRECT_NEGATIVE_KW = {
+    "장애", "오류", "사고", "중단", "차단", "먹통",
+    "제재", "과태료", "과징금", "고발", "수사", "검사",
+    "해킹", "유출", "보안사고",
 }
 
 def calc_risk_score(article: dict, exposure_data: dict = None) -> float:
@@ -1523,9 +1531,17 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
 
     # ── 당사 직접 이슈 긴급 강제 (confidence·GRADE_LIMITS 면제) ──────────
     for a in articles:
-        if any(kw in a.get("title", "") for kw in DIRECT_INCIDENT_KW):
+        title = a.get("title", "")
+        _is_direct = (
+            any(kw in title for kw in DIRECT_INCIDENT_KW)  # MTS·HTS·전산장애 등
+            or (
+                DIRECT_COMPANY_KW in title
+                and any(kw in title for kw in DIRECT_NEGATIVE_KW)  # 한국투자증권 + 장애·제재 등
+            )
+        )
+        if _is_direct:
             if a.get("grade") != "긴급":
-                print(f"  [직접이슈 강제긴급] {a['title'][:40]}")
+                print(f"  [직접이슈 강제긴급] {title[:40]}")
             a["grade"] = "긴급"
             a["_force_urgent"] = True
     # ─────────────────────────────────────────────────────────────────────
