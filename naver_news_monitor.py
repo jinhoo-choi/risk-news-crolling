@@ -2760,6 +2760,28 @@ def main():
     filtered = filtered_final
     if before_combo != len(filtered):
         print(f"  중복 사건 제거: {before_combo}건 → {len(filtered)}건")
+
+    # ── 동일 메일 내 entity dedup — 같은 entity는 리스크 점수 최고값 1건만 유지 ──
+    _entity_best: dict = {}  # entity → 현재 최고 점수 article
+    for a in filtered:
+        ent = a.get("entity", "") or ""
+        if not ent:
+            continue
+        score = a.get("_risk_score", 0) or 0
+        if ent not in _entity_best or score > (_entity_best[ent].get("_risk_score", 0) or 0):
+            _entity_best[ent] = a
+
+    _best_ids = {id(a) for a in _entity_best.values()}
+    _removed = [a for a in filtered if a.get("entity") and id(a) not in _best_ids]
+    for a in _removed:
+        print(f"  [entity dedup] 동일 entity 낮은점수 제거: [{a['grade']}] {a['title'][:45]}")
+
+    # entity 없는 기사(시장 전체 이슈 등)는 그대로 유지
+    filtered = [a for a in filtered if not a.get("entity") or id(a) in _best_ids]
+    if _removed:
+        print(f"  entity dedup: {len(_removed)}건 제거 → {len(filtered)}건")
+    # ──────────────────────────────────────────────────────────────────────────
+
     print(f"필터링 후 {len(filtered)}건 선별")
 
     total_count = len(raw_articles) + len(hard_excluded_articles)
@@ -3003,6 +3025,20 @@ def main():
             new_combos_this_run.add((entity, event_type))
         elif keyword and entity:
             new_combos_this_run.add((entity, keyword))
+
+    # entity dedup으로 제거된 기사도 URL·combo 등록 — 다음 실행 재탐지 방지
+    for a in _removed:
+        sent_urls.add(a.get("url", ""))
+        _ent = a.get("entity", "").strip()
+        _kw  = a.get("keyword", "").strip()
+        _et  = a.get("event_type", "").strip()
+        _ek  = a.get("event_key", "").strip()
+        if _ek:
+            new_combos_this_run.add(("ek", _ek))
+        if _et and _ent:
+            new_combos_this_run.add((_ent, _et))
+        elif _kw and _ent:
+            new_combos_this_run.add((_ent, _kw))
     save_seen_urls(sent_urls, new_combos_this_run,
                    title_norms=new_title_norms, desc_norms=new_desc_norms)
     save_filter_log(raw_articles, hard_excluded_articles,
