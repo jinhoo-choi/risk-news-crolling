@@ -24,6 +24,8 @@ GROUP_ENTITIES_MAP = {
     "중앙일보":   ["제이티비씨", "콘텐트리중앙", "에스엘엘중앙", "중앙홀딩스"],
 }
 
+# group_map.json은 import os/json 이후 로드 (아래 _load_group_map() 참조)
+
 # 알파벳 → 한글 음역 (ENTITY_ALIAS_MAP에 없는 새 약어용 fallback)
 ALPHA_TO_KOREAN = {
     'A':'에이','B':'비','C':'씨','D':'디','E':'이','F':'에프','G':'지',
@@ -109,6 +111,23 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import unicodedata
 from email.utils import parsedate_to_datetime as _pdt
+
+# group_map.json (DART 자동 매핑) 로드 — GROUP_ENTITIES_MAP에 병합
+# group_mapper.py가 생성. 없어도 GROUP_ENTITIES_MAP fallback으로 동작
+_GROUP_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "group_map.json")
+if os.path.exists(_GROUP_MAP_FILE):
+    try:
+        with open(_GROUP_MAP_FILE, encoding="utf-8") as _f:
+            _dart_map = json.load(_f)
+        for _entity, _members in _dart_map.items():
+            if _entity not in GROUP_ENTITIES_MAP:
+                GROUP_ENTITIES_MAP[_entity] = _members
+            else:
+                _existing = set(GROUP_ENTITIES_MAP[_entity])
+                GROUP_ENTITIES_MAP[_entity] = list(_existing | set(_members))
+        print(f"  [group_map] DART 매핑 로드: {len(_dart_map)}개 종목")
+    except Exception as _e:
+        print(f"  [group_map] 로드 실패 (무시): {_e}")
 
 # ─────────────────────────────────────────────
 # 설정 — GitHub Secrets에서 자동으로 읽어옴
