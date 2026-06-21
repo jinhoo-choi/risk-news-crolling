@@ -1118,6 +1118,13 @@ EXCLUDE_TITLE_RE_PATTERNS = [
     r"\[.{2,15}(기획|특집|연재|시리즈)\]",
     # 더벨 시리즈 기획 기사 — [더벨][부제] 이중 브래킷 형태
     r"\[더벨\]\[.+\]",
+    # 칼럼·오피니언·시각 브래킷 — 산업 트렌드 분석 기사
+    r"\[현장의\s*시각\]",
+    r"\[시각\]",
+    r"\[오피니언\]",
+    r"\[기고\]",
+    r"\[데스크\s*시각\]",
+    r"\[현장\s*르포\]",
 ]
 
 def is_hard_excluded(title: str, desc: str = "") -> tuple:
@@ -1126,9 +1133,13 @@ def is_hard_excluded(title: str, desc: str = "") -> tuple:
     # 치명적 키워드 bypass — AI 판단으로 넘김
     CRITICAL_KW = ["상장폐지", "파산", "부도", "횡령", "배임", "거래정지",
                    "기업회생", "MTS 장애", "MTS 접속 장애"]
-    # 스팩·정상상폐·호재성 기사는 CRITICAL_KW bypass 면제 → 하드제외 적용
+    # 스팩·정상상폐·호재성·칼럼 기사는 CRITICAL_KW bypass 면제 → 하드제외 적용
     CRITICAL_EXEMPT = ["스팩", "SPAC", "기업인수목적", "알짜", "체질 변신", "체질 개선",
-                       "방카", "인수 효과", "밸류업", "주식병합"]
+                       "방카", "인수 효과", "밸류업", "주식병합",
+                       # 칼럼·오피니언 형식 — CRITICAL_KW 있어도 AI 우회 차단
+                       "[현장의 시각]", "[현장의시각]", "[시각]", "[오피니언]",
+                       "[기고]", "[데스크 시각]", "[현장 르포]", "[기자수첩]",
+                       "현장의 시각", "현장에서 보는",]
     if any(kw in title for kw in CRITICAL_KW):
         if not any(ex in title for ex in CRITICAL_EXEMPT):
             return False, None  # 치명적 키워드 → AI 판단으로 넘김
@@ -2828,6 +2839,32 @@ def main():
         return
 
     print("  본문 크롤링 중... (긴급·주의만)")
+
+    def search_alternative_url(title: str) -> str:
+        """본문 크롤링 실패 시 네이버 뉴스 검색으로 동일 제목 기사 대체 URL 탐색"""
+        try:
+            # 제목 앞 30자로 검색 (특수문자 제거)
+            query = re.sub(r'[\[\]「」『』【】〔〕\(\)…]', '', title)[:30].strip()
+            res = requests.get(
+                "https://openapi.naver.com/v1/search/news.json",
+                headers={
+                    "X-Naver-Client-Id": NAVER_CLIENT_ID,
+                    "X-Naver-Client-Secret": NAVER_CLIENT_SECRET,
+                },
+                params={"query": query, "display": 5, "sort": "date"},
+                timeout=8,
+            )
+            if res.status_code != 200:
+                return ""
+            items = res.json().get("items", [])
+            for item in items:
+                alt_url = item.get("link") or item.get("originallink", "")
+                if alt_url and alt_url != "":
+                    return alt_url
+        except Exception:
+            pass
+        return ""
+
     def crawl_body(article):
         if article.get("grade") == "참고":
             article["body"] = ""
@@ -2837,8 +2874,21 @@ def main():
             article["body"] = body
             article["_body_failed"] = False
         else:
+            # 1) 네이버 검색으로 대체 URL 시도
+            alt_url = search_alternative_url(article.get("title", ""))
+            if alt_url and alt_url != article["url"]:
+                alt_body = fetch_article_body(alt_url)
+                if alt_body:
+                    article["body"] = alt_body
+                    article["_body_failed"] = False
+                    article["_alt_url"] = alt_url
+                    print(f"  본문 대체 URL 성공: {article.get('title','')[:30]}")
+                    return article
+            # 2) 대체도 실패 → 참고로 강등
+            print(f"  본문 크롤링 실패(대체 URL도 없음) → 참고 강등: {article.get('title','')[:30]}")
             article["body"] = article.get("desc", "")
             article["_body_failed"] = True
+            article["grade"] = "참고"
         return article
 
     with ThreadPoolExecutor(max_workers=3) as executor:
