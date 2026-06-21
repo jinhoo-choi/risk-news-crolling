@@ -1115,6 +1115,14 @@ TITLE_ONLY_PATTERNS += [
     # ── 리스크 해소·정상화 표현 — 현재 리스크 없음 ──
     "딛고 정상화", "위기 극복", "정상화 추진", "정상 궤도",
     "혼란 딛고", "수습 완료", "안정화 완료",
+
+    # ── 언론·미디어 산업 트렌드 기사 — 당사 직접 익스포저 없음 ──
+    "레거시 미디어", "종언", "미디어 시대",
+    "언론사 위기", "신문사 위기", "방송사 부진",
+
+    # ── 유통·소비재 시황 분석 — 당사 직접 익스포저 없음 ──
+    "대형마트 우는", "대형마트 부진", "대형마트 위기",
+    "쿠팡만 웃는", "영업규제", "의무휴업",
 ]
 
 EXCLUDE_TITLE_RE_PATTERNS = [
@@ -3040,30 +3048,13 @@ def main():
     urgent_cnt = len([a for a in filtered if a["grade"]=="긴급"])
     caution_cnt = len([a for a in filtered if a["grade"]=="주의"])
     ref_cnt = len([a for a in filtered if a["grade"]=="참고"])
-    # AI 요약 컨텍스트 — 기사 + 경쟁사 공지 + 여신 리스크 현황 통합
+    # AI 요약 컨텍스트 — 탐지 기사 중심 (여신잔고는 보조 참고용, 요약에 직접 언급 금지)
     filtered_titles = f"[등급 분포] 긴급 {urgent_cnt}건 / 주의 {caution_cnt}건 / 참고 {ref_cnt}건\n\n" + "\n".join([f"- [{a['grade']}] {a['title']}" for a in filtered])
 
     # 경쟁사 공지 요약 추가
     if competitor_notices:
         competitor_summary = "\n".join([f"- [경쟁사] {n['company']}: {n['title']}" for n in competitor_notices[:3]])
         filtered_titles += f"\n\n[경쟁사 신용·대출 특이사항]\n{competitor_summary}"
-
-    # 여신 리스크 현황 추가 (리스크종목 Y + -5% 이하 탐지 여부)
-    LOAN_RISK_TYPES = {'여신', '해외대출'}
-    risk_stocks = []
-    for rows in exposure_data.values():
-        for r in rows:
-            if r.get('종목유형', '') not in LOAN_RISK_TYPES:
-                continue
-            if r.get('리스크종목', '').strip().upper() != 'Y':
-                continue
-            name = r.get('종목명', '').strip()
-            rcust = int(float(str(r.get('리스크고객수', 0)).replace(',', '') or 0))
-            if name and rcust > 0 and name not in [s[0] for s in risk_stocks]:
-                risk_stocks.append((name, rcust))
-    if risk_stocks:
-        risk_summary = ", ".join([f"{name}(위험고객 {rcust}명)" for name, rcust in risk_stocks[:5]])
-        filtered_titles += f"\n\n[여신 위험고객 현황]\n- {risk_summary}"
 
     try:
         sum_res = requests.post(
@@ -3076,7 +3067,7 @@ def main():
             json={
                 "model": CLAUDE_MODEL,
                 "max_tokens": 100,
-                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 현황을 보고, 전체 흐름을 40자 이내 한 문장으로만 작성하세요.\n문장 외 다른 내용 일절 금지. 기사·경쟁사·여신 리스크를 균형있게 반영. 예: '알테오젠 상폐·홈플러스 회생 부각, 경쟁사 신용한도 축소·여신 위험고객 다수'\n\n{filtered_titles}"}],
+                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 탐지 기사를 보고, 핵심 리스크 흐름을 40자 이내 한 문장으로만 작성하세요.\n문장 외 다른 내용 일절 금지. 탐지된 기사 내용만 반영 (여신잔고·위험고객 수치는 직접 언급 금지). 예: '알테오젠 상폐·홈플러스 회생 부각, 경쟁사 신용한도 축소 움직임'\n\n{filtered_titles}"}],
             },
             timeout=15,
         )
