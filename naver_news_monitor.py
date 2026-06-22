@@ -1116,6 +1116,9 @@ TITLE_ONLY_PATTERNS += [
     "딛고 정상화", "위기 극복", "정상화 추진", "정상 궤도",
     "혼란 딛고", "수습 완료", "안정화 완료",
 
+    # ── 개인·전문가 정책의견 기사 — 금융 리스크 직접 발생 없음 ──
+    "공익 위해", "제도 개선 촉구", "입법 필요", "법안 발의",
+
     # ── 방송·연예 콘텐츠 — 시청률·드라마·예능 성과 기사 ──
     "시청률", "드라마 흥행", "예능 흥행", "반전 활약", "제작발표회",
     "OST 공개", "시사회", "출연 확정", "촬영 시작",
@@ -2361,11 +2364,11 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
       </p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
         <tr>
-          <td style="font-size:12px;font-weight:700;color:#4a6099;padding-bottom:6px;" colspan="2">리스크 점수 산정 기준 (10점 만점)</td>
+          <td style="font-size:12px;font-weight:700;color:#4a6099;padding-bottom:6px;" colspan="2">리스크 점수 참고 기준 (점수≠등급, AI 확신도·익스포저 복합 산정)</td>
         </tr>
         <tr>
           <td style="font-size:11px;padding:2px 0;color:#c0392b;font-weight:600;width:80px;">8.0 ~ 10.0</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">당사 직접 언급 · MTS 장애 · 시스템 사고</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">당사 직접 언급 · MTS 장애 · 부도·파산 확정</td>
         </tr>
         <tr>
           <td style="font-size:11px;padding:2px 0;color:#c0392b;font-weight:600;">6.5 ~ 8.0</td>
@@ -2421,11 +2424,11 @@ def build_empty_html(now) -> str:
       </p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
         <tr>
-          <td style="font-size:12px;font-weight:700;color:#4a6099;padding-bottom:6px;" colspan="2">리스크 점수 산정 기준 (10점 만점)</td>
+          <td style="font-size:12px;font-weight:700;color:#4a6099;padding-bottom:6px;" colspan="2">리스크 점수 참고 기준 (점수≠등급, AI 확신도·익스포저 복합 산정)</td>
         </tr>
         <tr>
           <td style="font-size:11px;padding:2px 0;color:#c0392b;font-weight:600;width:80px;">8.0 ~ 10.0</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">당사 직접 언급 · MTS 장애 · 시스템 사고</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">당사 직접 언급 · MTS 장애 · 부도·파산 확정</td>
         </tr>
         <tr>
           <td style="font-size:11px;padding:2px 0;color:#c0392b;font-weight:600;">6.5 ~ 8.0</td>
