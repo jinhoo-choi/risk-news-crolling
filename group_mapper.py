@@ -371,7 +371,16 @@ def main():
     group_map = cluster_groups(name_to_code, investee_map, shareholder_map)
     print(f"  그룹 클러스터: {len(set(tuple(sorted(v)) for v in group_map.values()))}개 그룹 / {len(group_map)}개 종목")
 
-    # 기존 파일과 비교 — 변경 없으면 저장 스킵
+    # 진단: 빈 결과면 원인 출력
+    if not group_map:
+        print("  [경고] group_map 비어있음 — DART API 응답 데이터 확인 필요")
+        print(f"    investee_map 건수: {len(investee_map)}")
+        print(f"    shareholder_map 건수: {len(shareholder_map)}")
+        if investee_map:
+            sample = list(investee_map.items())[:2]
+            print(f"    investee_map 샘플: {sample}")
+
+    # 항상 저장 (빈 결과여도 저장해서 실행 흔적 남김)
     existing = {}
     if os.path.exists(OUTPUT_FILE):
         try:
@@ -380,7 +389,7 @@ def main():
         except Exception:
             pass
 
-    if existing == group_map:
+    if existing == group_map and group_map:
         print(f"  변경 없음 — {OUTPUT_FILE} 저장 스킵")
     else:
         with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
