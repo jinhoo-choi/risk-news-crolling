@@ -122,57 +122,67 @@ def load_target_stocks() -> list:
 # ── 3. DART 타법인출자현황 조회 ───────────────────────────────────────────────
 def fetch_investee(corp_code: str, api_key: str) -> list:
     """타법인출자현황 API → [(투자대상법인명, 지분율), ...]
-    최근 사업보고서(연간) 기준
-    DART API 응답 필드명은 버전에 따라 다를 수 있어 다중 필드 시도
+    2024년 사업보고서 우선, 없으면 2023년 fallback
+    응답 필드명 샘플 로깅으로 실제 구조 파악
     """
-    # 투자대상법인명 후보 필드 (우선순위 순)
-    NAME_FIELDS  = ["inv_prm", "inv_nm", "corp_name", "invstmnt_prm"]
-    # 지분율 후보 필드
-    RATIO_FIELDS = ["hold_ratio", "frst_acnt_d", "invstmnt_prm_stcqt", "qota_rt", "stkqy_qota_rt"]
+    NAME_FIELDS  = ["inv_prm", "inv_nm", "corp_name", "invstmnt_prm", "cmpny_nm"]
+    RATIO_FIELDS = ["hold_ratio", "frst_acnt_d", "invstmnt_prm_stcqt", "qota_rt",
+                    "stkqy_qota_rt", "pssrp_stock_qota_rt", "pssrp_stcqt"]
 
-    try:
-        res = requests.get(
-            "https://opendart.fss.or.kr/api/otrCprInvstmntSttus.json",
-            params={
-                "crtfc_key": api_key,
-                "corp_code": corp_code,
-                "bsns_year": "2024",
-                "reprt_code": "11011",  # 사업보고서
-            },
-            timeout=10
-        )
-        if res.status_code != 200:
-            return []
-        data = res.json()
-        if data.get("status") != "000":
-            return []
-        result = []
-        for item in data.get("list", []):
-            # 투자대상법인명 — 여러 필드 시도
-            inv_name = ""
-            for f in NAME_FIELDS:
-                v = item.get(f, "").strip()
-                if v:
-                    inv_name = v
-                    break
-            if not inv_name:
+    _logged = getattr(fetch_investee, "_logged", False)
+
+    for bsns_year in ["2024", "2023"]:
+        try:
+            res = requests.get(
+                "https://opendart.fss.or.kr/api/otrCprInvstmntSttus.json",
+                params={
+                    "crtfc_key": api_key,
+                    "corp_code": corp_code,
+                    "bsns_year": bsns_year,
+                    "reprt_code": "11011",
+                },
+                timeout=10
+            )
+            if res.status_code != 200:
                 continue
-            # 지분율 — 여러 필드 시도
-            pct = 0.0
-            for f in RATIO_FIELDS:
-                val = item.get(f, "")
-                try:
-                    parsed = float(str(val).replace(",", "").replace("%", "").strip())
-                    if parsed > 0:
-                        pct = parsed
+            data = res.json()
+            if data.get("status") != "000":
+                continue
+            items = data.get("list", [])
+            if not items:
+                continue
+            # 최초 1회 실제 필드명 로깅
+            if not _logged:
+                print(f"  [DART 필드 샘플] {list(items[0].keys())}")
+                print(f"  [DART 값 샘플] {items[0]}")
+                fetch_investee._logged = True
+            result = []
+            for item in items:
+                inv_name = ""
+                for f in NAME_FIELDS:
+                    v = str(item.get(f, "") or "").strip()
+                    if v:
+                        inv_name = v
                         break
-                except (ValueError, TypeError):
+                if not inv_name:
                     continue
-            if pct >= MIN_STAKE_PCT:
-                result.append((inv_name, pct))
-        return result
-    except Exception:
-        return []
+                pct = 0.0
+                for f in RATIO_FIELDS:
+                    val = item.get(f, "")
+                    try:
+                        parsed = float(str(val).replace(",", "").replace("%", "").strip())
+                        if parsed > 0:
+                            pct = parsed
+                            break
+                    except (ValueError, TypeError):
+                        continue
+                if pct >= MIN_STAKE_PCT:
+                    result.append((inv_name, pct))
+            if result:
+                return result
+        except Exception:
+            continue
+    return []
 
 
 # ── 4. DART 최대주주현황 조회 ─────────────────────────────────────────────────
