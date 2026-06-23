@@ -840,6 +840,37 @@ def load_seen_context() -> dict:
                 desc_norms.extend(entry.get("desc_norms",  []))
     return {"title_norms": title_norms, "desc_norms": desc_norms}
 
+
+def load_seen_entities_today() -> set:
+    """당일(KST 날짜 기준) 발송된 entity 목록 로드 — 동일 entity 1일 1건 제한용"""
+    kst = timezone(timedelta(hours=9))
+    now = datetime.now(kst)
+    today = now.strftime("%Y-%m-%d")
+    # 당일 슬롯 키: "2026-06-23 07", "2026-06-23 12" 등
+    today_keys = {
+        (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
+        for i in range(24)
+        if (now - timedelta(hours=i)).strftime("%Y-%m-%d") == today
+    }
+    entities = set()
+    if not os.path.exists(SEEN_FILE):
+        return entities
+    try:
+        with open(SEEN_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return entities
+        for k in today_keys:
+            entry = data.get(k, {})
+            for combo in entry.get("combos", []):
+                # combo = [entity, event_type] 또는 ["ek", event_key]
+                if isinstance(combo, (list, tuple)) and len(combo) == 2:
+                    if combo[0] != "ek":
+                        entities.add(combo[0])  # entity
+    except Exception:
+        pass
+    return entities
+
 def save_seen_urls(seen: set, combos: set = None, title_norms: list = None, desc_norms: list = None):
     """현재 시각 키(YYYY-MM-DD HH)로 seen URL + 발송 조합 저장 — 최근 24시간 키만 보존"""
     kst = timezone(timedelta(hours=9))
@@ -2649,9 +2680,12 @@ def main():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 뉴스 모니터링 시작")
     now_kst         = datetime.now(timezone(timedelta(hours=9)))
     now_str_full    = now_kst.strftime("%m월 %d일 %H시")
-    seen_urls       = load_seen_urls()
-    seen_combos     = load_seen_combos()
-    seen_context    = load_seen_context()
+    seen_urls         = load_seen_urls()
+    seen_combos       = load_seen_combos()
+    seen_context      = load_seen_context()
+    seen_entities_today = load_seen_entities_today()
+    if seen_entities_today:
+        print(f"  오늘 발송 entity: {sorted(seen_entities_today)}")
     sent_urls = set()
     new_combos_this_run = set()
     raw_articles    = []
@@ -2752,6 +2786,11 @@ def main():
         "배당", "변제", "채무조정", "출자전환",
         "추가제재", "과징금", "검찰고발", "수사착수",
         "확정판결", "최종확정", "선고확정",
+        # 새 단계 진행 — 동일 entity여도 새 사건으로 탐지
+        "워크아웃 개시", "워크아웃 신청", "워크아웃 확정",
+        "추가 계열사", "신규 회생", "추가 부도",
+        "상폐 확정", "상장폐지 확정", "상장폐지 결정",
+        "검찰 기소", "구속 영장", "구속 기소",
     ]
 
     def is_next_stage(title: str, desc: str) -> bool:
@@ -2792,6 +2831,14 @@ def main():
 
         if not matched and not entity and kw_only and kw_only in seen_combos:
             matched = True; reason = "동일 키워드 이미 발송"
+
+        # 당일 동일 entity 1건 제한 — event_type 달라도 같은 사건으로 판단
+        # 예외: _force_urgent(당사 직접 이슈), is_next_stage(회생계획인가·파산선고 등 새 단계)
+        if (not matched and entity
+                and entity in seen_entities_today
+                and not a.get("_force_urgent")
+                and not is_next_stage(a.get("title",""), a.get("desc",""))):
+            matched = True; reason = f"당일 동일 entity({entity}) 이미 발송"
 
         if not matched and t_norm and not is_next_stage(a.get("title",""), a.get("desc","")):
             for prev_t in prev_title_norms:
