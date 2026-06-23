@@ -2870,9 +2870,11 @@ def main():
             matched = True; reason = "동일 키워드 이미 발송"
 
         # 당일 동일 entity 1건 제한 — event_type 달라도 같은 사건으로 판단
-        # 예외: _force_urgent(당사 직접 이슈), is_next_stage(회생계획인가·파산선고 등 새 단계)
+        # 예외: _force_urgent(당사 직접 이슈), is_next_stage, 일반명사 entity
+        _GENERIC = {"기업", "시장", "코스닥", "코스피", "증시", "채권", "주식", "부동산", "금융"}
         if (not matched and entity
                 and entity in seen_entities_today
+                and entity not in _GENERIC
                 and not a.get("_force_urgent")
                 and not is_next_stage(a.get("title",""), a.get("desc",""))):
             matched = True; reason = f"당일 동일 entity({entity}) 이미 발송"
@@ -2936,10 +2938,12 @@ def main():
     # ── known_entities 기반 장기 이슈 등급 강등·차단 ──────────────────────────
     # D+0~2: 정상, D+3~6: 1단계 강등, D+7+: 완전 차단 (NEXT_STAGE 예외 유지)
     GRADE_DEMOTE = {"긴급": "주의", "주의": "참고", "참고": "참고"}
+    # 일반명사 entity — known_entities·seen_entities_today 차단 제외
+    GENERIC_ENTITIES = {"기업", "시장", "코스닥", "코스피", "증시", "채권", "주식", "부동산", "금융"}
     _known_removed = []
     for a in list(filtered):
         ent = a.get("entity", "") or ""
-        if not ent or a.get("_force_urgent"):
+        if not ent or a.get("_force_urgent") or ent in GENERIC_ENTITIES:
             continue
         days = known_entities.get(ent, 0)
         title = a.get("title", "")
@@ -2956,6 +2960,16 @@ def main():
                 if old_grade != new_grade:
                     a["grade"] = new_grade
                     print(f"  [장기이슈 강등] D+{days} {ent} {old_grade}→{new_grade}: {title[:35]}")
+
+    # 강등 후 참고 GRADE_LIMITS 재체크 (최대 5건)
+    ref_after_demote = [a for a in filtered if a.get("grade") == "참고"]
+    if len(ref_after_demote) > GRADE_LIMITS["참고"]:
+        ref_sorted = sorted(ref_after_demote, key=lambda x: x.get("_risk_score", 0), reverse=True)
+        keep_ids = {id(a) for a in ref_sorted[:GRADE_LIMITS["참고"]]}
+        excess = [a for a in ref_after_demote if id(a) not in keep_ids]
+        for a in excess:
+            print(f"  [참고 초과 제거] {a['title'][:40]}")
+            filtered.remove(a)
 
     # 차단된 기사도 seen에 등록 (재탐지 방지)
     for a in _known_removed:
@@ -3090,7 +3104,7 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
             res = requests.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={
-                    "x-api-key": ANTHROPIC_API_KEY,
+                    "x-api-key": ANTHROPIC_KEY,
                     "anthropic-version": "2023-06-01",
                     "content-type": "application/json",
                 },
