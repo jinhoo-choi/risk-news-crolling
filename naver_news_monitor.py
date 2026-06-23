@@ -2903,9 +2903,7 @@ def main():
         return ""
 
     def crawl_body(article):
-        if article.get("grade") == "참고":
-            article["body"] = ""
-            return article
+        # 전체 등급 본문 크롤링 (기존 긴급·주의만 → 전체로 확장)
         body = fetch_article_body(article["url"])
         if body:
             article["body"] = body
@@ -2921,11 +2919,12 @@ def main():
                     article["_alt_url"] = alt_url
                     print(f"  본문 대체 URL 성공: {article.get('title','')[:30]}")
                     return article
-            # 2) 대체도 실패 → 참고로 강등
+            # 2) 대체도 실패 → desc fallback, 참고 강등
             print(f"  본문 크롤링 실패(대체 URL도 없음) → 참고 강등: {article.get('title','')[:30]}")
             article["body"] = article.get("desc", "")
             article["_body_failed"] = True
-            article["grade"] = "참고"
+            if article.get("grade") in ("긴급", "주의"):
+                article["grade"] = "참고"
         return article
 
     with ThreadPoolExecutor(max_workers=3) as executor:
@@ -2935,6 +2934,94 @@ def main():
                 future.result()
             except Exception as e:
                 print(f"  본문 크롤링 오류: {e}")
+
+    # ── Claude 본문 기반 2차 검증 ────────────────────────────────────────────
+    # 1차(Gemini) 통과 기사 중 본문이 있는 것만 재검증 — 오탐 최종 차단
+    print("  [2차 검증] 본문 기반 Claude 리스크 재검증 중...")
+
+    def claude_body_verify(article) -> bool:
+        """본문을 읽고 진짜 리스크 기사인지 재판단. True = 유지, False = 제외"""
+        body = article.get("body", "") or ""
+        title = article.get("title", "")
+
+        # 본문 없거나 크롤링 실패 → 유지 (이미 참고 강등됨)
+        if not body or article.get("_body_failed"):
+            return True
+
+        # 본문 앞 600자만 사용 (토큰 절약)
+        body_preview = body[:600]
+
+        prompt = f"""당신은 한국투자증권 eBiz본부 리스크 담당자입니다.
+아래 기사 제목과 본문을 읽고, 이 기사가 진짜 금융 리스크 기사인지 판단하세요.
+
+판단 기준:
+- 리스크 O: 상장폐지·파산·부도·기업회생 확정, 당사 채권·PF 손실 가능, 반대매매 급증, MTS 장애, 금감원 제재
+- 리스크 X: 연예·방송 인물 에피소드, 회사 상황을 배경으로만 언급한 인터뷰·인물 기사, 산업 트렌드 분석, 시황 브리핑, 이미 알려진 사건의 단순 경과 보도
+
+제목: {title}
+본문(앞부분): {body_preview}
+
+JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이유"}}"""
+
+        try:
+            res = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": CLAUDE_MODEL,
+                    "max_tokens": 80,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=20,
+            )
+            if res.status_code != 200:
+                return True  # API 오류 → 안전하게 유지
+            raw = res.json().get("content", [{}])[0].get("text", "").strip()
+            data = json.loads(raw)
+            is_risk = data.get("risk", True)
+            if not is_risk:
+                reason = data.get("reason", "")
+                print(f"  [2차 제외] {title[:40]} — {reason}")
+            return is_risk
+        except Exception:
+            return True  # 파싱 실패 → 안전하게 유지
+
+    # 병렬 검증
+    _verify_results = {}
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(claude_body_verify, a): a for a in filtered}
+        for future in as_completed(futures):
+            a = futures[future]
+            try:
+                _verify_results[id(a)] = future.result()
+            except Exception:
+                _verify_results[id(a)] = True
+
+    before_verify = len(filtered)
+    _removed_verify = [a for a in filtered if not _verify_results.get(id(a), True)]
+    filtered = [a for a in filtered if _verify_results.get(id(a), True)]
+
+    # 2차 검증 제거 기사 → seen_news에 등록 (다음 실행 재탐지 방지)
+    for a in _removed_verify:
+        sent_urls.add(a.get("url", ""))
+        _ent = a.get("entity", "").strip()
+        _et  = a.get("event_type", "").strip()
+        _ek  = a.get("event_key", "").strip()
+        _kw  = a.get("keyword", "").strip()
+        if _ek:
+            new_combos_this_run.add(("ek", _ek))
+        if _et and _ent:
+            new_combos_this_run.add((_ent, _et))
+        elif _kw and _ent:
+            new_combos_this_run.add((_ent, _kw))
+
+    if _removed_verify:
+        print(f"  [2차 검증] {len(_removed_verify)}건 제외 → {len(filtered)}건 유지")
+    # ──────────────────────────────────────────────────────────────────────────
 
     print("  대응방안·고객안내 생성 중... (긴급·주의)")
 
