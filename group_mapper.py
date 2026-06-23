@@ -84,18 +84,19 @@ def load_corp_codes() -> dict:
 
 
 # ── 2. exposure_data.csv에서 DART 조회 대상 추출 ─────────────────────────────
+MAX_DART_TARGETS = 500  # 잔고 상위 N개만 조회 — 그룹 연결이 의미 있는 대형주 중심
+
 def load_target_stocks() -> list:
     """exposure_data.csv → DART 조회 대상 종목 리스트 [(종목명, 종목코드), ...]
     - 6자리 숫자 종목코드만 (채권·해외주식 제외)
     - ETF·리츠·스팩 제외
-    - 중복 제거
+    - 잔고 합산 기준 상위 MAX_DART_TARGETS개만 (실행 시간 제한)
     """
     if not os.path.exists(EXPOSURE_FILE):
         print(f"  [경고] {EXPOSURE_FILE} 없음")
         return []
 
-    seen = set()
-    targets = []
+    bal_map = {}  # {종목코드: (종목명, 잔고합산)}
     try:
         with open(EXPOSURE_FILE, encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
@@ -109,13 +110,22 @@ def load_target_stocks() -> list:
                     continue
                 if ETF_RE.search(name):
                     continue
-                if code not in seen:
-                    seen.add(code)
-                    targets.append((name, code))
+                try:
+                    bal = float(str(row.get("잔고(억)", "0") or "0").replace(",", ""))
+                except ValueError:
+                    bal = 0.0
+                if code not in bal_map:
+                    bal_map[code] = (name, bal)
+                else:
+                    bal_map[code] = (bal_map[code][0], bal_map[code][1] + bal)
     except Exception as e:
         print(f"  [오류] exposure_data 로드 실패: {e}")
 
-    print(f"  DART 조회 대상: {len(targets)}개 종목")
+    # 잔고 내림차순 정렬 후 상위 N개
+    sorted_targets = sorted(bal_map.items(), key=lambda x: -x[1][1])
+    targets = [(v[0], code) for code, v in sorted_targets[:MAX_DART_TARGETS]]
+
+    print(f"  DART 조회 대상: {len(targets)}개 종목 (전체 {len(bal_map)}개 중 잔고 상위)")
     return targets
 
 
