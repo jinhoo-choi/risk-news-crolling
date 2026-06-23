@@ -846,7 +846,6 @@ def load_seen_entities_today() -> set:
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     today = now.strftime("%Y-%m-%d")
-    # 당일 슬롯 키: "2026-06-23 07", "2026-06-23 12" 등
     today_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
         for i in range(24)
@@ -863,22 +862,55 @@ def load_seen_entities_today() -> set:
         for k in today_keys:
             entry = data.get(k, {})
             for combo in entry.get("combos", []):
-                # combo = [entity, event_type] 또는 ["ek", event_key]
                 if isinstance(combo, (list, tuple)) and len(combo) == 2:
                     if combo[0] != "ek":
-                        entities.add(combo[0])  # entity
+                        entities.add(combo[0])
     except Exception:
         pass
     return entities
 
+
+def load_known_entities() -> dict:
+    """최근 7일 seen_news에서 entity별 최초 발송일(days_ago) 계산
+    반환: {entity: days_ago}  — days_ago=0: 오늘, 1: 어제, ...
+    강등 기준: days_ago >= 3 → 등급 1단계 강등
+    차단 기준: days_ago >= 7 → 완전 차단 (NEXT_STAGE 예외 유지)
+    """
+    kst = timezone(timedelta(hours=9))
+    now = datetime.now(kst)
+    # 최대 7일 = 168시간치 슬롯 로드
+    entity_first: dict = {}  # {entity: 최초 발송 days_ago}
+    if not os.path.exists(SEEN_FILE):
+        return entity_first
+    try:
+        with open(SEEN_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return entity_first
+        for i in range(168):
+            slot_dt = now - timedelta(hours=i)
+            slot_key = slot_dt.strftime("%Y-%m-%d %H")
+            days_ago = i // 24
+            entry = data.get(slot_key, {})
+            for combo in entry.get("combos", []):
+                if isinstance(combo, (list, tuple)) and len(combo) == 2:
+                    if combo[0] != "ek":
+                        ent = combo[0]
+                        # 가장 오래된 발송일 추적 (최솟값 = 최초)
+                        if ent not in entity_first or days_ago > entity_first[ent]:
+                            entity_first[ent] = days_ago
+    except Exception:
+        pass
+    return entity_first
+
 def save_seen_urls(seen: set, combos: set = None, title_norms: list = None, desc_norms: list = None):
-    """현재 시각 키(YYYY-MM-DD HH)로 seen URL + 발송 조합 저장 — 최근 24시간 키만 보존"""
+    """현재 시각 키(YYYY-MM-DD HH)로 seen URL + 발송 조합 저장 — 최근 7일 키만 보존"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     current_key = now.strftime("%Y-%m-%d %H")
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(24)
+        for i in range(168)  # 7일 = 168시간 보존 (강등·차단 이력 유지)
     }
     existing = {}
     if os.path.exists(SEEN_FILE):
@@ -2680,12 +2712,17 @@ def main():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 뉴스 모니터링 시작")
     now_kst         = datetime.now(timezone(timedelta(hours=9)))
     now_str_full    = now_kst.strftime("%m월 %d일 %H시")
-    seen_urls         = load_seen_urls()
-    seen_combos       = load_seen_combos()
-    seen_context      = load_seen_context()
+    seen_urls           = load_seen_urls()
+    seen_combos         = load_seen_combos()
+    seen_context        = load_seen_context()
     seen_entities_today = load_seen_entities_today()
+    known_entities      = load_known_entities()  # entity별 최초 발송 days_ago
     if seen_entities_today:
         print(f"  오늘 발송 entity: {sorted(seen_entities_today)}")
+    if known_entities:
+        aged = {e: d for e, d in known_entities.items() if d >= 3}
+        if aged:
+            print(f"  장기 이슈 entity(3일↑): {aged}")
     sent_urls = set()
     new_combos_this_run = set()
     raw_articles    = []
@@ -2894,6 +2931,45 @@ def main():
     filtered = [a for a in filtered if not a.get("entity") or id(a) in _best_ids]
     if _removed:
         print(f"  entity dedup: {len(_removed)}건 제거 → {len(filtered)}건")
+    # ──────────────────────────────────────────────────────────────────────────
+
+    # ── known_entities 기반 장기 이슈 등급 강등·차단 ──────────────────────────
+    # D+0~2: 정상, D+3~6: 1단계 강등, D+7+: 완전 차단 (NEXT_STAGE 예외 유지)
+    GRADE_DEMOTE = {"긴급": "주의", "주의": "참고", "참고": "참고"}
+    _known_removed = []
+    for a in list(filtered):
+        ent = a.get("entity", "") or ""
+        if not ent or a.get("_force_urgent"):
+            continue
+        days = known_entities.get(ent, 0)
+        title = a.get("title", "")
+        desc  = a.get("desc", "")
+        if days >= 7:
+            if not is_next_stage(title, desc):
+                print(f"  [장기이슈 차단] D+{days} {ent}: {title[:40]}")
+                _known_removed.append(a)
+                filtered.remove(a)
+        elif days >= 3:
+            if not is_next_stage(title, desc):
+                old_grade = a.get("grade", "참고")
+                new_grade = GRADE_DEMOTE.get(old_grade, "참고")
+                if old_grade != new_grade:
+                    a["grade"] = new_grade
+                    print(f"  [장기이슈 강등] D+{days} {ent} {old_grade}→{new_grade}: {title[:35]}")
+
+    # 차단된 기사도 seen에 등록 (재탐지 방지)
+    for a in _known_removed:
+        sent_urls.add(a.get("url", ""))
+        _ent = a.get("entity", "").strip()
+        _et  = a.get("event_type", "").strip()
+        _ek  = a.get("event_key", "").strip()
+        _kw  = a.get("keyword", "").strip()
+        if _ek:
+            new_combos_this_run.add(("ek", _ek))
+        if _et and _ent:
+            new_combos_this_run.add((_ent, _et))
+        elif _kw and _ent:
+            new_combos_this_run.add((_ent, _kw))
     # ──────────────────────────────────────────────────────────────────────────
 
     print(f"필터링 후 {len(filtered)}건 선별")
