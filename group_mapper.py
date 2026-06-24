@@ -21,7 +21,7 @@ CORP_CODE_FILE = "dart_corp_codes.json"   # corpCode.xml 파싱 결과 캐시
 
 SLEEP_SEC      = 0.15   # API 호출 간 딜레이 (초)
 MIN_STAKE_PCT  = 20.0   # 지분율 임계치 — 이 이상이면 계열사로 인정
-MAX_TOTAL_SEC  = 480    # 전체 실행 타임아웃 (8분 — Actions timeout-minutes:20 이내)
+MAX_TOTAL_SEC  = 300    # 전체 실행 타임아웃 (5분 — Actions timeout-minutes:15 이내)
 
 # ETF·리츠·펀드 등 사업보고서 없는 종목 제외 패턴
 ETF_RE = re.compile(
@@ -84,7 +84,7 @@ def load_corp_codes() -> dict:
 
 
 # ── 2. exposure_data.csv에서 DART 조회 대상 추출 ─────────────────────────────
-MAX_DART_TARGETS = 500  # 잔고 상위 N개만 조회 — 그룹 연결이 의미 있는 대형주 중심
+MAX_DART_TARGETS = 300  # 잔고 상위 N개만 조회 — 그룹 연결이 의미 있는 대형주 중심
 
 def load_target_stocks() -> list:
     """exposure_data.csv → DART 조회 대상 종목 리스트 [(종목명, 종목코드), ...]
@@ -136,7 +136,8 @@ def fetch_investee(corp_code: str, api_key: str) -> list:
     응답 필드명 샘플 로깅으로 실제 구조 파악
     """
     NAME_FIELDS  = ["inv_prm", "inv_nm", "corp_name", "invstmnt_prm", "cmpny_nm"]
-    RATIO_FIELDS = ["hold_ratio", "frst_acnt_d", "invstmnt_prm_stcqt", "qota_rt",
+    RATIO_FIELDS = ["trmend_blce_qota_rt", "bsis_blce_qota_rt",  # 실제 DART 필드명 (로그 확인)
+                    "hold_ratio", "frst_acnt_d", "invstmnt_prm_stcqt", "qota_rt",
                     "stkqy_qota_rt", "pssrp_stock_qota_rt", "pssrp_stcqt"]
 
     _logged = getattr(fetch_investee, "_logged", False)
@@ -151,7 +152,7 @@ def fetch_investee(corp_code: str, api_key: str) -> list:
                     "bsns_year": bsns_year,
                     "reprt_code": "11011",
                 },
-                timeout=10
+                timeout=5
             )
             if res.status_code != 200:
                 continue
@@ -161,7 +162,7 @@ def fetch_investee(corp_code: str, api_key: str) -> list:
             items = data.get("list", [])
             if not items:
                 continue
-            # 최초 1회 실제 필드명 로깅
+            # 최초 1회 실제 필드명 로깅 (진단 완료 후 제거 가능)
             if not _logged:
                 print(f"  [DART 필드 샘플] {list(items[0].keys())}")
                 print(f"  [DART 값 샘플] {items[0]}")
