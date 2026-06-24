@@ -286,14 +286,21 @@
         → entities=["ACE SK하이닉스 단일종목레버리지","1Q SK하이닉스선물단일종목레버리지","KIWOOM SK하이닉스선물단일종목레버리지"]
   · "삼성전자·SK하이닉스 신용거래 동반 급증" → entities=["삼성전자","SK하이닉스"] (둘 다 직접 피해)
   (relevant=false면 [])
+- related_stocks: entity와 지분·사업상 직접 연관된 국내 상장 종목명 목록 (최대 3개)
+  · entity가 비상장사일 때, 해당 사건으로 직접 타격받는 상장 관련주를 추출
+  · 예) entity="홈플러스(비상장)" → related_stocks=["홈플러스리츠"]
+  · 예) entity="MBK파트너스(비상장)" → related_stocks=["홈플러스리츠"]
+  · 예) entity="카카오(상장)" → related_stocks=[] (entity 자체가 상장사면 불필요)
+  · 상장 여부 불확실하거나 연관성이 약하면 빈 배열 []
+  · relevant=false면 []
 - event_type: 사건 유형을 아래 중 1개로 분류. (relevant=false면 null)
   상장폐지 / 거래정지 / 기업회생 / 파산부도 / PF부실 / 신용등급강등 / 반대매매 / 금감원제재 / 시스템장애 / 발행어음부실 / 유동성위기 / 대규모환매 / 감사의견거절 / 횡령배임 / 차환실패 / 기타리스크
 반환 형식 예시 (긴급/주의/참고/제외 각 1건):
 [
-  {{"id":1,"relevant":true,"grade":"긴급","reason":"리츠 기초자산 회생신청·손실 확정","confidence":0.97,"action":"해당 리츠 보유 고객 전수 파악 및 금일 내 평가손 산출","entity":"제이알글로벌리츠","entities":["제이알글로벌리츠"],"event_type":"기업회생"}},
-  {{"id":2,"relevant":true,"grade":"주의","reason":"PF 부실 징후·손실 미확정 단계","confidence":0.82,"action":"주 1회 PF 잔액 추이 점검, 연체 발생 시 즉시 대응","entity":"태영건설","entities":["태영건설"],"event_type":"PF부실"}},
-  {{"id":3,"relevant":true,"grade":"참고","reason":"업계 발행어음 증가 동향","confidence":0.71,"action":"동종업계 발행어음 만기 구조 비교, 자사 유동성 비율 점검","entity":"미래에셋증권","entities":["미래에셋증권"],"event_type":"발행어음부실"}},
-  {{"id":4,"relevant":false,"grade":null,"reason":null,"confidence":0.12,"action":null,"entity":null,"entities":[],"event_type":null}}
+  {{"id":1,"relevant":true,"grade":"긴급","reason":"리츠 기초자산 회생신청·손실 확정","confidence":0.97,"action":"해당 리츠 보유 고객 전수 파악 및 금일 내 평가손 산출","entity":"제이알글로벌리츠","entities":["제이알글로벌리츠"],"event_type":"기업회생","related_stocks":[]}},
+  {{"id":2,"relevant":true,"grade":"주의","reason":"PF 부실 징후·손실 미확정 단계","confidence":0.82,"action":"주 1회 PF 잔액 추이 점검, 연체 발생 시 즉시 대응","entity":"태영건설","entities":["태영건설"],"event_type":"PF부실","related_stocks":[]}},
+  {{"id":3,"relevant":true,"grade":"주의","reason":"홈플러스 회생으로 리츠 자산 손상 우려","confidence":0.88,"action":"홈플러스리츠 보유 고객 현황 파악","entity":"홈플러스","entities":["홈플러스"],"event_type":"기업회생","related_stocks":["홈플러스리츠"]}},
+  {{"id":4,"relevant":false,"grade":null,"reason":null,"confidence":0.12,"action":null,"entity":null,"entities":[],"event_type":null,"related_stocks":[]}}
 ]
 
 뉴스 목록:

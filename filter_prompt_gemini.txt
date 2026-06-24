@@ -80,6 +80,14 @@
 - ETF 기사: 기초자산(삼성전자 등) 말고 ETF 종목명 자체가 entity
 - relevant=false면 entity=null, entities=[]
 
+- related_stocks: entity와 지분·사업상 직접 연관된 국내 상장 종목명 목록 (최대 3개)
+  · entity가 비상장사일 때, 해당 사건으로 직접 타격받는 상장 관련주를 추출
+  · 예) entity="홈플러스(비상장)" → related_stocks=["홈플러스리츠"]
+  · 예) entity="MBK파트너스(비상장)" → related_stocks=["홈플러스리츠"]
+  · 예) entity="카카오(상장)" → related_stocks=[] (entity 자체가 상장사면 불필요)
+  · 상장 여부 불확실하거나 연관성이 약하면 빈 배열 []
+  · relevant=false면 []
+
 ## event_type 분류
 
 아래 중 1개만 선택 (relevant=false면 null):

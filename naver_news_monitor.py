@@ -1290,19 +1290,24 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
     _item_schema = _gtypes.Schema(
         type=_gtypes.Type.OBJECT,
         properties={
-            "id":         _gtypes.Schema(type=_gtypes.Type.INTEGER),
-            "relevant":   _gtypes.Schema(type=_gtypes.Type.BOOLEAN),
-            "grade":      _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
-            "reason":     _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
-            "confidence": _gtypes.Schema(type=_gtypes.Type.NUMBER),
-            "action":     _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
-            "entity":     _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
-            "entities":   _gtypes.Schema(
-                              type=_gtypes.Type.ARRAY,
-                              items=_gtypes.Schema(type=_gtypes.Type.STRING),
-                              nullable=True,
-                          ),
-            "event_type": _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
+            "id":             _gtypes.Schema(type=_gtypes.Type.INTEGER),
+            "relevant":       _gtypes.Schema(type=_gtypes.Type.BOOLEAN),
+            "grade":          _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
+            "reason":         _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
+            "confidence":     _gtypes.Schema(type=_gtypes.Type.NUMBER),
+            "action":         _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
+            "entity":         _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
+            "entities":       _gtypes.Schema(
+                                  type=_gtypes.Type.ARRAY,
+                                  items=_gtypes.Schema(type=_gtypes.Type.STRING),
+                                  nullable=True,
+                              ),
+            "event_type":     _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
+            "related_stocks": _gtypes.Schema(
+                                  type=_gtypes.Type.ARRAY,
+                                  items=_gtypes.Schema(type=_gtypes.Type.STRING),
+                                  nullable=True,
+                              ),
         },
         required=["id", "relevant", "confidence"],
     )
@@ -1354,8 +1359,11 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
                     _ents_clean = [e.strip() for e in _ents_raw if e and e.strip()] or [_ent]
                     if _ent not in _ents_clean:
                         _ents_clean = [_ent] + _ents_clean
-                    article["entities"]   = _ents_clean
-                    article["event_type"] = info.get("event_type") or ""
+                    article["entities"]      = _ents_clean
+                    article["event_type"]    = info.get("event_type") or ""
+                    # related_stocks: AI 추출 관련 상장주 — exposure_data 매칭 시 관련주 섹션 표시
+                    _rs_raw = info.get("related_stocks") or []
+                    article["related_stocks"] = [s.strip() for s in _rs_raw if s and s.strip()]
                     _evt = article["event_type"]
                     article["event_key"]  = f"{_ent}_{_evt}" if _ent and _evt else ""
                     article["_gemini_filtered"] = True  # Claude 재검증 트리거용
@@ -1961,13 +1969,51 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
 
     date_label = f"기준일: {ref_date}" if ref_date else ""
 
+    # ── RS 블랙리스트 (조기반환 경로와 공유) ────────────────────────
+    _RS_BL = {
+        "삼성전자", "SK하이닉스", "현대차", "LG에너지솔루션", "삼성바이오로직스",
+        "현대모비스", "기아", "셀트리온", "POSCO홀딩스", "KB금융", "신한지주",
+        "하나금융지주", "삼성생명", "삼성화재", "메리츠금융지주", "카카오", "NAVER",
+    }
+
+    def _early_related_html(rs_raw, seen_set):
+        """조기반환 경로용 관련주 HTML — P1~P3 적용"""
+        rs_list = [s.strip() for s in (rs_raw or []) if s and s.strip()][:3]
+        chunks = []
+        for rs_name in rs_list:
+            if rs_name in seen_set or rs_name in _RS_BL:
+                continue
+            rows_all = find_exposure(rs_name, exposure_data) if exposure_data else []
+            if not rows_all:
+                continue
+            seen_set.add(rs_name)
+            def _rr2(rows, label, bg, col):
+                if not rows:
+                    return ""
+                bal = sum(float(str(r.get("잔고(억)","0")).replace(",","")) for r in rows)
+                cus = sum(int(float(str(r.get("고객수","0")).replace(",",""))) for r in rows)
+                return (f'<div style="margin-bottom:4px;">'
+                        f'<span style="font-size:10px;background:{bg};color:{col};padding:1px 6px;border-radius:2px;font-weight:700;">{label}</span>'
+                        f'<div style="font-size:12px;color:#374151;line-height:1.8;">{rs_name} {bal:,.0f}억원 / {cus:,}명</div>'
+                        f'</div>')
+            chunk = (
+                _rr2([r for r in rows_all if r.get("종목유형","") in {"주식"}],   "관련주·주식", "#dbeafe", "#1d4ed8") +
+                _rr2([r for r in rows_all if r.get("종목유형","") in {"채권"}],   "관련주·채권", "#ede9fe", "#5b21b6") +
+                _rr2([r for r in rows_all if r.get("종목유형","") in {"여신","해외대출"}], "관련주·여신", "#fef3c7", "#b45309")
+            )
+            if chunk:
+                chunks.append(chunk)
+        if not chunks:
+            return ""
+        return (
+            f'<div style="margin-top:8px;padding-top:6px;border-top:1px dashed #e2e8f0;">'
+            f'<span style="font-size:10px;color:#64748b;font-weight:600;">▸ AI 추출 관련 상장주 익스포저</span>'
+            f'<div style="margin-top:4px;">{"".join(chunks)}</div>'
+            f'</div>'
+        )
+
     # 3개 다 없으면 → 관련주 확인 후 없으면 잔고 없음
     if not all_rows:
-        # 관련주 표시 조건:
-        # entity가 RELATED_STOCK_MAP에 있어도 아래 경우에만 표시
-        # 1) _force_urgent (당사 직접 이슈 — MTS·전산장애 등)
-        # 2) event_type이 시스템장애·금감원제재인 경우
-        # → 시황·반대매매 등 시장 전체 이슈에서 단순 언급된 기관명의 관련주 오표시 방지
         _art = article or {}
         _event_type = _art.get("event_type", "")
         _force = _art.get("_force_urgent", False)
@@ -2000,18 +2046,29 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                 inner_r += f'<div style="margin-bottom:4px;"><span style="font-size:10px;background:#fef3c7;color:#b45309;padding:1px 6px;border-radius:2px;font-weight:700;">관련주·여신잔고</span> ' + _rrow_merged(rl, related_name) + "</div>"
             if rb:
                 inner_r += f'<div style="margin-bottom:4px;"><span style="font-size:10px;background:#ede9fe;color:#5b21b6;padding:1px 6px;border-radius:2px;font-weight:700;">관련주·채권잔고</span> ' + _rrow_merged(rb, related_name) + "</div>"
-            return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
+            # AI related_stocks도 추가
+            _seen_e = set(entities_list) | {related_name}
+            for _ge in entities_list:
+                _seen_e.update(GROUP_ENTITIES_MAP.get(_ge, []))
+            _ai_rs_html = _early_related_html(_art.get("related_stocks"), _seen_e)
+            return f'''<table width="100%" cellpadding="0" cellspacing="000" border="0" style="background:#ffffff;">
       <tr><td style="padding:10px 16px;">
         <p style="margin:0 0 6px 0;font-size:11px;font-weight:700;color:#1e293b;">뱅키스 익스포저
           <span style="font-weight:400;color:#94a3b8;">{date_label}</span></p>
-        {inner_r}
+        {inner_r}{_ai_rs_html}
       </td></tr>
     </table>'''
+        # RELATED_STOCK_MAP도 없음 → AI related_stocks만 확인
+        _seen_e2 = set(entities_list)
+        for _ge in entities_list:
+            _seen_e2.update(GROUP_ENTITIES_MAP.get(_ge, []))
+        _rs2_html = _early_related_html((_art).get("related_stocks"), _seen_e2)
+        _inner2 = '<div style="font-size:12px;color:#94a3b8;">잔고 없음</div>' if not _rs2_html else ""
         return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:10px 16px;">
         <p style="margin:0 0 4px 0;font-size:11px;font-weight:700;color:#1e293b;">뱅키스 익스포저
           <span style="font-weight:400;color:#94a3b8;">{date_label}</span></p>
-        <div style="font-size:12px;color:#94a3b8;">잔고 없음</div>
+        {_inner2}{_rs2_html}
       </td></tr>
     </table>'''
 
@@ -2124,11 +2181,57 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
     else:
         inner = DIVIDER.join(sections)
 
+    # ── AI 추출 관련주 섹션 ─────────────────────────────────────────
+    def _build_related_html(related_stocks_raw: list, seen: set) -> str:
+        """AI 추출 관련주 HTML 생성 — 공용 함수 (P4 중복 해소)
+        - P1: 최대 3개 제한
+        - P2: seen(entities + GROUP_ENTITIES_MAP 계열사) 중복 제외
+        - P3: _RS_BL 대형주 제외
+        """
+        _rs_list = [s.strip() for s in (related_stocks_raw or []) if s and s.strip()]
+        _rs_list = _rs_list[:3]  # P1: 코드단 강제 3개 제한
+        _sections = []
+        for rs_name in _rs_list:
+            if rs_name in seen or rs_name in _RS_BL:  # P2, P3
+                continue
+            rs_rows_all = find_exposure(rs_name, exposure_data) if exposure_data else []
+            if not rs_rows_all:
+                continue
+            seen.add(rs_name)
+            rs_s = [r for r in rs_rows_all if r.get("종목유형","") in {"주식"}]
+            rs_b = [r for r in rs_rows_all if r.get("종목유형","") in {"채권"}]
+            rs_l = [r for r in rs_rows_all if r.get("종목유형","") in {"여신","해외대출"}]
+            if rs_s:
+                _sections.append(_section("관련주·주식", "#dbeafe", "#1d4ed8",
+                                          _fmt_merged_limited(_merge_by_name(rs_s))))
+            if rs_b:
+                _sections.append(_section("관련주·채권", "#ede9fe", "#5b21b6",
+                                          _fmt_merged_limited(_merge_by_name(rs_b))))
+            if rs_l:
+                _sections.append(_section("관련주·여신", "#fef3c7", "#b45309",
+                                          _fmt_merged_limited(_merge_by_name(rs_l))))
+        if not _sections:
+            return ""
+        return (
+            f'<div style="margin-top:8px;padding-top:6px;border-top:1px dashed #e2e8f0;">'
+            f'<span style="font-size:10px;color:#64748b;font-weight:600;">▸ AI 추출 관련 상장주 익스포저</span>'
+            f'<div style="margin-top:4px;">{DIVIDER.join(_sections)}</div>'
+            f'</div>'
+        )
+
+    _art = article or {}
+    _rs_raw = _art.get("related_stocks") or []
+    # P2: _seen_related에 entities + GROUP_ENTITIES_MAP 계열사 모두 포함
+    _seen_related = set(entities_list)
+    for _ent in entities_list:
+        _seen_related.update(GROUP_ENTITIES_MAP.get(_ent, []))
+    related_html = _build_related_html(_rs_raw, _seen_related)
+
     return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:10px 16px;">
         <p style="margin:0 0 8px 0;font-size:11px;font-weight:700;color:#1e293b;">뱅키스 익스포저
           <span style="font-weight:400;color:#94a3b8;">{date_label}</span></p>
-        {inner}
+        {inner}{related_html}
       </td></tr>
     </table>'''
 
