@@ -3206,6 +3206,10 @@ def main():
 판단 기준:
 - 리스크 O: 상장폐지·파산·부도·기업회생 확정, 당사 채권·PF 손실 가능, 반대매매 급증, MTS 장애, 금감원 제재
 - 리스크 X: 연예·방송 인물 에피소드, 회사 상황을 배경으로만 언급한 인터뷰·인물 기사, 산업 트렌드 분석, 시황 브리핑, 이미 알려진 사건의 단순 경과 보도
+- 리스크 X (파생 기사): 이미 기업회생·법정관리가 진행 중인 기업의 영업·인사·콘텐츠·계약 영향 기사
+  예) JTBC 회생 진행 중 → "출연료 미지급", "드라마 촬영 중단", "직원 급여 지연" → 리스크 X
+  예) 홈플러스 회생 진행 중 → "납품 차질", "입점 업체 피해" → 리스크 X
+  단, 파산선고 확정·회생계획 인가·추가 계열사 회생 신청은 리스크 O
 
 제목: {title}
 본문(앞부분): {body_preview}
@@ -3270,6 +3274,36 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
 
     if _removed_verify:
         print(f"  [2차 검증] {len(_removed_verify)}건 제외 → {len(filtered)}건 유지")
+    # ──────────────────────────────────────────────────────────────────────────
+
+    # ── 2차 검증 이후 seen_entities_today 재체크 ──────────────────────────────
+    # 2차 검증 통과 후에도 당일 동일 entity 1건 제한 적용
+    # (1차 dedup에서 놓친 케이스 — 다른 실행에서 이미 발송된 entity)
+    _GENERIC_E = {"기업", "시장", "코스닥", "코스피", "증시", "채권", "주식", "부동산", "금융"}
+    _recheck_removed = []
+    for a in list(filtered):
+        ent = a.get("entity", "") or ""
+        if not ent or a.get("_force_urgent") or ent in _GENERIC_E:
+            continue
+        if (ent in seen_entities_today
+                and not is_next_stage(a.get("title",""), a.get("desc",""))):
+            print(f"  [당일 재체크] 동일 entity 재차단: {ent} — {a.get('title','')[:40]}")
+            _recheck_removed.append(a)
+            filtered.remove(a)
+
+    # 재체크 차단 기사도 seen_news 등록
+    for a in _recheck_removed:
+        sent_urls.add(a.get("url", ""))
+        _ent = a.get("entity", "").strip()
+        _et  = a.get("event_type", "").strip()
+        _ek  = a.get("event_key", "").strip()
+        _kw  = a.get("keyword", "").strip()
+        if _ek:
+            new_combos_this_run.add(("ek", _ek))
+        if _et and _ent:
+            new_combos_this_run.add((_ent, _et))
+        elif _kw and _ent:
+            new_combos_this_run.add((_ent, _kw))
     # ──────────────────────────────────────────────────────────────────────────
 
     print("  대응방안·고객안내 생성 중... (긴급·주의)")
