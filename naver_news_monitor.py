@@ -1968,6 +1968,9 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                 all_rows.append(row)
 
     date_label = f"기준일: {ref_date}" if ref_date else ""
+    _AI_BADGE = ('<span style="font-size:10px;font-weight:400;color:#1d4ed8;'
+                 'background:#dbeafe;padding:1px 5px;border-radius:2px;margin-left:4px;">'
+                 '관련주 AI 추출</span>')
 
     # ── RS 블랙리스트 (조기반환 경로와 공유) ────────────────────────
     _RS_BL = {
@@ -2051,10 +2054,12 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             for _ge in entities_list:
                 _seen_e.update(GROUP_ENTITIES_MAP.get(_ge, []))
             _ai_rs_html = _early_related_html(_art.get("related_stocks"), _seen_e)
-            return f'''<table width="100%" cellpadding="0" cellspacing="000" border="0" style="background:#ffffff;">
+            _ai_badge1 = _AI_BADGE if _ai_rs_html else ""
+            return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:10px 16px;">
         <p style="margin:0 0 6px 0;font-size:11px;font-weight:700;color:#1e293b;">뱅키스 익스포저
-          <span style="font-weight:400;color:#94a3b8;">{date_label}</span></p>
+          <span style="font-weight:400;color:#94a3b8;">{date_label}</span>{_ai_badge1}
+        </p>
         {inner_r}{_ai_rs_html}
       </td></tr>
     </table>'''
@@ -2064,10 +2069,12 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             _seen_e2.update(GROUP_ENTITIES_MAP.get(_ge, []))
         _rs2_html = _early_related_html((_art).get("related_stocks"), _seen_e2)
         _inner2 = '<div style="font-size:12px;color:#94a3b8;">잔고 없음</div>' if not _rs2_html else ""
+        _ai_badge2 = _AI_BADGE if _rs2_html else ""
         return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:10px 16px;">
         <p style="margin:0 0 4px 0;font-size:11px;font-weight:700;color:#1e293b;">뱅키스 익스포저
-          <span style="font-weight:400;color:#94a3b8;">{date_label}</span></p>
+          <span style="font-weight:400;color:#94a3b8;">{date_label}</span>{_ai_badge2}
+        </p>
         {_inner2}{_rs2_html}
       </td></tr>
     </table>'''
@@ -2115,7 +2122,7 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             f' {v["잔고"]:,.0f}억원 / {v["고객수"]:,}명</div>'
         )
 
-    MAX_DISPLAY_ITEMS = 2
+    MAX_DISPLAY_ITEMS = 3
 
     def _fmt_merged_limited(merged: dict) -> str:
         """종목명별 합산 딱셔너리 → 잔고 내림차순 상위 N개 표시 + 초과분 '外 N개 종목 X억 Y명(중복포함)' 요약"""
@@ -2226,11 +2233,13 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
     for _ent in entities_list:
         _seen_related.update(GROUP_ENTITIES_MAP.get(_ent, []))
     related_html = _build_related_html(_rs_raw, _seen_related)
+    _ai_badge3 = _AI_BADGE if related_html else ""
 
     return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:10px 16px;">
         <p style="margin:0 0 8px 0;font-size:11px;font-weight:700;color:#1e293b;">뱅키스 익스포저
-          <span style="font-weight:400;color:#94a3b8;">{date_label}</span></p>
+          <span style="font-weight:400;color:#94a3b8;">{date_label}</span>{_ai_badge3}
+        </p>
         {inner}{related_html}
       </td></tr>
     </table>'''
