@@ -8,7 +8,7 @@ exposure_data.csv의 상장사 종목코드 → DART 타법인출자현황·최�
 주기: news_monitor.yml의 group-mapper job에서 호출 (기존 cron-job.org 트리거 그대로)
 """
 
-import os, re, json, time, csv, zipfile, io
+import os, re, json, sys, time, csv, zipfile, io
 import xml.etree.ElementTree as ET
 import requests
 from collections import defaultdict
@@ -391,16 +391,7 @@ def main():
     group_map = cluster_groups(name_to_code, investee_map, shareholder_map)
     print(f"  그룹 클러스터: {len(set(tuple(sorted(v)) for v in group_map.values()))}개 그룹 / {len(group_map)}개 종목")
 
-    # 진단: 빈 결과면 원인 출력
-    if not group_map:
-        print("  [경고] group_map 비어있음 — DART API 응답 데이터 확인 필요")
-        print(f"    investee_map 건수: {len(investee_map)}")
-        print(f"    shareholder_map 건수: {len(shareholder_map)}")
-        if investee_map:
-            sample = list(investee_map.items())[:2]
-            print(f"    investee_map 샘플: {sample}")
-
-    # 항상 저장 (빈 결과여도 저장해서 실행 흔적 남김)
+    # 결과 검증 — 빈 결과면 기존 파일 유지 (폴백)
     existing = {}
     if os.path.exists(OUTPUT_FILE):
         try:
@@ -409,7 +400,23 @@ def main():
         except Exception:
             pass
 
-    if existing == group_map and group_map:
+    if not group_map:
+        print("  [경고] group_map 비어있음 — DART API 응답 데이터 확인 필요")
+        print(f"    investee_map 건수: {len(investee_map)}")
+        print(f"    shareholder_map 건수: {len(shareholder_map)}")
+        if investee_map:
+            sample = list(investee_map.items())[:2]
+            print(f"    investee_map 샘플: {sample}")
+        if existing:
+            print(f"  [폴백] 기존 group_map.json 유지 ({len(existing)}개 항목) — 빈 결과로 덮어쓰지 않음")
+        else:
+            print("  [폴백] 기존 파일 없음 — 빈 결과 저장")
+            with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+                json.dump({}, f, ensure_ascii=False, indent=2)
+        # 실패 exit code → yml re-run 트리거용
+        sys.exit(1)
+
+    if existing == group_map:
         print(f"  변경 없음 — {OUTPUT_FILE} 저장 스킵")
     else:
         with open(OUTPUT_FILE, "w", encoding="utf-8") as f:

@@ -13,6 +13,9 @@ jobs:
     permissions:
       contents: write
 
+    strategy:
+      max-parallel: 1
+
     steps:
       - name: 코드 체크아웃
         uses: actions/checkout@v4
@@ -26,16 +29,31 @@ jobs:
         run: pip install requests
 
       - name: DART 그룹 매핑 갱신 (전체 조회)
+        id: dart_mapping
         env:
           DART_API_KEY:       ${{ secrets.DART_API_KEY }}
           EXPOSURE_FILE:      exposure_data.csv
-          DART_MAX_TARGETS:   '9999'   # 제한 없이 전체 조회
+          DART_MAX_TARGETS:   '9000'   # API 한도(20,000건) 안전 마진 확보
           DART_MAX_TOTAL_SEC: '1500'   # 25분 타임아웃
         run: python group_mapper.py
+        # 실패(빈 결과) 시 exit code 1 → continue-on-error로 후속 폴백 처리
         continue-on-error: true
 
-      - name: group_map.json 커밋 & 푸시
-        if: always()
+      - name: 맵핑 결과 확인
+        id: check_result
+        run: |
+          COUNT=$(python3 -c "import json; d=json.load(open('group_map.json')); print(len(d))" 2>/dev/null || echo "0")
+          echo "group_map_count=${COUNT}" >> $GITHUB_OUTPUT
+          echo "group_map 항목 수: ${COUNT}"
+          if [ "$COUNT" -eq "0" ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "::warning::group_map 비어있음 — 기존 파일 유지"
+          else
+            echo "status=success" >> $GITHUB_OUTPUT
+          fi
+
+      - name: group_map.json 커밋 & 푸시 (성공 시만)
+        if: steps.check_result.outputs.status == 'success'
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
@@ -43,6 +61,14 @@ jobs:
           git pull --rebase origin main
           git stash pop || true
           git add group_map.json dart_corp_codes.json || true
-          git diff --cached --quiet || git commit -m "update group_map weekly [skip ci]"
+          git diff --cached --quiet || git commit -m "update group_map weekly [skip ci] (${{ steps.check_result.outputs.group_map_count }}개 항목)"
           git push || true
-        continue-on-error: true
+
+      - name: 실패 시 재시도 안내 출력
+        if: steps.check_result.outputs.status == 'failed'
+        run: |
+          echo "::error::DART 매핑 실패 — 기존 group_map.json 유지됨"
+          echo "재시도: Actions 탭 → DART 그룹 매핑 갱신 → Re-run jobs"
+          echo "또는 workflow_dispatch로 수동 실행"
+          # 실패 상태로 종료하여 GitHub Actions Re-run 버튼 활성화
+          exit 1
