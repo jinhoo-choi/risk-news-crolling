@@ -21,7 +21,6 @@ CORP_CODE_FILE = "dart_corp_codes.json"   # corpCode.xml 파싱 결과 캐시
 
 SLEEP_SEC      = 0.15   # API 호출 간 딜레이 (초)
 MIN_STAKE_PCT  = 20.0   # 지분율 임계치 — 이 이상이면 계열사로 인정
-MAX_TOTAL_SEC  = 300    # 전체 실행 타임아웃 (5분 — Actions timeout-minutes:15 이내)
 
 # ETF·리츠·펀드 등 사업보고서 없는 종목 제외 패턴
 ETF_RE = re.compile(
@@ -84,8 +83,8 @@ def load_corp_codes() -> dict:
 
 
 # ── 2. exposure_data.csv에서 DART 조회 대상 추출 ─────────────────────────────
-MAX_DART_TARGETS = 300  # 잔고 상위 N개만 조회 — 그룹 연결이 의미 있는 대형주 중심
-
+MAX_DART_TARGETS = int(os.environ.get("DART_MAX_TARGETS", "300"))   # 기본 300, yml에서 9999로 주입 시 전체 조회
+MAX_TOTAL_SEC    = int(os.environ.get("DART_MAX_TOTAL_SEC", "300")) # 기본 5분, 주간 yml에서 1500(25분)
 def load_target_stocks() -> list:
     """exposure_data.csv → DART 조회 대상 종목 리스트 [(종목명, 종목코드), ...]
     - 6자리 숫자 종목코드만 (채권·해외주식 제외)

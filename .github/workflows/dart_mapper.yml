@@ -1,0 +1,48 @@
+name: DART 그룹 매핑 갱신 (주 1회)
+
+on:
+  schedule:
+    - cron: '0 21 * * 0'   # 매주 일요일 21:00 UTC = 월요일 06:00 KST
+  workflow_dispatch:         # 수동 실행 허용
+
+jobs:
+  group-mapper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30      # 전체 조회 시 시간 여유
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 라이브러리 설치
+        run: pip install requests
+
+      - name: DART 그룹 매핑 갱신 (전체 조회)
+        env:
+          DART_API_KEY:       ${{ secrets.DART_API_KEY }}
+          EXPOSURE_FILE:      exposure_data.csv
+          DART_MAX_TARGETS:   '9999'   # 제한 없이 전체 조회
+          DART_MAX_TOTAL_SEC: '1500'   # 25분 타임아웃
+        run: python group_mapper.py
+        continue-on-error: true
+
+      - name: group_map.json 커밋 & 푸시
+        if: always()
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git stash --include-untracked || true
+          git pull --rebase origin main
+          git stash pop || true
+          git add group_map.json dart_corp_codes.json || true
+          git diff --cached --quiet || git commit -m "update group_map weekly [skip ci]"
+          git push || true
+        continue-on-error: true
