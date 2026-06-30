@@ -1244,7 +1244,7 @@ def is_hard_excluded(title: str, desc: str = "") -> tuple:
 
     # 치명적 키워드 bypass — AI 판단으로 넘김
     CRITICAL_KW = ["상장폐지", "파산", "부도", "횡령", "배임", "거래정지",
-                   "기업회생", "MTS 장애", "MTS 접속 장애"]
+                   "기업회생", "회생절차", "회생계획", "회생신청", "MTS 장애", "MTS 접속 장애"]
     # 스팩·정상상폐·호재성·칼럼 기사는 CRITICAL_KW bypass 면제 → 하드제외 적용
     CRITICAL_EXEMPT = ["스팩", "SPAC", "기업인수목적", "알짜", "체질 변신", "체질 개선",
                        "방카", "인수 효과", "밸류업", "주식병합",
@@ -1275,6 +1275,23 @@ def is_hard_excluded(title: str, desc: str = "") -> tuple:
     for pat in EXCLUDE_TITLE_RE_PATTERNS:
         if re.search(pat, title):
             return True, pat
+
+    # ── 브래킷 코너물 구조적 판별 (화이트리스트 한계 극복) ──────────────
+    # 제목이 "[코너명]"으로 시작하면, 그 코너명이 보도성(단독·속보 등)이 아닌 한
+    # 필자 개인 코너·연재물로 추정 → CRITICAL_KW 없으면 차단
+    # 신규 코너명(예: [기자의 창], [줌인], [애널리스트 노트])도 자동 차단됨
+    _bracket_m = re.match(r'^\[([^\]]{1,20})\]', title)
+    if _bracket_m:
+        _bracket_content = _bracket_m.group(1)
+        # 보도성 브래킷(허용) — 최소화된 화이트리스트
+        _NEWS_BRACKET_KW = {"단독", "속보", "공시", "특징주", "긴급속보", "공식"}
+        if not any(kw in _bracket_content for kw in _NEWS_BRACKET_KW):
+            _CRITICAL_KW_LOCAL = ["상장폐지", "파산", "부도", "횡령", "배임",
+                                  "거래정지", "기업회생", "회생절차", "회생계획", "회생신청",
+                                  "MTS 장애", "MTS 접속 장애"]
+            if not any(kw in title for kw in _CRITICAL_KW_LOCAL):
+                return True, f"브래킷 코너 추정: [{_bracket_content}]"
+
     return False, None
 
 
@@ -3233,6 +3250,9 @@ def main():
   완전자회사화하는 상장폐지는 부실 아닌 호재성 M&A → 리스크 X
   예) "더존비즈온, 잔여 지분 현금 매입 마무리…상장폐지" — EQT 공개매수에 의한 자진 상폐, 소액주주 프리미엄 수령 → 리스크 X
   단, 감사의견거절·실적 악화·재무 부실로 인한 상장폐지는 리스크 O
+- 리스크 X (칼럼·코너물): 제목이 "[코너명]" 형태이고 필자 개인 견해·정기 연재 형식이면
+  (처음 보는 코너명도 동일 적용 — "OO노트", "OO워치", "줌인", "취재파일" 등)
+  본문에 새로운 확정 손실 사건이 없는 한 리스크 X. "[단독]","[속보]","[공시]"는 예외
 
 제목: {title}
 본문(앞부분): {body_preview}
