@@ -589,6 +589,9 @@ def load_exposure_data() -> dict:
                     "리스크종목":  row[6].strip() if len(row) > 6 else "",
                     "리스크고객수": row[7].strip() if len(row) > 7 else "0",
                     "리스크잔고(억)": row[8].strip() if len(row) > 8 else "0",
+                    "최고리스크잔고": row[9].strip() if len(row) > 9 else "",
+                    "최고리스크고객": row[10].strip() if len(row) > 10 else "",
+                    "유지담보비율":  row[11].strip() if len(row) > 11 else "",
                 }
                 name = normalize_ticker(d["종목명"])
                 d["종목명"] = name

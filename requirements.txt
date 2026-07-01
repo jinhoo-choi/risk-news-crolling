@@ -1,6 +1,5 @@
 requests
 beautifulsoup4
-pandas
 rapidfuzz
 json-repair
 yfinance

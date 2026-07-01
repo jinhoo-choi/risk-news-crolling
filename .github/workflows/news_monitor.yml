@@ -29,7 +29,7 @@ jobs:
           python-version: '3.11'
 
       - name: 라이브러리 설치
-        run: pip install requests beautifulsoup4 pandas lxml
+        run: pip install requests beautifulsoup4
 
       - name: 경쟁사 공지사항 크롤링
         run: python broker_notices.py
