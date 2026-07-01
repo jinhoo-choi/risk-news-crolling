@@ -661,8 +661,12 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
         if name in seen_names:
             continue
 
-        # 단순 부분 문자열 포함 검사 (정규식 대신 → 10배 빠름)
-        if entity in name:
+        # 접두(prefix) 매칭 — 법인명 표기차이(중앙일보↔중앙일보(주))만 허용,
+        # 접미 부분일치(마이크론⊂하나마이크론) 오매칭 차단
+        _clean_n = re.sub(r'[(주)㈜\s]', '', name)
+        if _clean_n and (_clean_n == clean_e
+                         or _clean_n.startswith(clean_e)
+                         or clean_e.startswith(_clean_n)):
             results.extend(rows)
             seen_names.add(name)
             continue
