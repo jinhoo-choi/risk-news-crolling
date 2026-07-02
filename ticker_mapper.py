@@ -4,8 +4,7 @@ exposure_data.csv에서 해외주식 티커 추출 → yfinance로 한글명 조
 GitHub Actions에서 주기적으로 실행 (CSV 업로드 후)
 """
 
-import csv, json, os, re, time, sys
-from pathlib import Path
+import csv, json, os, re, time
 
 # ── 설정 ──────────────────────────────────────────
 EXPOSURE_FILE  = os.environ.get("EXPOSURE_FILE", "exposure_data.csv")

@@ -3418,7 +3418,6 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
                         .replace("__TITLE__", article.get("title",""))
                         .replace("__BODY__", body_text[:400])
                         .replace("__EXP__", exp_str)
-                        .replace("__EXP_LINE__", f"- eBiz 익스포저: {exp_str}" if exp_str else "")
                         .replace("__OVERSEAS__", "해외주식 (신용융자 불가, 담보대출만 가능)" if is_overseas else "국내주식")
                         .replace("__BODY_FAIL__", " (※ 본문 크롤링 실패 — 제목·요약 기반만 사용, 추측 금지)" if article.get("_body_failed") else "")
                     )}],
