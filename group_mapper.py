@@ -9,6 +9,7 @@ exposure_data.csv의 상장사 종목코드 → DART 타법인출자현황·최�
 """
 
 import os, re, json, sys, time, csv, zipfile, io
+from datetime import datetime, timedelta
 import xml.etree.ElementTree as ET
 import requests
 from collections import defaultdict
@@ -129,9 +130,49 @@ def load_target_stocks() -> list:
 
 
 # ── 3. DART 타법인출자현황 조회 ───────────────────────────────────────────────
+CACHE_FILE      = "dart_relation_cache.json"   # 빈 응답(무출자) 기업 캐시
+CACHE_EXPIRY_D  = 28                            # 4주 후 재확인 (분기보고서 주기 고려)
+
+def load_relation_cache() -> dict:
+    """{corp_code: 'YYYY-MM-DD'(마지막 무출자 확인일)} — 만료분 제외 로드"""
+    if not os.path.exists(CACHE_FILE):
+        return {}
+    try:
+        with open(CACHE_FILE, encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    cutoff = datetime.now() - timedelta(days=CACHE_EXPIRY_D)
+    out = {}
+    for cc, dstr in raw.items():
+        try:
+            if datetime.strptime(str(dstr), "%Y-%m-%d") >= cutoff:
+                out[cc] = str(dstr)
+        except Exception:
+            continue
+    return out
+
+
+def save_relation_cache(cache: dict):
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=1)
+    except Exception as e:
+        print(f"  [경고] 캐시 저장 실패: {e}")
+
+
+def _latest_bsns_year() -> str:
+    """최신 제출완료 사업보고서 연도 — 12월 결산 제출기한(익년 3월말) 반영.
+    4월 이후: 전년도 보고서 제출완료 / 1~3월: 전전년도가 최신"""
+    now = datetime.now()
+    return str(now.year - 1) if now.month >= 4 else str(now.year - 2)
+
+
 def fetch_investee(corp_code: str, api_key: str) -> list:
     """타법인출자현황 API → [(투자대상법인명, 지분율), ...]
-    2024년 사업보고서 우선, 없으면 2023년 fallback
+    최신 제출완료 사업보고서 단일 조회 (동적 연도 계산)
     응답 필드명 샘플 로깅으로 실제 구조 파악
     """
     NAME_FIELDS  = ["inv_prm", "inv_nm", "corp_name", "invstmnt_prm", "cmpny_nm"]
@@ -141,7 +182,7 @@ def fetch_investee(corp_code: str, api_key: str) -> list:
 
     _logged = getattr(fetch_investee, "_logged", False)
 
-    for bsns_year in ["2024", "2023"]:
+    for bsns_year in [_latest_bsns_year()]:
         try:
             res = requests.get(
                 "https://opendart.fss.or.kr/api/otrCprInvstmntSttus.json",
@@ -195,50 +236,16 @@ def fetch_investee(corp_code: str, api_key: str) -> list:
     return []
 
 
-# ── 4. DART 최대주주현황 조회 ─────────────────────────────────────────────────
-def fetch_major_shareholders(corp_code: str, api_key: str) -> str:
-    """최대주주현황 API → 최대주주명 (법인명인 경우만)"""
-    try:
-        res = requests.get(
-            "https://opendart.fss.or.kr/api/hyslrSttus.json",
-            params={
-                "crtfc_key": api_key,
-                "corp_code": corp_code,
-                "bsns_year": "2024",
-                "reprt_code": "11011",
-            },
-            timeout=10
-        )
-        if res.status_code != 200:
-            return ""
-        data = res.json()
-        if data.get("status") != "000":
-            return ""
-        items = data.get("list", [])
-        if not items:
-            return ""
-        # 지분율 최대 주주
-        top = sorted(items, key=lambda x: float(str(x.get("bsis_posesn_stock_qota_rt","0")).replace(",","") or 0), reverse=True)
-        shareholder = top[0].get("nm", "").strip() if top else ""
-        # 개인(이름 2~4자)이면 제외, 법인명만 반환
-        if shareholder and len(shareholder) > 4:
-            return shareholder
-        return ""
-    except Exception:
-        return ""
-
 
 # ── 5. 그래프 기반 그룹 클러스터링 ───────────────────────────────────────────
 def cluster_groups(
     name_to_code: dict,       # {종목명: 종목코드}
     investee_map: dict,       # {종목명: [(투자대상명, 지분율), ...]}
-    shareholder_map: dict,    # {종목명: 최대주주명}
 ) -> dict:
     """
-    엣지 구성:
-    1) A가 B에 MIN_STAKE_PCT% 이상 출자 → A-B 엣지
-    2) A와 B의 최대주주가 동일 법인 → A-B 엣지
+    엣지 구성: A가 B에 MIN_STAKE_PCT% 이상 출자 → A-B 엣지
     Union-Find로 connected component → 그룹 클러스터
+    (최대주주 엣지는 히트율 0.2%로 제거 — 2026.07)
     """
     # Union-Find
     parent = {name: name for name in name_to_code}
@@ -256,11 +263,26 @@ def cluster_groups(
 
     all_names = set(name_to_code.keys())
 
-    # 법인명 정규화 — (주)/㈜/주식회사 제거 후 비교
+    # 법인명 정규화 — (주)/㈜/주식회사 제거 + 영문 그룹표기 → 한글 통일
     _SUFFIX_RE = re.compile(r'[\(（]주[\)）]|㈜|주식회사|\s+')
+    _EN_KO_ALIAS = [  # 긴 표기 우선 치환 (S-OIL을 SK보다 먼저 등)
+        ("POSCO", "포스코"), ("S-OIL", "에스오일"), ("SOIL", "에스오일"),
+        ("HMM", "에이치엠엠"), ("DGB", "디지비"), ("BNK", "비엔케이"),
+        ("SPC", "에스피씨"), ("OCI", "오씨아이"), ("SDI", "에스디아이"),
+        ("SDS", "에스디에스"), ("SK", "에스케이"),
+        ("LG", "엘지"), ("CJ", "씨제이"), ("GS", "지에스"),
+        ("DB", "디비"), ("KT", "케이티"), ("HD", "에이치디"),
+        ("LS", "엘에스"), ("LX", "엘엑스"), ("DL", "디엘"),
+        ("HL", "에이치엘"), ("NH", "엔에이치"), ("KB", "케이비"),
+        ("JB", "제이비"), ("JW", "제이더블유"),
+    ]
 
     def _norm(name: str) -> str:
-        return _SUFFIX_RE.sub('', name).strip()
+        s = _SUFFIX_RE.sub('', name).strip().upper()
+        for en, ko in _EN_KO_ALIAS:
+            if en in s:
+                s = s.replace(en, ko)
+        return s
 
     # 정규화된 이름 → 원래 이름 매핑
     norm_to_names = {}
@@ -294,16 +316,6 @@ def cluster_groups(
                             union(investor, target_name)
                         break
 
-    # 엣지 2: 동일 최대주주
-    shareholder_to_corps = defaultdict(list)
-    for corp_name, shareholder in shareholder_map.items():
-        if shareholder and corp_name in all_names:
-            shareholder_to_corps[shareholder].append(corp_name)
-
-    for shareholder, corps in shareholder_to_corps.items():
-        if len(corps) >= 2:
-            for i in range(1, len(corps)):
-                union(corps[0], corps[i])
 
     # 클러스터 추출 — 2개 이상 종목인 그룹만
     clusters = defaultdict(list)
@@ -360,23 +372,29 @@ def main():
 
     # 3. DART API 호출 — 타법인출자 + 최대주주
     print("  [3/4] DART API 조회 중...")
-    investee_map    = {}  # {종목명: [(투자대상명, 지분율)]}
-    shareholder_map = {}  # {종목명: 최대주주명}
+    investee_map = {}  # {종목명: [(투자대상명, 지분율)]}
+
+    no_rel_cache = load_relation_cache()   # 무출자 기업 스킵 (커서 효과: 기조회분 자동 통과)
+    today_str    = datetime.now().strftime("%Y-%m-%d")
+    skipped = 0
 
     total = len(name_to_corp)
     for i, (name, corp_code) in enumerate(name_to_corp.items()):
         # 전체 타임아웃 체크
         if _t.time() - t_start > MAX_TOTAL_SEC:
-            print(f"  타임아웃 — {i}/{total}개 처리 후 중단")
+            print(f"  타임아웃 — {i}/{total}개 처리 후 중단 (캐시 스킵 {skipped}개 별도)")
             break
 
-        investees   = fetch_investee(corp_code, DART_API_KEY)
-        shareholder = fetch_major_shareholders(corp_code, DART_API_KEY)
+        if corp_code in no_rel_cache:
+            skipped += 1
+            continue   # API 미호출 — 28일 내 무출자 확인분
+
+        investees = fetch_investee(corp_code, DART_API_KEY)
 
         if investees:
             investee_map[name] = investees
-        if shareholder:
-            shareholder_map[name] = shareholder
+        else:
+            no_rel_cache[corp_code] = today_str
 
         time.sleep(SLEEP_SEC)
 
@@ -384,11 +402,12 @@ def main():
             elapsed = _t.time() - t_start
             print(f"    {i+1}/{total}개 처리 ({elapsed:.0f}초 경과)")
 
-    print(f"  타법인출자 데이터: {len(investee_map)}개 / 최대주주 데이터: {len(shareholder_map)}개")
+    save_relation_cache(no_rel_cache)
+    print(f"  타법인출자 데이터: {len(investee_map)}개 / 캐시 스킵: {skipped}개 / 무출자 캐시: {len(no_rel_cache)}개")
 
     # 4. 클러스터링 → group_map.json 저장
     print("  [4/4] 그룹 클러스터링 중...")
-    group_map = cluster_groups(name_to_code, investee_map, shareholder_map)
+    group_map = cluster_groups(name_to_code, investee_map)
     print(f"  그룹 클러스터: {len(set(tuple(sorted(v)) for v in group_map.values()))}개 그룹 / {len(group_map)}개 종목")
 
     # 결과 검증 — 빈 결과면 기존 파일 유지 (폴백)
@@ -403,7 +422,6 @@ def main():
     if not group_map:
         print("  [경고] group_map 비어있음 — DART API 응답 데이터 확인 필요")
         print(f"    investee_map 건수: {len(investee_map)}")
-        print(f"    shareholder_map 건수: {len(shareholder_map)}")
         if investee_map:
             sample = list(investee_map.items())[:2]
             print(f"    investee_map 샘플: {sample}")
