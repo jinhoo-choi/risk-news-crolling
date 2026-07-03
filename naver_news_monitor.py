@@ -1821,6 +1821,21 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
             print(f"  [익스포저없음 강등] {prev_grade}→참고: {a['title'][:40]}")
     # ─────────────────────────────────────────────────────────────────
 
+    # ── 최종 등급 기준 confidence 상한 정합 (점수-등급 괴리 방지) ──────
+    # 모든 강등(confidence·LIMITS·익스포저없음·주가보정) 완료 후 일괄 적용.
+    # 참고 카드가 8점대(파산확정급) 점수를 달고 나가는 모순 제거.
+    # 상한은 confidence 강등 기준선과 동일(주의 0.84 / 참고 0.60).
+    # 원값은 _conf_raw로 보존 — 필터링 로그·캘리브레이션 추적용.
+    _CONF_CAP = {"주의": 0.84, "참고": 0.60}
+    for a in result:
+        _cap  = _CONF_CAP.get(a.get("grade"))
+        _conf = a.get("_ai_confidence") or 0
+        if _cap and _conf > _cap and not a.get("_force_urgent"):
+            a["_conf_raw"] = _conf
+            a["_ai_confidence"] = _cap
+            a["_risk_score"] = calc_risk_score(a, exposure_data)
+    # ─────────────────────────────────────────────────────────────────
+
     # 강등 후 등급 카운트 재산출
     urgent_cnt  = sum(1 for a in result if a.get("grade") == "긴급")
     caution_cnt = sum(1 for a in result if a.get("grade") == "주의")
