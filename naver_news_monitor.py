@@ -661,15 +661,16 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
         if name in seen_names:
             continue
 
-        # 접두(prefix) 매칭 — 법인명 표기차이(중앙일보↔중앙일보(주))만 허용,
-        # 접미 부분일치(마이크론⊂하나마이크론) 오매칭 차단
+        # 접두(prefix) 매칭 — 법인명 표기차이(중앙일보↔중앙일보(주))만 허용.
+        # 접미 부분일치(마이크론⊂하나마이크론) + 짧은 무관명 흡수(에스엘⊂에스엘엘중앙,
+        # 제이티⊂제이티비씨) 오매칭 차단 → 접두 관계라도 짧은 쪽이 5자 미만이면 정확일치만 허용
         _clean_n = re.sub(r'[(주)㈜\s]', '', name)
-        if _clean_n and (_clean_n == clean_e
-                         or _clean_n.startswith(clean_e)
-                         or clean_e.startswith(_clean_n)):
-            results.extend(rows)
-            seen_names.add(name)
-            continue
+        if _clean_n:
+            if _clean_n == clean_e:
+                results.extend(rows); seen_names.add(name); continue
+            _short = min(len(_clean_n), ce_len)
+            if _short >= 5 and (_clean_n.startswith(clean_e) or clean_e.startswith(_clean_n)):
+                results.extend(rows); seen_names.add(name); continue
 
         # prefix 6자 매칭 — 법인명 축약 대응 (제이알글로벌리츠 ↔ 제이알글로벌위탁관리...)
         if ce_len >= 4:
