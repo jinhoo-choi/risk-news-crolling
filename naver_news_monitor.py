@@ -3071,11 +3071,11 @@ def main():
         event_key  = a.get("event_key", "").strip()
         ek_combo   = ("ek", event_key) if event_key else None
         if not matched and ek_combo and ek_combo in seen_combos:
-            if not is_next_stage(a.get("title",""), a.get("desc",""), entity):
+            if not a.get("_force_urgent") and not is_next_stage(a.get("title",""), a.get("desc",""), entity):
                 matched = True; reason = "동일 사건(event_key) 이미 발송"
 
         if combo and combo in seen_combos:
-            if is_next_stage(a.get("title",""), a.get("desc",""), entity):
+            if a.get("_force_urgent") or is_next_stage(a.get("title",""), a.get("desc",""), entity):
                 pass
             else:
                 matched = True; reason = "동일 사건(entity+kw) 이미 발송"
