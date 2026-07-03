@@ -823,6 +823,31 @@ def load_seen_combos() -> set:
         return combos
     return set()
 
+def load_seen_stages() -> set:
+    """최근 7일 내 발송된 (entity, stage_keyword) 조합 로드 — stage 기반 dedup용"""
+    kst = timezone(timedelta(hours=9))
+    now = datetime.now(kst)
+    valid_keys = {
+        (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
+        for i in range(168)  # 7일 — 파산선고 등 단계 보도는 수일간 지속
+    }
+    stages = set()
+    if os.path.exists(SEEN_FILE):
+        try:
+            with open(SEEN_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return stages
+        if not isinstance(data, dict):
+            return stages
+        for k in valid_keys:
+            entry = data.get(k, {})
+            if isinstance(entry, dict):
+                for st in entry.get("stages", []):  # 구버전 슬롯엔 없음 → 빈 처리 (하위호환)
+                    if isinstance(st, (list, tuple)) and len(st) == 2:
+                        stages.add((st[0], st[1]))
+    return stages
+
 def load_seen_context() -> dict:
     """최근 24시간 내 발송된 기사의 title_norms·desc_norms 로드 — 맥락 기반 중복 감지"""
     kst = timezone(timedelta(hours=9))
@@ -911,7 +936,8 @@ def load_known_entities() -> dict:
         pass
     return entity_first
 
-def save_seen_urls(seen: set, combos: set = None, title_norms: list = None, desc_norms: list = None):
+def save_seen_urls(seen: set, combos: set = None, title_norms: list = None, desc_norms: list = None,
+                   stages: set = None):
     """현재 시각 키(YYYY-MM-DD HH)로 seen URL + 발송 조합 저장 — 최근 7일 키만 보존"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
@@ -949,11 +975,18 @@ def save_seen_urls(seen: set, combos: set = None, title_norms: list = None, desc
         existing_titles = (existing_titles + title_norms)[-50:]
     if desc_norms:
         existing_descs  = (existing_descs  + desc_norms)[-50:]
+    existing_stages = [tuple(x) for x in cur.get("stages", [])]
+    if stages:
+        for st in stages:
+            if tuple(st) not in existing_stages:
+                existing_stages.append(tuple(st))
+    existing_stages = existing_stages[-100:]
     existing[current_key] = {
         "urls":        merged_urls,
         "combos":      existing_combos,
         "title_norms": existing_titles,
         "desc_norms":  existing_descs,
+        "stages":      [list(x) for x in existing_stages],
     }
     import tempfile as _tmpfile, os as _os
     fd, tmp_path = _tmpfile.mkstemp(prefix="seen_", suffix=".tmp",
@@ -2881,6 +2914,8 @@ def main():
     now_str_full    = now_kst.strftime("%m월 %d일 %H시")
     seen_urls           = load_seen_urls()
     seen_combos         = load_seen_combos()
+    seen_stages         = load_seen_stages()   # (entity, stage_kw) 7일 — stage 기반 dedup
+    new_stages_this_run = set()
     seen_context        = load_seen_context()
     seen_entities_today = load_seen_entities_today()
     known_entities      = load_known_entities()  # entity별 최초 발송 days_ago
@@ -2997,9 +3032,21 @@ def main():
         "검찰 기소", "구속 영장", "구속 기소",
     ]
 
-    def is_next_stage(title: str, desc: str) -> bool:
-        text = (title or "") + (desc or "")
-        return any(kw in text for kw in NEXT_STAGE_KEYWORDS)
+    def _stage_hits(title: str, desc: str) -> list:
+        """매칭된 stage 키워드 추출 — 제목 우선, desc는 제목 무매칭 시만 (우연 매칭 오기록 방지)"""
+        hits = [kw for kw in NEXT_STAGE_KEYWORDS if kw in (title or "")]
+        if not hits:
+            hits = [kw for kw in NEXT_STAGE_KEYWORDS if kw in (desc or "")]
+        return hits
+
+    def is_next_stage(title: str, desc: str, entity: str = "") -> bool:
+        hits = _stage_hits(title, desc)
+        if not hits:
+            return False
+        if not entity:
+            return True  # entity 미지정 시 기존 동작 유지
+        # 매칭 키워드 전부가 이미 발송된 stage면 차단, 하나라도 새 키워드면 통과
+        return any((entity, kw) not in seen_stages for kw in hits)
 
     before_combo = len(filtered)
     filtered_final = []
@@ -3024,11 +3071,11 @@ def main():
         event_key  = a.get("event_key", "").strip()
         ek_combo   = ("ek", event_key) if event_key else None
         if not matched and ek_combo and ek_combo in seen_combos:
-            if not is_next_stage(a.get("title",""), a.get("desc","")):
+            if not is_next_stage(a.get("title",""), a.get("desc",""), entity):
                 matched = True; reason = "동일 사건(event_key) 이미 발송"
 
         if combo and combo in seen_combos:
-            if is_next_stage(a.get("title",""), a.get("desc","")):
+            if is_next_stage(a.get("title",""), a.get("desc",""), entity):
                 pass
             else:
                 matched = True; reason = "동일 사건(entity+kw) 이미 발송"
@@ -3043,16 +3090,16 @@ def main():
                 and entity in seen_entities_today
                 and entity not in _GENERIC
                 and not a.get("_force_urgent")
-                and not is_next_stage(a.get("title",""), a.get("desc",""))):
+                and not is_next_stage(a.get("title",""), a.get("desc",""), entity)):
             matched = True; reason = f"당일 동일 entity({entity}) 이미 발송"
 
-        if not matched and t_norm and not is_next_stage(a.get("title",""), a.get("desc","")):
+        if not matched and t_norm and not is_next_stage(a.get("title",""), a.get("desc",""), entity):
             for prev_t in prev_title_norms:
                 if _sim(t_norm, prev_t) >= TITLE_SIM_THRESHOLD - 0.02:
                     matched = True; reason = "이전 실행 발송 기사와 제목 유사"
                     break
 
-        if not matched and d_norm and len(d_norm) > 20 and not is_next_stage(a.get("title",""), a.get("desc","")):
+        if not matched and d_norm and len(d_norm) > 20 and not is_next_stage(a.get("title",""), a.get("desc",""), entity):
             for prev_d in prev_desc_norms:
                 if _sim(d_norm, prev_d) >= DESC_SIM_THRESHOLD:
                     matched = True; reason = "이전 실행 발송 기사와 내용 유사"
@@ -3116,12 +3163,12 @@ def main():
         title = a.get("title", "")
         desc  = a.get("desc", "")
         if days >= 7:
-            if not is_next_stage(title, desc):
+            if not is_next_stage(title, desc, ent):
                 print(f"  [장기이슈 차단] D+{days} {ent}: {title[:40]}")
                 _known_removed.append(a)
                 filtered.remove(a)
         elif days >= 3:
-            if not is_next_stage(title, desc):
+            if not is_next_stage(title, desc, ent):
                 old_grade = a.get("grade", "참고")
                 new_grade = GRADE_DEMOTE.get(old_grade, "참고")
                 if old_grade != new_grade:
@@ -3352,7 +3399,7 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
         if not ent or a.get("_force_urgent") or ent in _GENERIC_E:
             continue
         if (ent in seen_entities_today
-                and not is_next_stage(a.get("title",""), a.get("desc",""))):
+                and not is_next_stage(a.get("title",""), a.get("desc",""), ent)):
             print(f"  [당일 재체크] 동일 entity 재차단: {ent} — {a.get('title','')[:40]}")
             _recheck_removed.append(a)
             filtered.remove(a)
@@ -3542,6 +3589,10 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
         keyword    = a.get("keyword", "").strip()
         event_type = a.get("event_type", "").strip()
         event_key  = a.get("event_key", "").strip()
+        # stage 기반 dedup — 발송 기사의 매칭 stage 키워드 기록 (차단 기사엔 미기록)
+        if entity:
+            for _skw in _stage_hits(a.get("title", ""), a.get("desc", "")):
+                new_stages_this_run.add((entity, _skw))
         # event_key 우선 저장 → event_type → keyword 순 fallback
         if event_key:
             new_combos_this_run.add(("ek", event_key))
@@ -3564,7 +3615,8 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
         elif _kw and _ent:
             new_combos_this_run.add((_ent, _kw))
     save_seen_urls(sent_urls, new_combos_this_run,
-                   title_norms=new_title_norms, desc_norms=new_desc_norms)
+                   title_norms=new_title_norms, desc_norms=new_desc_norms,
+                   stages=new_stages_this_run)
     save_filter_log(raw_articles, hard_excluded_articles,
                     ai_filtered_articles, filtered)
 
