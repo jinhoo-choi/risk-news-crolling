@@ -8,7 +8,7 @@ on:
 jobs:
   group-mapper:
     runs-on: ubuntu-latest
-    timeout-minutes: 70      # 전체 조회 시 시간 여유 (첫 완주 ~55분)
+    timeout-minutes: 90      # 전체 조회 시 시간 여유 (첫 완주 ~69분)
 
     permissions:
       contents: write
@@ -34,7 +34,7 @@ jobs:
           DART_API_KEY:       ${{ secrets.DART_API_KEY }}
           EXPOSURE_FILE:      exposure_data.csv
           DART_MAX_TARGETS:   '9000'   # API 한도(20,000건) 안전 마진 확보
-          DART_MAX_TOTAL_SEC: '3300'   # 55분 — shareholder 제거·단일연도로 종목당 ~1.15초
+          DART_MAX_TOTAL_SEC: '4500'   # 75분 — 종목당 실측 ~1.55초 × 2660개 완주 여유 (캐시 누적 시 자연 단축)
         run: python group_mapper.py
         # 실패(빈 결과) 시 exit code 1 → continue-on-error로 후속 폴백 처리
         continue-on-error: true
