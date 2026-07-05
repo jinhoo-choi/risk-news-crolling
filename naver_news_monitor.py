@@ -1280,8 +1280,20 @@ EXCLUDE_TITLE_RE_PATTERNS = [
     r"\[금\s*[가-힣]{1,6}\]",   # [금융] [금주] 등 브래킷
 ]
 
-def is_hard_excluded(title: str, desc: str = "") -> tuple:
+def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     """하드 제외 패턴 매칭 — (excluded: bool, reason: str) 반환"""
+
+    # 연예 전문매체 도메인 차단 — 금융 리스크 기사 비중 사실상 0, 오탐 다발원
+    # (한민용=topstarnews, 샘킴=osen 오탐 이력 기반. 2026.07)
+    _ENT_DOMAINS = ("osen.co.kr", "tenasia.hankyung.com", "topstarnews.net",
+                    "newsen.com", "tvreport.co.kr", "mydaily.co.kr",
+                    "xportsnews.com", "stardailynews.co.kr", "starnewskorea.com",
+                    "joynews24.com", "sportsw.kr", "enews24.tving.com")
+    if url:
+        _u = url.lower()
+        for _dom in _ENT_DOMAINS:
+            if _dom in _u:
+                return True, f"연예매체 도메인: {_dom}"
 
     # 치명적 키워드 bypass — AI 판단으로 넘김
     CRITICAL_KW = ["상장폐지", "파산", "부도", "횡령", "배임", "거래정지",
@@ -2985,7 +2997,7 @@ def main():
     hard_excluded_articles = []
     raw_articles_kept      = []
     for _a in raw_articles:
-        _excl, _reason = is_hard_excluded(_a.get("title",""), _a.get("desc",""))
+        _excl, _reason = is_hard_excluded(_a.get("title",""), _a.get("desc",""), _a.get("url",""))
         if _excl:
             _a["_excl_reason"] = _reason
             hard_excluded_articles.append(_a)
