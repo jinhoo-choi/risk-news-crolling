@@ -137,6 +137,13 @@ EMAIL_PASSWORD    = os.environ["EMAIL_PASSWORD"]
 EMAIL_RECEIVERS   = [e.strip() for e in os.environ["EMAIL_RECEIVER"].split(",")]
 NO_RESULT_RECEIVER = os.environ.get("NO_RESULT_RECEIVER", "").strip()  # 결과 없을 때 수신자
 EMAIL_CC          = [e.strip() for e in os.environ.get("EMAIL_CC", "").split(",") if e.strip()]   # 참조
+# 전체 발송 임계값 — 최종 기사 중 최고 리스크점수가 이 값 미만이면
+# 전체 수신자 대신 보낸사람(NO_RESULT_RECEIVER/SENDER)에게만 발송.
+# "실제 리스크 있는 메일만 전체 발송" 목적. 기본 5.0.
+try:
+    SELF_ONLY_MAX_SCORE = float(os.environ.get("SELF_ONLY_MAX_SCORE", "5.0"))
+except ValueError:
+    SELF_ONLY_MAX_SCORE = 5.0
 ANTHROPIC_KEY     = os.environ["ANTHROPIC_API_KEY"]
 GOOGLE_API_KEY    = os.environ.get("GOOGLE_API_KEY", "")       # Gemini 필터링용 (없으면 Claude fallback)
 NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
@@ -2970,22 +2977,36 @@ def send_email_no_result(subject: str, html_body: str):
     except Exception as e:
         print(f"  결과없음 메일 발송 실패: {e}")
 
-def send_email(subject: str, html_body: str):
+def send_email(subject: str, html_body: str, self_only: bool = False):
+    """리스크 메일 발송.
+    self_only=True면 전체 수신자 대신 보낸사람(NO_RESULT_RECEIVER 우선, 없으면 SENDER)
+    에게만 발송한다. 카드 본문(html_body)은 동일하게 유지된다.
+    """
+    if self_only:
+        _self_rcv = NO_RESULT_RECEIVER if NO_RESULT_RECEIVER else EMAIL_SENDER
+        to_list = [_self_rcv]
+        cc_list = []
+    else:
+        to_list = EMAIL_RECEIVERS
+        cc_list = EMAIL_CC
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = f"❗ eBiz 리스크봇 <{EMAIL_SENDER}>"
-    msg["To"]      = ", ".join(EMAIL_RECEIVERS)
-    if EMAIL_CC:
-        msg["Cc"] = ", ".join(EMAIL_CC)
+    msg["To"]      = ", ".join(to_list)
+    if cc_list:
+        msg["Cc"] = ", ".join(cc_list)
     msg.attach(MIMEText(html_body, "html", "utf-8"))
-    _all_rcv = EMAIL_RECEIVERS + EMAIL_CC
+    _all_rcv = to_list + cc_list
     for attempt in range(3):
         try:
             with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
                 server.ehlo()
                 server.login(EMAIL_SENDER, EMAIL_PASSWORD)
                 server.sendmail(EMAIL_SENDER, _all_rcv, msg.as_string())
-            print("이메일 발송 완료")
+            if self_only:
+                print(f"이메일 발송 완료 (보낸사람 한정 → {', '.join(to_list)})")
+            else:
+                print("이메일 발송 완료")
             return
         except smtplib.SMTPAuthenticationError as e:
             print(f"이메일 인증 실패 (비밀번호/앱 비밀번호 확인 필요): {e}")
@@ -3681,7 +3702,21 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
         ai_summary = ""
 
     html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary, exposure_data=exposure_data, ref_date=ref_date, competitor_notices=competitor_notices, today_str=today_str)
-    send_email(subject, html)
+
+    # ── 전체 발송 여부 결정 ──
+    # 최종 기사 중 최고 리스크점수가 임계값 미만이면 보낸사람에게만 발송.
+    # 실제 리스크 있는 메일(임계값 이상 카드 1건 이상)만 전체 수신자에게 전달.
+    # 발송 직전 시점 기준으로 점수를 재산출 — 이후 단계(강등·검증)에서
+    # 등급이 바뀐 카드의 점수 괴리를 방지.
+    for a in filtered:
+        a["_risk_score"] = calc_risk_score(a, exposure_data)
+    _max_score = max((a.get("_risk_score") or 0) for a in filtered) if filtered else 0
+    _self_only = _max_score < SELF_ONLY_MAX_SCORE
+    if _self_only:
+        print(f"  [본인 한정 발송] 최고 리스크점수 {_max_score:.1f} < {SELF_ONLY_MAX_SCORE:.1f} — 전체 발송 보류")
+    else:
+        print(f"  [전체 발송] 최고 리스크점수 {_max_score:.1f} ≥ {SELF_ONLY_MAX_SCORE:.1f}")
+    send_email(subject, html, self_only=_self_only)
 
     for a in filtered:
         sent_urls.add(a.get("url", ""))
