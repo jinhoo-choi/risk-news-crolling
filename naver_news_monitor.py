@@ -1249,6 +1249,16 @@ TITLE_ONLY_PATTERNS += [
     # ── M&A·사업 확장·계열사 편입 — 직접 손실 리스크 없음 ──
     "품고 키운다", "판 키운다", "유통·제조 한지붕",
     "완전자회사화 본격", "자회사로 품",
+
+    # ── 감성·낚시성 주가하락 제목 — 거래정지·상폐 확정 사건 아님 (07/03 오탐) ──
+    "바닥이 어디냐", "어디까지 빠지나", "눈물의", "피눈물", "곡소리",
+    "패닉", "공포에 질린", "던졌다", "물렸다", "물린 개미",
+    "5개월만에", "반토막", "반 토막", "토막 났다",
+    # ── 재무제표 해설·분석 기사 — 확정 손실 사건 아님 (07/03 CMG제약 오탐) ──
+    "적신호", "빨간불 켜진", "현금흐름", "수익성 둔화", "외형 성장 이면",
+    "재무 위험 신호", "재무 건전성 점검", "실적 뜯어보니",
+    # ── 기지사건 파급·업계 영향 해설 — 확정 종목 파생 (홈플러스·중앙그룹) ──
+    "떠는", "술렁이는", "긴장하는", "운명의 날", "갈림길",
 ]
 
 EXCLUDE_TITLE_RE_PATTERNS = [
@@ -1278,6 +1288,9 @@ EXCLUDE_TITLE_RE_PATTERNS = [
     # 재계·그룹 비교 칼럼 브래킷 — 특정 기업 직접 리스크 아님
     r"\[금\.\.\.\]",             # [금...] 시리즈 칼럼
     r"\[금\s*[가-힣]{1,6}\]",   # [금융] [금주] 등 브래킷
+    # 코너·데스크·시각성 브래킷 — 개별 기명 코너 칼럼 (07/03 [이런국장] 오탐)
+    # 상장폐지·파산·부도·거래정지 리스크 키워드가 없을 때만 차단
+    r"\[[가-힣]{2,10}(국장|부장|칼럼|노트|시선|픽|레터|톡)\](?!.*(상장폐지|파산|부도|거래정지|회생|반대매매))",
 ]
 
 
@@ -1308,6 +1321,36 @@ def render_known_cases() -> str:
         return "\n".join(lines) if lines else _KNOWN_CASES_FALLBACK
     except Exception:
         return _KNOWN_CASES_FALLBACK
+
+
+def load_known_case_entities() -> set:
+    """known_cases.json → 강등 대상 개별 종목명 집합.
+    entity 필드가 'JTBC·중앙그룹(콘텐트리중앙·메가박스중앙·...)' 형태로
+    복수 종목을 묶어 표기하므로, 구분자(·, (), 공백)로 분해해 개별 종목명을 추출.
+    이 집합의 종목이 등장하는 기사는 신규 법적단계(NEXT_STAGE)가 아닌 한
+    기지 사건 파생으로 간주해 처음부터 강등한다.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "known_cases.json")
+    ents: set = set()
+    try:
+        with open(path, encoding="utf-8") as f:
+            cases = json.load(f)
+        if not isinstance(cases, list):
+            return ents
+        for c in cases:
+            if not isinstance(c, dict):
+                continue
+            raw = c.get("entity", "") or ""
+            # 괄호 안팎 모두 분해: 'JTBC·중앙그룹(중앙홀딩스·콘텐트리중앙)' → 토큰들
+            raw = raw.replace("(", "·").replace(")", "·").replace(",", "·")
+            for tok in raw.split("·"):
+                tok = tok.strip()
+                # '중앙그룹'처럼 그룹 총칭은 개별 매칭 오탐 소지 → 2자 이상 실종목만
+                if len(tok) >= 2 and tok not in ("그룹", "계열사", "중앙그룹"):
+                    ents.add(tok)
+    except Exception:
+        pass
+    return ents
 
 
 def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
@@ -1715,7 +1758,8 @@ RISK_PRIORITY = {
     "MTS": 1.8, "HTS": 1.8,
     "전산장애": 1.8, "전산사고": 1.8,
     "상장폐지": 1.5, "파산": 1.5,
-    "부도": 1.5, "거래정지": 1.5,
+    "부도": 1.5, "거래정지": 1.5, "매매거래 정지": 1.5, "매매거래정지": 1.5, "거래 정지": 1.5,
+    "상장 폐지": 1.5, "회생 신청": 1.3, "회생신청": 1.3, "채무불이행": 1.4, "디폴트": 1.4,
     "반대매매": 1.4, "강제청산": 1.4,
     "기업회생": 1.3, "워크아웃": 1.2,
 }
@@ -1745,12 +1789,16 @@ def calc_risk_score(article: dict, exposure_data: dict = None) -> float:
     국내·해외 동일 기준 적용
     """
     conf  = article.get("_ai_confidence") or 0.3
-    title = article.get("title", "") + article.get("reason", "")
+    _title_only = article.get("title", "")
+    title = _title_only + article.get("reason", "")
+    # kw_weight는 '제목'에 실제 리스크 키워드가 있을 때만 가중.
+    # reason·event_type은 AI 생성물이라 제목에 없는 사건(거래정지·상폐 등)을
+    # 붙이는 오분류가 잦음 → 제목 무근거 격상 방지 위해 제목 기준으로 산정.
     kw_weight = max(
-        [v for k, v in RISK_PRIORITY.items() if k in title],
+        [v for k, v in RISK_PRIORITY.items() if k in _title_only],
         default=1.0
     )
-    is_direct_incident = any(kw in title for kw in DIRECT_INCIDENT_KW)
+    is_direct_incident = any(kw in _title_only for kw in DIRECT_INCIDENT_KW)
 
     # 익스포저 잔고 합산 → 구간별 boost
     exp_boost = 0.0
@@ -2964,6 +3012,13 @@ def main():
     seen_context        = load_seen_context()
     seen_entities_today = load_seen_entities_today()
     known_entities      = load_known_entities()  # entity별 최초 발송 days_ago
+    # ── known_cases.json 종목 seed 병합 ──
+    # 기지 사건(홈플러스·중앙그룹·금양 등) 종목은 seen 이력이 없어도
+    # 처음부터 D+3(강등)으로 취급. NEXT_STAGE(신규 법적단계)는 아래 강등 로직에서
+    # is_next_stage 예외로 자동 통과되므로 진짜 새 사건은 정상 발송된다.
+    for _kce in load_known_case_entities():
+        if known_entities.get(_kce, 0) < 3:
+            known_entities[_kce] = 3
     if seen_entities_today:
         print(f"  오늘 발송 entity: {sorted(seen_entities_today)}")
     if known_entities:
