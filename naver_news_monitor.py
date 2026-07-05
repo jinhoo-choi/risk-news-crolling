@@ -1280,6 +1280,36 @@ EXCLUDE_TITLE_RE_PATTERNS = [
     r"\[금\s*[가-힣]{1,6}\]",   # [금융] [금주] 등 브래킷
 ]
 
+
+# ── 기지 사건 동적 주입 — known_cases.json → 프롬프트 __KNOWN_CASES__ 치환 ──
+_KNOWN_CASES_FALLBACK = (
+    "  · JTBC·중앙그룹(중앙홀딩스·콘텐트리중앙·메가박스중앙·에스엘엘중앙·중앙일보) 기업회생 신청 (2026-06 확정)\n"
+    "  · 홈플러스 기업회생 → 회생절차 폐지 (2025 회생, 2026-07 폐지 결정)\n"
+    "  · 금양 상장폐지 결정 (2026-06 확정)"
+)
+
+def render_known_cases() -> str:
+    """known_cases.json → 프롬프트 삽입용 목록 텍스트. 실패 시 폴백 상수."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "known_cases.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            cases = json.load(f)
+        if not isinstance(cases, list) or not cases:
+            return _KNOWN_CASES_FALLBACK
+        lines = []
+        for c in cases:
+            if not isinstance(c, dict) or not c.get("entity"):
+                continue
+            line = f"  · {c['entity']} — {c.get('event','')} ({c.get('date','')}"
+            if c.get("stage"):
+                line += f", 현재: {c['stage']}"
+            line += ")"
+            lines.append(line)
+        return "\n".join(lines) if lines else _KNOWN_CASES_FALLBACK
+    except Exception:
+        return _KNOWN_CASES_FALLBACK
+
+
 def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     """하드 제외 패턴 매칭 — (excluded: bool, reason: str) 반환"""
 
@@ -1369,7 +1399,7 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
     ])
     _fp = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                "filter_prompt_gemini.txt"), encoding="utf-8").read()
-    prompt = _fp.replace("{numbered}", numbered)
+    prompt = _fp.replace("{numbered}", numbered).replace("__KNOWN_CASES__", render_known_cases())
 
     # response_schema — 모든 필드 타입 명시, entities는 ARRAY(STRING)
     _item_schema = _gtypes.Schema(
@@ -1480,6 +1510,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
 
     _fp_tpl = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
         "filter_prompt.txt"), encoding="utf-8").read()
+    _fp_tpl    = _fp_tpl.replace("__KNOWN_CASES__", render_known_cases())
     _fp_static = _fp_tpl.replace("{numbered}", "")  # 캐싱용 고정 부분
     _fp_dynamic = numbered                            # 가변 뉴스 목록
     prompt = _fp_tpl.replace("{numbered}", numbered)  # 기존 호환용
@@ -2759,6 +2790,7 @@ def save_filter_log(raw_articles: list, hard_excluded: list, ai_filtered: list, 
     hard_excl_map        = {a.get("title",""): a.get("_excl_reason","") for a in hard_excluded}
     ai_filtered_titles   = {a.get("title","") for a in ai_filtered}
     ai_conf_map          = {a.get("title",""): a.get("_ai_confidence") for a in ai_filtered}
+    ai_conf_raw_map      = {a.get("title",""): a.get("_conf_raw") for a in ai_filtered if a.get("_conf_raw")}
 
     all_articles = raw_articles + hard_excluded
 
@@ -2791,6 +2823,7 @@ def save_filter_log(raw_articles: list, hard_excluded: list, ai_filtered: list, 
             "decision"  : decision,
             "reason"    : reason,
             "confidence": confidence,
+            "conf_raw"  : ai_conf_raw_map.get(title),  # 클램프 발동 시 원값 (캘리브레이션 추적)
         })
 
     from collections import Counter
