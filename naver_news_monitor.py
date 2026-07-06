@@ -683,16 +683,22 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
         if ce_len >= 4:
             clean_n = re.sub(r'[(주)㈜\s]', '', name)
             if len(clean_n) >= 4:
+                # 공통 접두 길이 계산
                 plen = 0
                 for a, b in zip(clean_e, clean_n):
                     if a == b:
                         plen += 1
                     else:
                         break
-                    if plen >= 6:
+                if plen >= 6:
+                    # 오매칭 가드: 공통 접두 6자 이상이어도, 짧은 쪽 이름 전체가
+                    # 공통 접두에 거의 포함될 때만 축약 관계로 인정한다.
+                    # (제이알글로벌리츠[7자]는 접두 6자가 이름의 86% → 축약 인정,
+                    #  제이알글로벌인베스트먼트[12자]는 접두 6자가 50% → 다른 회사)
+                    _short_len = min(ce_len, len(clean_n))
+                    if _short_len > 0 and (plen / _short_len) >= 0.75:
                         results.extend(rows)
                         seen_names.add(name)
-                        break
 
     return results
 
@@ -1378,8 +1384,10 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     # 치명적 키워드 bypass — AI 판단으로 넘김
     CRITICAL_KW = ["상장폐지", "파산", "부도", "횡령", "배임", "거래정지",
                    "기업회생", "회생절차", "회생계획", "회생신청", "회생 신청", "회생 절차",
+                   "법정관리", "워크아웃", "자본잠식", "감사의견", "상장적격성", "실질심사",
                    "채무불이행", "디폴트", "감사의견 거절", "감사의견거절",
                    "차환 실패", "차환실패", "미상환", "연체", "반대매매",
+                   "불성실공시", "관리종목", "영업정지",
                    "MTS 장애", "MTS 접속 장애"]
     # 스팩·정상상폐·호재성·칼럼 기사는 CRITICAL_KW bypass 면제 → 하드제외 적용
     CRITICAL_EXEMPT = ["스팩", "SPAC", "기업인수목적", "알짜", "체질 변신", "체질 개선",
@@ -1697,12 +1705,15 @@ def dedup_deterministic(articles: list) -> list:
     result = []
 
     _NEXT_STAGE = {
-        "가처분","효력정지","집행정지","이의신청","항고","판결",
-        "보류","재개","재상장","거래재개","상장유지",
-        "파산선고","청산","폐업","회생인가","회생계획",
-        "배당","변제","채무조정","추가제재","과징금","검찰고발",
+        "가처분","효력정지","집행정지","이의신청","항고","판결","인용",
+        "파산선고","청산","폐업","법정관리","회생인가","회생계획",
+        "변제","채무조정","추가제재","과징금","검찰고발","수사착수",
     }
+    _RESOLVE_KW_DET = ("기각","취하","철회","각하","거래재개","거래 재개",
+                       "상장유지","재상장","정상화","해제","졸업")
     def _is_next_stage_det(title: str) -> bool:
+        if any(rk in title for rk in _RESOLVE_KW_DET):
+            return False  # 해소 국면은 새 단계 아님
         return any(kw in title for kw in _NEXT_STAGE)
 
     seen_urls_local = set()
@@ -3141,12 +3152,15 @@ def main():
         t = _re2.sub(r"[^가-힣a-zA-Z0-9]", "", t)
         return t.strip()
 
+    # 새 법적 국면 진행 신호 — 동일 entity·사건이어도 새 단계면 재발송.
+    # ※ 리스크 '해소' 신호(기각·취하·철회·재개·재상장·상장유지·보류)는 제외.
+    #   해소 기사는 하드필터·프롬프트에서 이미 false 처리되며, 여기서 재발송
+    #   트리거로 삼으면 "해소됐다"는 알림이 반복돼 알림 피로만 유발한다.
     NEXT_STAGE_KEYWORDS = [
         "가처분", "효력정지", "집행정지", "이의신청", "항고", "재항고",
-        "취하", "철회", "기각", "인용", "판결",
-        "보류", "재개", "재상장", "거래재개", "상장유지",
+        "인용", "판결",
         "파산선고", "청산", "폐업", "법정관리", "회생인가", "회생계획",
-        "배당", "변제", "채무조정", "출자전환",
+        "변제", "채무조정", "출자전환",
         "추가제재", "과징금", "검찰고발", "수사착수",
         "확정판결", "최종확정", "선고확정",
         # 새 단계 진행 — 동일 entity여도 새 사건으로 탐지
@@ -3164,6 +3178,13 @@ def main():
         return hits
 
     def is_next_stage(title: str, desc: str, entity: str = "") -> bool:
+        # 해소성 표현 가드 — '가처분 기각', '집행정지 인용'(=상폐 정지=해소) 등
+        # 악화가 아닌 리스크 완화 국면이면 next_stage로 보지 않는다(재발송 방지).
+        _RESOLVE_KW = ("기각", "취하", "철회", "각하", "거래재개", "거래 재개",
+                       "상장유지", "재상장", "정상화", "해제", "졸업")
+        _t = (title or "") + " " + (desc or "")
+        if any(rk in _t for rk in _RESOLVE_KW):
+            return False
         hits = _stage_hits(title, desc)
         if not hits:
             return False
@@ -3713,12 +3734,26 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
     html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary, exposure_data=exposure_data, ref_date=ref_date, competitor_notices=competitor_notices, today_str=today_str)
 
     # ── 전체 발송 여부 결정 ──
-    # 최종 기사 중 최고 리스크점수가 임계값 미만이면 보낸사람에게만 발송.
-    # 실제 리스크 있는 메일(임계값 이상 카드 1건 이상)만 전체 수신자에게 전달.
+    # 원칙: 최종 기사 중 최고 리스크점수가 임계값 미만이면 보낸사람에게만 발송.
+    # 단, 아래 '실제 리스크 확정' 조건 중 하나라도 있으면 점수와 무관하게 전체 발송.
+    # (제목에 리스크 키워드가 없어 kw_weight=1.0으로 점수가 낮게 잡히더라도,
+    #  AI가 긴급/고신뢰 주의로 확정한 진짜 리스크는 누락시키지 않기 위함 — FN 방지)
     _max_score = max((a.get("_risk_score") or 0) for a in filtered) if filtered else 0
-    _self_only = _max_score < SELF_ONLY_MAX_SCORE
+    _has_urgent = any(a.get("grade") == "긴급" for a in filtered)
+    # 고신뢰 주의: confidence 원값(_conf_raw 우선, 없으면 현재값) 0.80 이상
+    _has_strong_caution = any(
+        a.get("grade") == "주의"
+        and (a.get("_conf_raw") or a.get("_ai_confidence") or 0) >= 0.80
+        for a in filtered
+    )
+    _force_full = _has_urgent or _has_strong_caution
+    _self_only = (_max_score < SELF_ONLY_MAX_SCORE) and not _force_full
+
     if _self_only:
         print(f"  [본인 한정 발송] 최고 리스크점수 {_max_score:.1f} < {SELF_ONLY_MAX_SCORE:.1f} — 전체 발송 보류")
+    elif _force_full and _max_score < SELF_ONLY_MAX_SCORE:
+        _reason = "긴급 기사 존재" if _has_urgent else "고신뢰 주의(conf≥0.80) 존재"
+        print(f"  [전체 발송] 최고점수 {_max_score:.1f} < {SELF_ONLY_MAX_SCORE:.1f}이나 {_reason} → 전체 발송")
     else:
         print(f"  [전체 발송] 최고 리스크점수 {_max_score:.1f} ≥ {SELF_ONLY_MAX_SCORE:.1f}")
     send_email(subject, html, self_only=_self_only)
