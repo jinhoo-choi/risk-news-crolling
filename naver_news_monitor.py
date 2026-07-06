@@ -1183,7 +1183,7 @@ TEXT_PATTERNS = [
 
 TITLE_ONLY_PATTERNS += [
     "기자수첩", "기자의 눈", "기자노트", "취재후기", "현장에서", "데스크에서",
-    "잡아낸", "변호사", "법률가", "판사", "검사", "사례로 보는", "이야기",
+    "잡아낸", "변호사", "법률가", "판사", "부장검사", "사례로 보는", "이야기",
     "하고 싶으면", "하려면", "하는 법", "Q&A", "궁금증",
     "갑질", "피해자", "제보",
   
@@ -1377,7 +1377,10 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
 
     # 치명적 키워드 bypass — AI 판단으로 넘김
     CRITICAL_KW = ["상장폐지", "파산", "부도", "횡령", "배임", "거래정지",
-                   "기업회생", "회생절차", "회생계획", "회생신청", "MTS 장애", "MTS 접속 장애"]
+                   "기업회생", "회생절차", "회생계획", "회생신청", "회생 신청", "회생 절차",
+                   "채무불이행", "디폴트", "감사의견 거절", "감사의견거절",
+                   "차환 실패", "차환실패", "미상환", "연체", "반대매매",
+                   "MTS 장애", "MTS 접속 장애"]
     # 스팩·정상상폐·호재성·칼럼 기사는 CRITICAL_KW bypass 면제 → 하드제외 적용
     CRITICAL_EXEMPT = ["스팩", "SPAC", "기업인수목적", "알짜", "체질 변신", "체질 개선",
                        "방카", "인수 효과", "밸류업", "주식병합",
@@ -3701,15 +3704,17 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
     except Exception:
         ai_summary = ""
 
+    # ── 발송 직전 리스크점수 최종 확정 ──
+    # 이후 단계(강등·검증)에서 등급이 바뀐 카드의 점수 괴리를 방지하기 위해
+    # build_email_html(카드 표시) 이전에 재산출 → 카드 점수 = 발송 판단 점수 일치.
+    for a in filtered:
+        a["_risk_score"] = calc_risk_score(a, exposure_data)
+
     html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary, exposure_data=exposure_data, ref_date=ref_date, competitor_notices=competitor_notices, today_str=today_str)
 
     # ── 전체 발송 여부 결정 ──
     # 최종 기사 중 최고 리스크점수가 임계값 미만이면 보낸사람에게만 발송.
     # 실제 리스크 있는 메일(임계값 이상 카드 1건 이상)만 전체 수신자에게 전달.
-    # 발송 직전 시점 기준으로 점수를 재산출 — 이후 단계(강등·검증)에서
-    # 등급이 바뀐 카드의 점수 괴리를 방지.
-    for a in filtered:
-        a["_risk_score"] = calc_risk_score(a, exposure_data)
     _max_score = max((a.get("_risk_score") or 0) for a in filtered) if filtered else 0
     _self_only = _max_score < SELF_ONLY_MAX_SCORE
     if _self_only:
