@@ -1858,6 +1858,24 @@ def calc_risk_score(article: dict, exposure_data: dict = None) -> float:
 
 def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     """등급별 상한 초과 시 리스크 점수 기반으로 하위 등급 강등"""
+    # ── 타 증권사 주체 기사의 당사 오추출 방어 ──
+    # AI가 entity를 "한국투자증권"으로 뽑았으나 제목에 당사가 없고 타 증권사(키움·
+    # 미래에셋 등)가 제목에 있으면, 경쟁사 이슈를 당사 이슈로 오인한 것. entity를
+    # 비우고 참고로 강등해 당사 익스포저 매칭·긴급 발송을 차단한다.
+    _OTHER_BROKERS = ("키움", "미래에셋", "삼성증권", "NH투자", "신한투자", "KB증권",
+                      "하나증권", "대신증권", "메리츠증권", "토스증권", "카카오페이증권")
+    for a in articles:
+        _ent = (a.get("entity") or "")
+        _title = a.get("title", "")
+        if ("한국투자증권" in _ent or "한국금융지주" in _ent) and "한국투자증권" not in _title:
+            if any(b in _title for b in _OTHER_BROKERS):
+                print(f"  [당사 오추출 방어] entity 무효화·참고강등: {_title[:40]}")
+                a["entity"] = ""
+                a["entities"] = []
+                a["grade"] = "참고"
+                a["_force_urgent"] = False
+                a["customer_notice"] = None
+
     for a in articles:
         a["_risk_score"] = calc_risk_score(a, exposure_data)
 
