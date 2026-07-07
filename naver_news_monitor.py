@@ -1958,14 +1958,22 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
         a["_risk_score"] = calc_risk_score(a, exposure_data)
 
     # ── 당사 직접 이슈 긴급 강제 (confidence·GRADE_LIMITS 면제) ──────────
+    # 전사 발송 안전장치: 강제 긴급은 반드시 '한국투자증권'이 제목에 있고
+    # 타 증권사가 주체가 아닐 때만. MTS·HTS·전산장애 키워드 단독으로는 강제하지
+    # 않는다(키움 MTS 장애 등 타사 기사가 당사 긴급으로 오발송되는 것 방지).
+    _OTHER_BROKER_KW = ("키움", "미래에셋", "삼성증권", "NH투자", "신한투자", "KB증권",
+                        "하나증권", "대신증권", "메리츠증권", "토스증권", "카카오페이증권",
+                        "유안타", "교보증권", "현대차증권", "이베스트", "다올투자")
     for a in articles:
         title = a.get("title", "")
+        _has_company = DIRECT_COMPANY_KW in title
+        _has_other_broker = any(b in title for b in _OTHER_BROKER_KW)
+        # 당사 직접 이슈: 제목에 한국투자증권이 있고, 그 맥락이 부정적(장애·제재 등)일 때만.
+        # MTS/HTS/전산장애 키워드도 '한국투자증권'과 함께 있을 때만 인정.
         _is_direct = (
-            any(kw in title for kw in DIRECT_INCIDENT_KW)  # MTS·HTS·전산장애 등
-            or (
-                DIRECT_COMPANY_KW in title
-                and any(kw in title for kw in DIRECT_NEGATIVE_KW)  # 한국투자증권 + 장애·제재 등
-            )
+            _has_company
+            and not _has_other_broker
+            and any(kw in title for kw in (DIRECT_NEGATIVE_KW | DIRECT_INCIDENT_KW))
         )
         if _is_direct:
             if a.get("grade") != "긴급":
