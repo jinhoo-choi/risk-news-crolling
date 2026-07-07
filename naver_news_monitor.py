@@ -617,6 +617,84 @@ def get_overseas_keywords(exposure_data: dict = None, top_n: int = 30) -> list:
     """
     return list(OVERSEAS_KEYWORDS)
 
+def sanitize_action_numbers(action: str, exp_rows: list) -> tuple:
+    """
+    대응방안(action) 텍스트에서 익스포저 관련 수치(N명·N억원)를 추출해,
+    실제 제공된 익스포저(exp_rows)의 값 또는 그 부분집합 합산으로 설명되지 않는
+    '창작된 수치'가 있으면 True(오염)로 판정한다. 할루시네이션 원천 차단용 검증 계층.
+
+    반환: (오염여부: bool, 오염수치목록: list)
+    - exp_rows가 비어 있으면(익스포저 없음) 검증 스킵 → (False, [])
+    - action에 '억원'/'명' 수치가 아예 없으면 → (False, [])
+    """
+    if not exp_rows:
+        return (False, [])
+
+    # 실제 익스포저에서 정당한 잔고·고객수 값 수집
+    bal_vals, cust_vals = [], []
+    for r in exp_rows:
+        try:
+            b = int(round(float(str(r.get('잔고(억)', '0') or '0').replace(',', ''))))
+            if b > 0:
+                bal_vals.append(b)
+        except (ValueError, TypeError):
+            pass
+        try:
+            c = int(float(str(r.get('고객수', '0') or '0').replace(',', '')))
+            if c > 0:
+                cust_vals.append(c)
+        except (ValueError, TypeError):
+            pass
+
+    def _allowed_sums(vals, cap=8):
+        """개별 값 + 부분집합 합산(최대 cap개 종목까지)을 허용 집합으로."""
+        allowed = set(vals)
+        # 종목 수가 많지 않을 때만 부분집합 합산 계산 (조합 폭발 방지)
+        import itertools as _it
+        vv = vals[:cap]
+        for k in range(2, len(vv) + 1):
+            for combo in _it.combinations(vv, k):
+                allowed.add(sum(combo))
+        # 전체 합산도 허용
+        if vals:
+            allowed.add(sum(vals))
+        return allowed
+
+    allowed_bal = _allowed_sums(bal_vals)
+    allowed_cust = _allowed_sums(cust_vals)
+
+    tainted = []
+
+    # 검증 제외: "N억원 이상/이하/초과/미만" 같은 임계 기준 표현은 익스포저 수치가
+    # 아니라 정책 기준이므로 통과. (예: "여신 1억원 이상 고객")
+    _THRESHOLD_RE = r'\d[\d,]*\s*억원?\s*(?:이상|이하|초과|미만)'
+    _action_for_check = re.sub(_THRESHOLD_RE, ' ', action)
+
+    # 금액: "106억원", "1,062 억" 등 → '억' 앞 숫자
+    for m in re.finditer(r'([\d,]+)\s*억', _action_for_check):
+        try:
+            v = int(m.group(1).replace(',', ''))
+        except ValueError:
+            continue
+        if v == 0:
+            continue
+        # ±1 오차 허용(반올림 표기차)
+        if not any(abs(v - a) <= 1 for a in allowed_bal):
+            tainted.append(f"{v}억")
+
+    # 고객수: "1,062명", "499 명" 등 → '명' 앞 숫자
+    for m in re.finditer(r'([\d,]+)\s*명', _action_for_check):
+        try:
+            v = int(m.group(1).replace(',', ''))
+        except ValueError:
+            continue
+        if v == 0:
+            continue
+        if not any(abs(v - a) <= 1 for a in allowed_cust):
+            tainted.append(f"{v}명")
+
+    return (len(tainted) > 0, tainted)
+
 def find_exposure(entity: str, exposure_data: dict) -> list:
     """entity와 종목명 딕셔너리 매칭 — O(1) 정확 매칭 우선, fallback prefix 6자
     성능 최적화: 정확 매칭(O1) → 부분포함 문자열(O(n)) → prefix 6자(O(n))
@@ -3680,6 +3758,34 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
                     result = {}
             if result.get("action"):
                 action_text = result["action"]
+                # ── 할루시네이션 수치 검증 (원천 차단 계층) ──
+                # AI가 생성한 대응방안에 실제 익스포저로 설명 안 되는 창작 수치가
+                # 있으면, 오염 수치를 제거하고 코드가 계산한 정확한 값으로 대체한다.
+                _tainted, _bad = sanitize_action_numbers(action_text, exp_rows)
+                if _tainted:
+                    print(f"  [수치 할루시네이션 차단] {article.get('title','')[:30]} — 창작수치 {_bad}")
+                    _cleaned = action_text
+                    # 임계 기준 표현("N억원 이상" 등)은 정책 기준이므로 보호
+                    _thr_re = r'\d[\d,]*\s*억원?\s*(?:이상|이하|초과|미만)'
+                    _protected = []
+                    def _prot(m):
+                        _protected.append(m.group(0))
+                        return f"\x00{len(_protected)-1}\x00"
+                    _cleaned = re.sub(_thr_re, _prot, _cleaned)
+                    # "(총 1,062명, 여신 106억원)" 같은 괄호 수치구 우선 제거
+                    _cleaned = re.sub(r'[\(（][^()（）]*(?:억|명)[^()（）]*[\)）]', '', _cleaned)
+                    # 남은 단독 "N명"·"N억(원)" 수치 제거
+                    _cleaned = re.sub(r'[\d,]+\s*억원?', '', _cleaned)
+                    _cleaned = re.sub(r'[\d,]+\s*명', '', _cleaned)
+                    # 보호한 임계 기준 복원
+                    for _i, _p in enumerate(_protected):
+                        _cleaned = _cleaned.replace(f"\x00{_i}\x00", _p)
+                    _cleaned = re.sub(r'\s{2,}', ' ', _cleaned).replace(' ,', ',').replace(' .', '.').strip()
+                    # 코드가 계산한 정확한 익스포저 요약을 부기
+                    if exp_str:
+                        action_text = f"{_cleaned} [뱅키스 익스포저: {exp_str}]"
+                    else:
+                        action_text = _cleaned
                 if _body_failed:
                     action_text += " *(본문 크롤링 실패, 제목 기반 생성)"
                 article["action"] = action_text
