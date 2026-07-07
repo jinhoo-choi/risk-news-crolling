@@ -134,7 +134,7 @@ if os.path.exists(_GROUP_MAP_FILE):
 # ─────────────────────────────────────────────
 EMAIL_SENDER      = os.environ["EMAIL_SENDER"]
 EMAIL_PASSWORD    = os.environ["EMAIL_PASSWORD"]
-EMAIL_RECEIVERS   = [e.strip() for e in os.environ["EMAIL_RECEIVER"].split(",")]
+EMAIL_RECEIVERS   = [e.strip() for e in os.environ["EMAIL_RECEIVER"].split(",") if e.strip()]
 NO_RESULT_RECEIVER = os.environ.get("NO_RESULT_RECEIVER", "").strip()  # 결과 없을 때 수신자
 EMAIL_CC          = [e.strip() for e in os.environ.get("EMAIL_CC", "").split(",") if e.strip()]   # 참조
 # 전체 발송 임계값 — 최종 기사 중 최고 리스크점수가 이 값 미만이면
@@ -1941,7 +1941,8 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     # 미래에셋 등)가 제목에 있으면, 경쟁사 이슈를 당사 이슈로 오인한 것. entity를
     # 비우고 참고로 강등해 당사 익스포저 매칭·긴급 발송을 차단한다.
     _OTHER_BROKERS = ("키움", "미래에셋", "삼성증권", "NH투자", "신한투자", "KB증권",
-                      "하나증권", "대신증권", "메리츠증권", "토스증권", "카카오페이증권")
+                      "하나증권", "대신증권", "메리츠증권", "토스증권", "카카오페이증권",
+                      "유안타", "교보증권", "현대차증권", "이베스트", "다올투자")
     for a in articles:
         _ent = (a.get("entity") or "")
         _title = a.get("title", "")
@@ -1954,6 +1955,27 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
                 a["_force_urgent"] = False
                 a["customer_notice"] = None
 
+    # ── 경쟁사 자체 리스크 참고 강등 ──
+    # 타 증권사가 리스크 주체(제목에 타 증권사 + 그 증권사가 entity)이고 당사가
+    # 제목에 없으면, 경쟁사 자체 사건(전산장애·제재·손실)이다. 고객이 해당 증권주를
+    # 보유해 익스포저·점수가 높게 잡히더라도, 당사 직접 리스크가 아니므로 참고로
+    # 강등해 전사 긴급/주의 발송을 막는다. (익스포저 표시는 참고용으로 유지)
+    _BROKER_ENTITIES = ("키움증권", "미래에셋증권", "삼성증권", "NH투자증권",
+                        "신한투자증권", "KB증권", "하나증권", "대신증권", "메리츠증권",
+                        "토스증권", "카카오페이증권", "유안타증권", "교보증권",
+                        "현대차증권", "이베스트투자증권", "다올투자증권")
+    for a in articles:
+        _ent = (a.get("entity") or "")
+        _title = a.get("title", "")
+        if "한국투자증권" in _title:
+            continue  # 당사가 제목에 있으면 당사 관련 사안이므로 제외
+        if _ent in _BROKER_ENTITIES and any(b in _title for b in _OTHER_BROKERS):
+            if a.get("grade") != "참고":
+                print(f"  [경쟁사 자체리스크 참고강등] {_ent}: {_title[:35]}")
+            a["grade"] = "참고"
+            a["_force_urgent"] = False
+            a["customer_notice"] = None
+
     for a in articles:
         a["_risk_score"] = calc_risk_score(a, exposure_data)
 
@@ -1961,13 +1983,10 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     # 전사 발송 안전장치: 강제 긴급은 반드시 '한국투자증권'이 제목에 있고
     # 타 증권사가 주체가 아닐 때만. MTS·HTS·전산장애 키워드 단독으로는 강제하지
     # 않는다(키움 MTS 장애 등 타사 기사가 당사 긴급으로 오발송되는 것 방지).
-    _OTHER_BROKER_KW = ("키움", "미래에셋", "삼성증권", "NH투자", "신한투자", "KB증권",
-                        "하나증권", "대신증권", "메리츠증권", "토스증권", "카카오페이증권",
-                        "유안타", "교보증권", "현대차증권", "이베스트", "다올투자")
     for a in articles:
         title = a.get("title", "")
         _has_company = DIRECT_COMPANY_KW in title
-        _has_other_broker = any(b in title for b in _OTHER_BROKER_KW)
+        _has_other_broker = any(b in title for b in _OTHER_BROKERS)
         # 당사 직접 이슈: 제목에 한국투자증권이 있고, 그 맥락이 부정적(장애·제재 등)일 때만.
         # MTS/HTS/전산장애 키워드도 '한국투자증권'과 함께 있을 때만 인정.
         _is_direct = (
@@ -3871,11 +3890,13 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
     html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary, exposure_data=exposure_data, ref_date=ref_date, competitor_notices=competitor_notices, today_str=today_str)
 
     # ── 전체 발송 여부 결정 ──
-    # 원칙: 최종 기사 중 최고 리스크점수가 임계값 미만이면 보낸사람에게만 발송.
-    # 단, 아래 '실제 리스크 확정' 조건 중 하나라도 있으면 점수와 무관하게 전체 발송.
-    # (제목에 리스크 키워드가 없어 kw_weight=1.0으로 점수가 낮게 잡히더라도,
-    #  AI가 긴급/고신뢰 주의로 확정한 진짜 리스크는 누락시키지 않기 위함 — FN 방지)
-    _max_score = max((a.get("_risk_score") or 0) for a in filtered) if filtered else 0
+    # 원칙: 긴급·주의 카드 중 최고 리스크점수가 임계값 이상이면 전체 발송.
+    # 참고 등급은 '직접 손실 없는 동향'이므로 점수가 높아도(경쟁사 익스포저 등)
+    # 전체 발송 트리거가 되지 않는다. 경쟁사 자체 리스크가 참고로 강등된 경우
+    # 익스포저 때문에 점수가 높아도 전사 발송되지 않도록 하는 안전장치.
+    # 단, 긴급/고신뢰 주의는 점수와 무관하게 전체 발송(FN 방지).
+    _actionable = [a for a in filtered if a.get("grade") in ("긴급", "주의")]
+    _max_score = max((a.get("_risk_score") or 0) for a in _actionable) if _actionable else 0
     _has_urgent = any(a.get("grade") == "긴급" for a in filtered)
     # 고신뢰 주의: confidence 원값(_conf_raw 우선, 없으면 현재값) 0.80 이상
     _has_strong_caution = any(
