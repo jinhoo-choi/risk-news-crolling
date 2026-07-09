@@ -169,8 +169,8 @@ USER_AGENTS = [
 ]
 SEEN_FILE = "seen_news.json"
 EXPOSURE_FILE = "exposure_data.csv"
-CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL",        "claude-haiku-4-5-20251001")  # Gemini fallback·재검증용
-CLAUDE_ACTION_MODEL = os.environ.get("CLAUDE_ACTION_MODEL", "claude-haiku-4-5-20251001")  # action 생성 전용
+CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL",        "claude-sonnet-4-6")  # Gemini fallback·재검증용
+CLAUDE_ACTION_MODEL = os.environ.get("CLAUDE_ACTION_MODEL", "claude-sonnet-4-6")  # action 생성 전용
 GEMINI_MODEL        = os.environ.get("GEMINI_MODEL",        "gemini-2.5-flash-lite")  # 무료 15 RPM (2.0-flash는 5 RPM으로 축소됨)
 
 # 중복 제거 유사도 임계값 — 운영 중 조정 가능
@@ -2153,27 +2153,32 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     return result_deduped
 
 
-def _verify_urgent_by_claude(urgent_articles: list):
-    """Gemini 긴급 분류 기사를 Claude가 재검증 — 인플레이스 등급 수정
-    _force_urgent(당사 직접 이슈)는 호출 전에 이미 제외됨
+def _verify_high_risk_by_claude(articles: list):
+    """Gemini가 분류한 고위험 기사(긴급 전체 + 리스크점수 5.0 이상)를 Sonnet이
+    재검증 — 인플레이스 등급 수정. _force_urgent(당사 직접 이슈)는 호출 전에
+    이미 제외됨.
     """
-    if not urgent_articles:
+    if not articles:
         return
 
     lines_txt = "\n".join(
         f"{i+1}. [{a.get('entity','')}] {a['title']} "
-        f"(reason: {a.get('reason','')}, conf: {a.get('_ai_confidence',0):.2f})"
-        for i, a in enumerate(urgent_articles)
+        f"(현재등급: {a.get('grade','')}, 점수: {a.get('_risk_score',0):.1f}, "
+        f"reason: {a.get('reason','')}, conf: {a.get('_ai_confidence',0):.2f})"
+        for i, a in enumerate(articles)
     )
     prompt = (
         "당신은 한국투자증권 eBiz본부 리스크 담당자입니다.\n"
-        "Gemini AI가 아래 기사들을 '긴급'으로 분류했습니다.\n"
-        "각 기사가 정말 긴급(손실·부실 확정, 즉각 대응 필요)인지,\n"
-        "주의(가능성·조사 착수 단계)로 낮춰야 하는지 검토하세요.\n\n"
-        "긴급 유지 기준: 상장폐지·거래정지·부도·파산·회생 확정, MTS 장애, 당사 직접 제재\n"
-        "주의 강등 기준: 심의 예정·가능성·우려·조사 착수·감사의견 미확정\n\n"
+        "Gemini AI가 아래 기사들을 리스크 등급(긴급/주의/참고)으로 분류했습니다.\n"
+        "각 기사의 등급이 실제 내용에 맞는지 재검토하고, 필요시 조정하세요.\n\n"
+        "긴급 기준: 상장폐지·거래정지·부도·파산·회생 확정, MTS 장애, 당사 직접 제재 등 확정된 손실·부실\n"
+        "주의 기준: 손실 가능성·조사 착수·심의 예정 등 아직 확정 아닌 리스크\n"
+        "참고 기준: 직접 손실 없는 동향, 경쟁사 자체 리스크, 배경 설명성 기사\n"
+        "강등 판단: 심의 예정·가능성·우려·조사 착수·감사의견 미확정이면 주의로,\n"
+        "  직접 손실과 무관한 배경·동향·SNS반응·가십성 소재면 참고로 낮출 것.\n"
+        "승격 판단: 실제로는 확정된 손실·부실인데 과소평가됐으면 긴급으로 올릴 것.\n\n"
         f"{lines_txt}\n\n"
-        'JSON 배열만 반환. 예시: [{"id":1,"grade":"긴급"},{"id":2,"grade":"주의"}]'
+        'JSON 배열만 반환. 예시: [{"id":1,"grade":"긴급"},{"id":2,"grade":"주의"},{"id":3,"grade":"참고"}]'
     )
     try:
         _res = requests.post(
@@ -2185,7 +2190,7 @@ def _verify_urgent_by_claude(urgent_articles: list):
             },
             json={
                 "model": CLAUDE_MODEL,
-                "max_tokens": 300,
+                "max_tokens": 500,
                 "temperature": 0.0,
                 "system": "당신은 JSON API입니다. 설명 없이 JSON 배열만 출력하세요.",
                 "messages": [{"role": "user", "content": prompt}],
@@ -2199,17 +2204,20 @@ def _verify_urgent_by_claude(urgent_articles: list):
         if _s != -1 and _e > _s:
             _raw = _raw[_s:_e]
         _verdicts = json.loads(_raw)
-        _vmap = {v["id"]: v.get("grade", "긴급") for v in _verdicts if isinstance(v, dict)}
-        for i, a in enumerate(urgent_articles):
-            _vg = _vmap.get(i + 1, "긴급")
-            if _vg != "긴급":
-                a["grade"] = "주의"
-                a["customer_notice"] = None
-                print(f"  [Claude 재검증] 긴급→주의: {a['title'][:40]}")
+        _vmap = {v["id"]: v.get("grade") for v in _verdicts if isinstance(v, dict)}
+        _valid_grades = {"긴급", "주의", "참고"}
+        for i, a in enumerate(articles):
+            _vg = _vmap.get(i + 1)
+            _og = a.get("grade", "")
+            if _vg in _valid_grades and _vg != _og:
+                a["grade"] = _vg
+                if _vg != "긴급":
+                    a["customer_notice"] = None
+                print(f"  [Sonnet 재검증] {_og}→{_vg}: {a['title'][:40]}")
             else:
-                print(f"  [Claude 재검증] 긴급 유지: {a['title'][:40]}")
+                print(f"  [Sonnet 재검증] {_og} 유지: {a['title'][:40]}")
     except Exception as e:
-        print(f"  [Claude 재검증] 오류 — 원래 등급 유지: {e}")
+        print(f"  [Sonnet 재검증] 오류 — 원래 등급 유지: {e}")
 
 
 def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
@@ -2254,13 +2262,14 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
 
     result = regrade_by_score(result, exposure_data=exposure_data)
 
-    # ── Gemini 사용 시 긴급 기사 Claude 재검증 ────────────────────────
+    # ── Gemini 사용 시 고위험 기사(긴급 + 리스크점수 5.0↑) Sonnet 재검증 ──────
     if _used_gemini:
         _to_verify = [a for a in result
-                      if a.get('grade') == '긴급' and not a.get('_force_urgent')]
+                      if not a.get('_force_urgent')
+                      and (a.get('grade') == '긴급' or (a.get('_risk_score') or 0) >= 5.0)]
         if _to_verify:
-            print(f"  [Claude 재검증] 긴급 {len(_to_verify)}건 검증 중...")
-            _verify_urgent_by_claude(_to_verify)
+            print(f"  [Sonnet 재검증] 고위험(긴급+5점↑) {len(_to_verify)}건 검증 중...")
+            _verify_high_risk_by_claude(_to_verify)
     # ─────────────────────────────────────────────────────────────────
 
     return result
@@ -3751,30 +3760,38 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
                 고객 = 0
             return f"{r.get('종목유형','')} {잔고:,.0f}억원/{고객:,}명"
         exp_str = ", ".join([_fmt_exp(r) for r in exp_rows]) if exp_rows else ""
+        _action_prompt_raw = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "action_prompt.txt"), encoding="utf-8").read()
+        _act_static, _act_dynamic_tpl = _action_prompt_raw.split("<<<DYNAMIC_SPLIT>>>", 1)
+        _act_dynamic = (
+            _act_dynamic_tpl
+            .replace("__KW__", keyword)
+            .replace("__ENTITY__", entity)
+            .replace("__GRADE__", article.get("grade",""))
+            .replace("__TITLE__", article.get("title",""))
+            .replace("__BODY__", body_text[:400])
+            .replace("__EXP__", exp_str)
+            .replace("__OVERSEAS__", "해외주식 (신용융자 불가, 담보대출만 가능)" if is_overseas else "국내주식")
+            .replace("__BODY_FAIL__", " (※ 본문 크롤링 실패 — 제목·요약 기반만 사용, 추측 금지)" if article.get("_body_failed") else "")
+        )
         try:
             res = requests.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={
                     "x-api-key": ANTHROPIC_KEY,
                     "anthropic-version": "2023-06-01",
+                    "anthropic-beta": "prompt-caching-2024-07-31",
                     "content-type": "application/json",
                 },
                 json={
                     "model": CLAUDE_ACTION_MODEL,
                     "max_tokens": 800,
                     "temperature": 0.0,
-                    "messages": [{"role": "user", "content": (
-                        open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "action_prompt.txt"), encoding="utf-8").read()
-                        .replace("__KW__", keyword)
-                        .replace("__ENTITY__", entity)
-                        .replace("__GRADE__", article.get("grade",""))
-                        .replace("__TITLE__", article.get("title",""))
-                        .replace("__BODY__", body_text[:400])
-                        .replace("__EXP__", exp_str)
-                        .replace("__OVERSEAS__", "해외주식 (신용융자 불가, 담보대출만 가능)" if is_overseas else "국내주식")
-                        .replace("__BODY_FAIL__", " (※ 본문 크롤링 실패 — 제목·요약 기반만 사용, 추측 금지)" if article.get("_body_failed") else "")
-                    )}],
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": _act_static,
+                         "cache_control": {"type": "ephemeral"}},
+                        {"type": "text", "text": _act_dynamic},
+                    ]}],
                 },
                 timeout=20,
             )

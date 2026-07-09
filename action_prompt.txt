@@ -229,6 +229,7 @@
 반드시 JSON만 반환. 마크다운 없이.
 {{"action":"...", "customer_notice":"..."}}
 
+<<<DYNAMIC_SPLIT>>>
 기사 정보:
 - 키워드: __KW__
 - 기업명: __ENTITY__
