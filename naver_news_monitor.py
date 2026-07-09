@@ -1940,6 +1940,9 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     # AI가 entity를 "한국투자증권"으로 뽑았으나 제목에 당사가 없고 타 증권사(키움·
     # 미래에셋 등)가 제목에 있으면, 경쟁사 이슈를 당사 이슈로 오인한 것. entity를
     # 비우고 참고로 강등해 당사 익스포저 매칭·긴급 발송을 차단한다.
+    # 유지보수 주의: 이 증권사 목록은 filter_prompt.txt, filter_prompt_gemini.txt,
+    # _verify_high_risk_by_claude() 재검증 프롬프트까지 4곳에 흩어져 있다.
+    # 증권사를 추가/제외할 때는 4곳 모두 동일하게 수정할 것.
     _OTHER_BROKERS = ("키움", "미래에셋", "삼성증권", "NH투자", "신한투자", "KB증권",
                       "하나증권", "대신증권", "메리츠증권", "토스증권", "카카오페이증권",
                       "유안타", "교보증권", "현대차증권", "이베스트", "다올투자")
@@ -2167,7 +2170,7 @@ def _verify_high_risk_by_claude(articles: list):
         f"reason: {a.get('reason','')}, conf: {a.get('_ai_confidence',0):.2f})"
         for i, a in enumerate(articles)
     )
-    prompt = (
+    _verify_static = (
         "당신은 한국투자증권 eBiz본부 리스크 담당자입니다.\n"
         "Gemini AI가 아래 기사들을 리스크 등급(긴급/주의/참고)으로 분류했습니다.\n"
         "각 기사의 등급이 실제 내용에 맞는지 재검토하고, 필요시 조정하세요.\n\n"
@@ -2183,15 +2186,17 @@ def _verify_high_risk_by_claude(articles: list):
         "  (예: \"거래정지? 오히려 불쏘시개였다···금호건설 4천원→1만6천원 광란\"\n"
         "   → 주가 폭등 기사이므로 참고로 강등. 반대매매·강제청산 리스크 아님)\n"
         "승격 판단: 실제로는 확정된 손실·부실인데 과소평가됐으면 긴급으로 올릴 것.\n\n"
-        f"{lines_txt}\n\n"
-        'JSON 배열만 반환. 예시: [{"id":1,"grade":"긴급"},{"id":2,"grade":"주의"},{"id":3,"grade":"참고"}]'
+        'JSON 배열만 반환. 예시: [{"id":1,"grade":"긴급"},{"id":2,"grade":"주의"},{"id":3,"grade":"참고"}]\n\n'
+        "검토 대상 기사:"
     )
+    _verify_dynamic = f"\n{lines_txt}"
     try:
         _res = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
                 "x-api-key": ANTHROPIC_KEY,
                 "anthropic-version": "2023-06-01",
+                "anthropic-beta": "prompt-caching-2024-07-31",
                 "content-type": "application/json",
             },
             json={
@@ -2199,7 +2204,11 @@ def _verify_high_risk_by_claude(articles: list):
                 "max_tokens": 500,
                 "temperature": 0.0,
                 "system": "당신은 JSON API입니다. 설명 없이 JSON 배열만 출력하세요.",
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": _verify_static,
+                     "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": _verify_dynamic},
+                ]}],
             },
             timeout=20,
         )
