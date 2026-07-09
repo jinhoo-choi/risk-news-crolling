@@ -646,7 +646,7 @@ def sanitize_action_numbers(action: str, exp_rows: list) -> tuple:
         except (ValueError, TypeError):
             pass
 
-    def _allowed_sums(vals, cap=8):
+    def _allowed_sums(vals, cap=12):
         """개별 값 + 부분집합 합산(최대 cap개 종목까지)을 허용 집합으로."""
         allowed = set(vals)
         # 종목 수가 많지 않을 때만 부분집합 합산 계산 (조합 폭발 방지)
@@ -3808,9 +3808,30 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
                     for _i, _p in enumerate(_protected):
                         _cleaned = _cleaned.replace(f"\x00{_i}\x00", _p)
                     _cleaned = re.sub(r'\s{2,}', ' ', _cleaned).replace(' ,', ',').replace(' .', '.').strip()
-                    # 코드가 계산한 정확한 익스포저 요약을 부기
-                    if exp_str:
-                        action_text = f"{_cleaned} [뱅키스 익스포저: {exp_str}]"
+                    # 코드가 계산한 정확한 익스포저를 부기하되, 종목이 많으면
+                    # (JTBC 계열 채권 13종 등) 전체 나열이 대응방안 문장을 과도하게
+                    # 길게 만들고 카드 하단의 상세 익스포저 섹션과 중복되므로,
+                    # 총합만 간결하게 부기한다. 상세 내역은 하단 익스포저 섹션 참고.
+                    if exp_rows:
+                        _type_totals = {}
+                        for r in exp_rows:
+                            try:
+                                _b = float(str(r.get('잔고(억)', '0') or '0').replace(',', ''))
+                            except (ValueError, TypeError):
+                                _b = 0.0
+                            try:
+                                _c = int(float(str(r.get('고객수', '0') or '0').replace(',', '')))
+                            except (ValueError, TypeError):
+                                _c = 0
+                            _t = r.get('종목유형', '')
+                            if _t not in _type_totals:
+                                _type_totals[_t] = [0.0, 0]
+                            _type_totals[_t][0] += _b
+                            _type_totals[_t][1] += _c
+                        _summary = ", ".join(
+                            f"{t} 총 {b:,.0f}억원/{c:,}명" for t, (b, c) in _type_totals.items()
+                        )
+                        action_text = f"{_cleaned} [뱅키스 익스포저 합계: {_summary}, 상세는 하단 참조]"
                     else:
                         action_text = _cleaned
                 if _body_failed:
