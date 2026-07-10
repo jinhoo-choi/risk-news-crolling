@@ -1444,6 +1444,48 @@ def load_known_case_entities() -> set:
     return ents
 
 
+def load_entity_canonical_map() -> dict:
+    """known_cases.json → {별칭: 대표명} 매핑.
+
+    같은 사건인데 AI가 실행마다 다른 별칭(JTBC/제이티비씨/중앙일보)을 entity로
+    뽑으면, combo dedup의 키 (entity, event_type)가 매번 달라져 같은 사건이
+    중복 발송된다(2026-07-10 12시 실측: 07시엔 '중앙일보', 12시엔 'JTBC'로
+    잡혀 동일 워크아웃 결정 기사가 중복 발송됨).
+
+    이 함수는 known_cases.json의 'A·B·C(D·E)' 별칭 그룹에서 첫 토큰을
+    대표명으로 삼아, 그룹 내 모든 별칭을 대표명으로 되돌리는 맵을 만든다.
+    dedup 시 entity를 이 맵으로 정규화한 뒤 combo를 생성하면, 별칭이
+    달라도 같은 사건으로 인식된다.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "known_cases.json")
+    canon: dict = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            cases = json.load(f)
+        if not isinstance(cases, list):
+            return canon
+        for c in cases:
+            if not isinstance(c, dict):
+                continue
+            raw = c.get("entity", "") or ""
+            raw = raw.replace("(", "·").replace(")", "·").replace(",", "·")
+            toks = [t.strip() for t in raw.split("·") if t.strip()]
+            toks = [t for t in toks if t not in ("그룹", "계열사", "중앙그룹") and len(t) >= 2]
+            if not toks:
+                continue
+            representative = toks[0]  # 그룹의 첫 토큰을 대표명으로
+            for t in toks:
+                canon[t] = representative
+    except Exception:
+        pass
+    return canon
+
+
+def canonicalize_entity(entity: str, canon_map: dict) -> str:
+    """dedup combo 키 생성 전 entity를 대표명으로 정규화."""
+    return canon_map.get(entity, entity)
+
+
 def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     """하드 제외 패턴 매칭 — (excluded: bool, reason: str) 반환"""
 
@@ -3369,9 +3411,11 @@ def main():
     prev_desc_norms  = seen_context.get("desc_norms",  [])
     new_title_norms  = []
     new_desc_norms   = []
+    _entity_canon = load_entity_canonical_map()
 
     for a in filtered:
         entity   = a.get("entity", "").strip()
+        entity   = canonicalize_entity(entity, _entity_canon)
         keyword  = a.get("keyword", "").strip()
         event_type = a.get("event_type", "").strip()
         combo    = (entity, event_type) if entity and event_type else \
