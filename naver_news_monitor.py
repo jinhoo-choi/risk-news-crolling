@@ -864,12 +864,16 @@ def build_competitor_html(notices: list, today_str: str) -> str:
     </table>"""
 
 def load_seen_urls() -> set:
-    """최근 24시간 키(YYYY-MM-DD HH) 기준 seen URL 로드 — 오래된 키 자동 제거"""
+    """최근 7일 키(YYYY-MM-DD HH) 기준 seen URL 로드 — 오래된 키 자동 제거
+    (2026-07 패치: 24시간→7일로 확대. load_seen_stages()와 보존기간을 맞춰,
+    known_cases 진행 중 사건의 파생기사가 3일 이상 지나 URL이 바뀌면 dedup을
+    빠져나가 참고 등급으로 매일 재노출되던 문제 해결. 저장(save_seen_urls)은
+    이미 7일 보존이라 조회만 좁았던 불일치를 바로잡음.)"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(24)
+        for i in range(168)
     }
     if os.path.exists(SEEN_FILE):
         try:
@@ -890,12 +894,12 @@ def load_seen_urls() -> set:
     return set()
 
 def load_seen_combos() -> set:
-    """최근 24시간 내 발송된 (entity, keyword) 조합 로드"""
+    """최근 7일 내 발송된 (entity, keyword) 조합 로드 (2026-07: 24h→7일 확대)"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(24)
+        for i in range(168)
     }
     if os.path.exists(SEEN_FILE):
         try:
@@ -940,12 +944,13 @@ def load_seen_stages() -> set:
     return stages
 
 def load_seen_context() -> dict:
-    """최근 24시간 내 발송된 기사의 title_norms·desc_norms 로드 — 맥락 기반 중복 감지"""
+    """최근 7일 내 발송된 기사의 title_norms·desc_norms 로드 — 맥락 기반
+    중복 감지 (2026-07: 24h→7일 확대)"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(24)
+        for i in range(168)
     }
     title_norms = []
     desc_norms  = []
@@ -1256,6 +1261,11 @@ TITLE_ONLY_PATTERNS = [
     "전망", "소식",
     "(完)", "(완)", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩",
     "현직이 푸는", "전문가가 보는", "기자가 간다",
+    # 개인 칼럼·투자조언 코너 — 실측: '"...비중 축소 권한다"[경제적본능]'
+    "[경제적본능]", "[투자노트]", "[마켓인사이트]", "[머니무브]",
+    "[재테크]", "[증시전망]", "권한다\"",
+    # 회고·역사 정리성 기사 — 실측: "파산 문턱서 나스닥까지…되짚은 SK하이닉스 25년"
+    "되짚은", "되짚어", "돌아본 ", "돌아보는", "지나온 길", "그간의 여정",
     "후보", "공약", "선거", "시의원", "구의원", "도의원", "국회의원", "시장 출마", "당선",
     "복합문화", "재개발", "부지 활용", "도시재생", "리모델링",
 ]
@@ -1523,7 +1533,10 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
                        # 뱅키스 대상 아님. (예: '리퍼블릭, 거래정지…이더리움 1570개 보유')
                        "이더리움", "비트코인", "가상자산", "암호화폐", "알트코인",
                        "솔라나", "리플", "도지코인", "스테이블코인", "코인 보유",
-                       "ETH", "BTC", "디파이", "스테이킹",]
+                       "ETH", "BTC", "디파이", "스테이킹",
+                       # 회고·역사 정리성 기사 — CRITICAL_KW(파산 등)가 위기 극복 서사의
+                       # 일부로 언급되는 경우. 실측: "파산 문턱서 나스닥까지…되짚은 SK하이닉스 25년"
+                       "되짚은", "되짚어", "돌아본 ", "돌아보는", "지나온 길", "그간의 여정",]
     if any(kw in title for kw in CRITICAL_KW):
         if not any(ex in title for ex in CRITICAL_EXEMPT):
             return False, None  # 치명적 키워드 → AI 판단으로 넘김
