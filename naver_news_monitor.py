@@ -294,8 +294,10 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     try:
         import yfinance as yf
     except ImportError:
+        build_price_alert_section.last_alerted_count = 0
         return ''
 
+    build_price_alert_section.last_alerted_count = 0
     THRESHOLD = -3.0
 
     # 잔고 기준일 파싱
@@ -457,6 +459,11 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         [a for a in alerted_raw if a[3] > 0],
         key=lambda x: (-x[4], -x[3])
     )
+    # 발송 게이트(main)에서 참조할 수 있도록 최종 종목 수를 함수 속성에 기록.
+    # (-3% 초과 하락 + 위험고객 보유 종목이 다수여도 관련 뉴스가 하나도 안 잡히면
+    # 메일 자체가 안 나가던 문제 방지용 — 시장 급락 시 뉴스 매칭 여부와 무관하게
+    # 강제 전체발송 트리거로 사용)
+    build_price_alert_section.last_alerted_count = len(alerted_sorted)
     if not alerted_sorted:
         return ''
     MAX_DISPLAY = 3
@@ -4009,7 +4016,16 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
         and (a.get("_conf_raw") or a.get("_ai_confidence") or 0) >= 0.80
         for a in filtered
     )
-    _force_full = _has_urgent or _has_strong_caution
+    # 시장 급락 안전장치: -3% 초과 하락 + 위험고객 보유 종목이 10개 이상이면,
+    # 관련 리스크 뉴스가 하나도 안 잡혀 등급·점수가 낮더라도 전체 발송.
+    # (build_price_alert_section이 이미 위에서 호출되어 last_alerted_count에
+    # 최종 집계된 종목 수가 기록돼 있음 — 재계산 없이 재사용)
+    _MARKET_CRASH_STOCK_THRESHOLD = 10
+    _alerted_stock_count = getattr(build_price_alert_section, "last_alerted_count", 0)
+    _market_crash = _alerted_stock_count >= _MARKET_CRASH_STOCK_THRESHOLD
+    if _market_crash:
+        print(f"  [시장급락 강제발송] 위험고객 보유 -3%↓ 종목 {_alerted_stock_count}개 — 뉴스 매칭과 무관하게 전체 발송")
+    _force_full = _has_urgent or _has_strong_caution or _market_crash
     _self_only = (_max_score < SELF_ONLY_MAX_SCORE) and not _force_full
 
     if _self_only:
