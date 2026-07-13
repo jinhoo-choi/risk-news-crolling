@@ -3447,7 +3447,13 @@ def main():
         reason   = ""
 
         # event_key 기반 seen 비교 (entity+event_type 조합, 가장 정밀)
+        # 별칭 대칭화: event_key는 AI가 원본 entity로 생성하므로("중앙일보_워크아웃"),
+        # 정규화된 entity로 재구성해 비교한다 — 저장 시에도 동일 방식으로 재구성해
+        # 비교·저장 키를 완전히 일치시킴 (2026-07-13 패치: 67b1f02는 비교만
+        # 정규화하고 저장은 원본이라 별칭이 먼저 저장되면 dedup이 뚫리던 문제)
         event_key  = a.get("event_key", "").strip()
+        if entity and event_type:
+            event_key = f"{entity}_{event_type}"  # entity는 위에서 정규화 완료
         ek_combo   = ("ek", event_key) if event_key else None
         if not matched and ek_combo and ek_combo in seen_combos:
             if not a.get("_force_urgent") and not is_next_stage(a.get("title",""), a.get("desc",""), entity):
@@ -3493,8 +3499,10 @@ def main():
         GRADE_ORDER = {"긴급": 0, "주의": 1, "참고": 2}
         ev_key = (entity, event_type) if entity and event_type else None
         if ev_key:
+            # 비교 대상(filtered_final)의 entity도 정규화 — 별칭이 다른 동일 사건 누락 방지
             existing_grades = [GRADE_ORDER[x["grade"]] for x in filtered_final
-                               if x.get("entity") == entity and x.get("event_type") == event_type]
+                               if canonicalize_entity(x.get("entity", "") or "", _entity_canon) == entity
+                               and x.get("event_type") == event_type]
             if existing_grades and GRADE_ORDER.get(a["grade"], 9) > min(existing_grades):
                 print(f"  [{a['grade']}] '{a['title'][:30]}' — 동일 사건 상위등급 이미 발송, 스킵")
                 continue
@@ -3508,9 +3516,10 @@ def main():
         print(f"  중복 사건 제거: {before_combo}건 → {len(filtered)}건")
 
     # ── 동일 메일 내 entity dedup — 같은 entity는 리스크 점수 최고값 1건만 유지 ──
-    _entity_best: dict = {}  # entity → 현재 최고 점수 article
+    _entity_best: dict = {}  # entity(정규화) → 현재 최고 점수 article
     for a in filtered:
-        ent = a.get("entity", "") or ""
+        # 별칭 정규화 키 사용 — 같은 메일 안에서 JTBC/중앙일보로 갈려 2장 나가는 것 방지
+        ent = canonicalize_entity(a.get("entity", "") or "", _entity_canon)
         if not ent:
             continue
         score = a.get("_risk_score", 0) or 0
@@ -3535,7 +3544,8 @@ def main():
     GENERIC_ENTITIES = {"기업", "시장", "코스닥", "코스피", "증시", "채권", "주식", "부동산", "금융"}
     _known_removed = []
     for a in list(filtered):
-        ent = a.get("entity", "") or ""
+        # 저장된 combos가 정규화 entity 기준이므로 조회 키도 정규화 (별칭 우회 방지)
+        ent = canonicalize_entity(a.get("entity", "") or "", _entity_canon)
         if not ent or a.get("_force_urgent") or ent in GENERIC_ENTITIES:
             continue
         days = known_entities.get(ent, 0)
@@ -3565,11 +3575,14 @@ def main():
             filtered.remove(a)
 
     # 차단된 기사도 seen에 등록 (재탐지 방지)
+    # 저장 키는 반드시 정규화 entity 기준 — dedup 비교 측과 대칭 유지
     for a in _known_removed:
         sent_urls.add(a.get("url", ""))
-        _ent = a.get("entity", "").strip()
+        _ent = canonicalize_entity(a.get("entity", "").strip(), _entity_canon)
         _et  = a.get("event_type", "").strip()
         _ek  = a.get("event_key", "").strip()
+        if _ent and _et:
+            _ek = f"{_ent}_{_et}"  # 정규화 entity로 event_key 재구성
         _kw  = a.get("keyword", "").strip()
         if _ek:
             new_combos_this_run.add(("ek", _ek))
@@ -3586,6 +3599,11 @@ def main():
     if not filtered:
         now = datetime.now(timezone(timedelta(hours=9)))
         # 여신잔고 위험고객 여부 확인 — 있으면 전체 발송
+        # [설계 참고] 이 분기(뉴스 0건)는 위험고객 보유 -3%↓ 종목이 1개만 있어도
+        # 전체 발송한다. 뉴스가 있는 경우의 시장급락 안전장치(10개 이상, main 하단
+        # _MARKET_CRASH_STOCK_THRESHOLD)와 기준이 다른 것은 의도된 설계:
+        # 여기서는 메일 콘텐츠가 여신잔고 현황 그 자체라 1개라도 알릴 가치가 있고,
+        # 뉴스가 있는 경우엔 저등급 뉴스+소수 종목 하락만으로 전사 발송을 막기 위함.
         _price_section = build_price_alert_section(exposure_data, "")
         if _price_section:
             print("AI 필터링 결과 없음 — 여신잔고 위험고객 있음, 전체 발송")
@@ -4039,10 +4057,14 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
 
     for a in filtered:
         sent_urls.add(a.get("url", ""))
-        entity     = a.get("entity", "").strip()
+        # 저장 키는 정규화 entity 기준 — dedup 비교(canonicalize 적용)와 대칭.
+        # 원본 a['entity']는 카드 표시·익스포저 매칭용으로 이미 사용 완료라 무영향.
+        entity     = canonicalize_entity(a.get("entity", "").strip(), _entity_canon)
         keyword    = a.get("keyword", "").strip()
         event_type = a.get("event_type", "").strip()
         event_key  = a.get("event_key", "").strip()
+        if entity and event_type:
+            event_key = f"{entity}_{event_type}"  # 정규화 entity로 재구성
         # stage 기반 dedup — 발송 기사의 매칭 stage 키워드 기록 (차단 기사엔 미기록)
         if entity:
             for _skw in _stage_hits(a.get("title", ""), a.get("desc", "")):
@@ -4058,10 +4080,12 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
     # entity dedup으로 제거된 기사도 URL·combo 등록 — 다음 실행 재탐지 방지
     for a in _removed:
         sent_urls.add(a.get("url", ""))
-        _ent = a.get("entity", "").strip()
+        _ent = canonicalize_entity(a.get("entity", "").strip(), _entity_canon)
         _kw  = a.get("keyword", "").strip()
         _et  = a.get("event_type", "").strip()
         _ek  = a.get("event_key", "").strip()
+        if _ent and _et:
+            _ek = f"{_ent}_{_et}"  # 정규화 entity로 event_key 재구성
         if _ek:
             new_combos_this_run.add(("ek", _ek))
         if _et and _ent:
