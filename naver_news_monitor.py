@@ -325,18 +325,17 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             name = r.get('종목명', '').strip()
             if not name:
                 continue
-            def _pf(v):
-                try:
-                    return float(str(v or '0').replace(',', '') or '0')
-                except (ValueError, TypeError):
-                    return 0.0
-            bal, cust  = _pf(r.get('잔고(억)', 0)), int(_pf(r.get('고객수', 0)))
-            rcust, rbal = int(_pf(r.get('리스크고객수', 0))), _pf(r.get('리스크잔고(억)', 0))
+            try:
+                bal   = float(str(r.get('잔고(억)', 0)).replace(',', ''))
+                cust  = int(float(str(r.get('고객수', 0)).replace(',', '')))
+                rcust = int(float(str(r.get('리스크고객수', 0)).replace(',', '')))
+                rbal  = float(str(r.get('리스크잔고(억)', 0)).replace(',', ''))
+            except (ValueError, TypeError):
+                bal = cust = rcust = 0; rbal = 0.0
             if name not in credit_map:
                 code = str(r.get('종목코드', '')).strip()
                 credit_map[name] = {'bal': 0.0, 'cust': 0, 'rcust': 0, 'rbal': 0.0, 'code': code,
-                                    'top_rbal': 0.0, 'top_cust': '', 'top_ratio': '',
-                                    'ch': None}
+                                    'top_rbal': 0.0, 'top_cust': '', 'top_ratio': ''}
             credit_map[name]['bal']   += bal
             credit_map[name]['cust']  += cust
             credit_map[name]['rcust'] += rcust
@@ -349,24 +348,6 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
                 credit_map[name]['top_rbal']  = _top_rbal
                 credit_map[name]['top_cust']  = _top_cust
                 credit_map[name]['top_ratio'] = _top_ratio
-            # 채널별 상세 (20컬럼 스키마일 때만 존재)
-            if '뱅잔고' in r:
-                ch = credit_map[name].setdefault('ch', None) or {
-                    'b': {'bal': 0.0, 'cust': 0, 'rcust': 0, 'rbal': 0.0,
-                          'top_rbal': '', 'top_cust': '', 'top_ratio': ''},
-                    'y': {'bal': 0.0, 'cust': 0, 'rcust': 0, 'rbal': 0.0,
-                          'top_rbal': '', 'top_cust': '', 'top_ratio': ''},
-                }
-                for key, pre in (('b', '뱅'), ('y', '영')):
-                    ch[key]['bal']   += _pf(r.get(f'{pre}잔고'))
-                    ch[key]['cust']  += int(_pf(r.get(f'{pre}고객수')))
-                    ch[key]['rcust'] += int(_pf(r.get(f'{pre}리스크고객수')))
-                    ch[key]['rbal']  += _pf(r.get(f'{pre}리스크잔고'))
-                    if (r.get(f'{pre}최고리스크잔고') or '').strip():
-                        ch[key]['top_rbal']  = r.get(f'{pre}최고리스크잔고', '')
-                        ch[key]['top_cust']  = r.get(f'{pre}최고리스크고객', '')
-                        ch[key]['top_ratio'] = r.get(f'{pre}유지담보비율', '')
-                credit_map[name]['ch'] = ch
 
     if not credit_map:
         return ''
@@ -396,8 +377,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             if ticker and not ticker.endswith('.KS') and ticker.isdigit():
                 ticker += '.KS'
         stock_list.append((name, info['bal'], info['cust'], info['rcust'], info['rbal'], ticker,
-                           info.get('top_rbal',''), info.get('top_cust',''), info.get('top_ratio',''),
-                           info.get('ch')))
+                           info.get('top_rbal',''), info.get('top_cust',''), info.get('top_ratio','')))
 
     valid_tickers = [s[5] for s in stock_list if s[5]]
     if not valid_tickers:
@@ -413,7 +393,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
 
     def _fetch_price(item):
         """단일 종목 yfinance 조회 — (name, result_dict or None) 반환"""
-        _n, _bal, _cu, _rc, _rb, _tk, _tr, _tc, _trat, _ch = item
+        _n, _bal, _cu, _rc, _rb, _tk, _tr, _tc, _trat = item
         if not _tk:
             return _n, None
         try:
@@ -465,9 +445,8 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     alerted_raw = [
         (name, bal, cust, rcust, rbal,
          price_map[name]['chg'], price_map[name]['curr'], price_map[name]['ticker'],
-         price_map[name].get('top_rbal',''), price_map[name].get('top_cust',''), price_map[name].get('top_ratio',''),
-         ch)
-        for name, bal, cust, rcust, rbal, ticker, top_rbal, top_cust, top_ratio, ch in stock_list
+         price_map[name].get('top_rbal',''), price_map[name].get('top_cust',''), price_map[name].get('top_ratio',''))
+        for name, bal, cust, rcust, rbal, ticker, top_rbal, top_cust, top_ratio in stock_list
         if name in price_map and price_map[name]['chg'] <= THRESHOLD
     ]
 
@@ -496,67 +475,35 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             return f'${curr:,.2f}'
         return f'{int(curr):,}원' if curr >= 1000 else f'{curr:.2f}원'
 
-    _SUB = 'font-size:10px;font-weight:400;margin-top:2px;'
-
-    def _cust_bal_cell(cust, bal, ch):
-        """고객수/여신잔고 병합 칸 — 합계 + 채널 2줄"""
-        sub = ''
-        if ch:
-            sub = (f'<div style="{_SUB}color:#94a3b8;">뱅) {ch["b"]["cust"]:,}명·{ch["b"]["bal"]:,.0f}억</div>'
-                   f'<div style="font-size:10px;font-weight:400;color:#94a3b8;">영) {ch["y"]["cust"]:,}명·{ch["y"]["bal"]:,.0f}억</div>')
-        return (f'<td class="price-alert-td" style="padding:8px 6px;font-size:12px;color:#1e293b;text-align:center;white-space:nowrap;">'
-                f'{cust:,}명 / {bal:,.0f}억{sub}</td>')
-
-    def _risk_cell(rcust, rbal, ch):
+    def _risk_cell(rcust, rbal):
         if rcust == 0:
             return '<td style="padding:8px 6px;font-size:13px;color:#cbd5e1;text-align:center;white-space:nowrap;">없음</td>'
-        sub = ''
-        if ch:
-            sub = (f'<div style="{_SUB}color:#b45309;">뱅) {ch["b"]["rcust"]:,}명·{ch["b"]["rbal"]:,.0f}억</div>'
-                   f'<div style="font-size:10px;font-weight:400;color:#b45309;">영) {ch["y"]["rcust"]:,}명·{ch["y"]["rbal"]:,.0f}억</div>')
-        return (f'<td style="padding:8px 6px;font-size:12px;font-weight:600;color:#92400e;text-align:center;white-space:nowrap;">'
-                f'{rcust:,}명 / {rbal:.0f}억{sub}</td>')
+        per = round(rbal / rcust, 1) if rcust > 0 else 0
+        per_str = f' <span style="font-size:12px;color:#b45309;">(인당 {per:.1f}억)</span>' if rcust > 1 else ''
+        return f'<td style="padding:8px 6px;font-size:13px;font-weight:600;color:#92400e;text-align:center;white-space:nowrap;">{rcust:,}명 / {rbal:.0f}억{per_str}</td>'
 
-    def _top_line(prefix, rbal, cust, ratio):
-        parts = []
-        if rbal: parts.append(f'{rbal}억')
-        if cust: parts.append(str(cust))
-        if ratio: parts.append(f'<span style="color:#ef4444;font-weight:700;">{ratio}%</span>')
-        if not parts:
-            return ''
-        return f'{prefix}{"·".join(parts)}'
-
-    def _top_risk_cell(top_rbal, top_cust, top_ratio, ch):
-        if ch:
-            b_line = _top_line('뱅) ', ch['b']['top_rbal'], ch['b']['top_cust'], ch['b']['top_ratio'])
-            y_line = _top_line('영) ', ch['y']['top_rbal'], ch['y']['top_cust'], ch['y']['top_ratio'])
-            lines = []
-            if b_line: lines.append(f'<div>{b_line}</div>')
-            if y_line: lines.append(f'<div style="margin-top:3px;">{y_line}</div>')
-            if lines:
-                return (f'<td style="padding:8px 6px;font-size:11px;font-weight:600;color:#92400e;text-align:center;white-space:nowrap;">'
-                        f'{"".join(lines)}</td>')
+    def _top_risk_cell(top_rbal, top_cust, top_ratio):
         if not top_rbal and not top_cust:
             return '<td style="padding:8px 6px;font-size:12px;color:#cbd5e1;text-align:center;white-space:nowrap;">-</td>'
-        line = _top_line('', top_rbal, top_cust, top_ratio)
-        return f'<td style="padding:8px 6px;font-size:11px;font-weight:600;color:#92400e;text-align:center;white-space:nowrap;">{line}</td>'
+        parts = []
+        if top_rbal: parts.append(f'{top_rbal}억')
+        if top_cust: parts.append(str(top_cust))
+        if top_ratio: parts.append(f'<span style="color:#ef4444;font-weight:700;">{top_ratio}%</span>')
+        return f'<td style="padding:8px 6px;font-size:11px;font-weight:600;color:#92400e;text-align:center;white-space:nowrap;">{" / ".join(parts)}</td>'
 
     rows_html = ''
-    for i, (name, bal, cust, rcust, rbal, chg, curr, ticker, top_rbal, top_cust, top_ratio, ch) in enumerate(display_alerted):
+    for i, (name, bal, cust, rcust, rbal, chg, curr, ticker, top_rbal, top_cust, top_ratio) in enumerate(display_alerted):
         bg = '#fafcff' if i % 2 == 0 else '#ffffff'
         rows_html += f'''
             <tr style="background:{bg};border-bottom:1px solid #f1f5f9;">
-              <td class="price-alert-td" style="padding:8px 6px;text-align:center;white-space:nowrap;">
-                <div style="font-size:14px;font-weight:600;color:#1e293b;">{name}</div>
-                <div style="font-size:10px;font-weight:700;color:#2563eb;margin-top:2px;">▼{abs(chg):.1f}%</div>
+              <td class="price-alert-td" style="padding:8px 6px;font-size:14px;font-weight:600;color:#1e293b;text-align:center;white-space:nowrap;">
+                {name} <span style="font-size:11px;font-weight:700;color:#2563eb;">▼{abs(chg):.1f}%</span>
               </td>
-              {_cust_bal_cell(cust, bal, ch)}
-              {_risk_cell(rcust, rbal, ch)}
-              {_top_risk_cell(top_rbal, top_cust, top_ratio, ch)}
+              <td class="price-alert-td" style="padding:8px 6px;font-size:13px;color:#1e293b;text-align:center;white-space:nowrap;">{bal:,.0f}억</td>
+              <td class="price-alert-td" style="padding:8px 6px;font-size:13px;color:#1e293b;text-align:center;white-space:nowrap;">{cust:,}명</td>
+              {_risk_cell(rcust, rbal)}
+              {_top_risk_cell(top_rbal, top_cust, top_ratio)}
             </tr>'''
-
-    _has_channel = any(a[11] for a in display_alerted)
-    _legend = ' &nbsp;·&nbsp; 뱅)=뱅키스 영)=영업점' if _has_channel else ''
 
     return f'''
     <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;border:1px solid #e2e8f0;border-top:3px solid #475569;">
@@ -565,7 +512,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
           <table width="100%" cellpadding="0" cellspacing="0" border="0">
             <tr>
               <td style="font-size:14px;font-weight:500;color:#f8fafc;white-space:nowrap;">📉 여신잔고 리스크 현황</td>
-              <td align="right" class="loan-hdr-right" style="font-size:12px;color:#94a3b8;padding-left:10px;white-space:nowrap;">단일종목 여신잔고 1억↑ 종목 {total_count}개 · {bal_date_label} 기준</td>
+              <td align="right" class="loan-hdr-right" style="font-size:12px;color:#94a3b8;padding-left:10px;white-space:nowrap;">뱅키스 단일종목 여신잔고 1억↑ 종목 {total_count}개 · {bal_date_label} 기준</td>
             </tr>
             <tr>
               <td colspan="2" style="padding-top:5px;">
@@ -582,17 +529,18 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
 
           <thead>
             <tr bgcolor="#f8fafc" style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
-              <th style="padding:7px 6px;font-size:12px;color:#64748b;font-weight:500;text-align:center;">종목명</th>
-              <th style="padding:7px 6px;font-size:12px;color:#64748b;font-weight:500;text-align:center;">고객수 / 여신잔고</th>
+              <th style="padding:7px 6px;font-size:12px;color:#64748b;font-weight:500;text-align:center;">종목명 (등락)</th>
+              <th style="padding:7px 6px;font-size:12px;color:#64748b;font-weight:500;text-align:center;">여신잔고</th>
+              <th style="padding:7px 6px;font-size:12px;color:#64748b;font-weight:500;text-align:center;">고객수</th>
               <th style="padding:7px 6px;font-size:12px;color:#d97706;font-weight:600;text-align:center;">⚠ 위험고객</th>
               <th style="padding:7px 6px;font-size:12px;color:#dc2626;font-weight:600;text-align:center;">최고 리스크</th>
             </tr>
           </thead>
           <tbody>{rows_html}
-            {('<tr style="background:#fff3cd;"><td colspan="4" style="padding:8px 10px;font-size:11px;color:#92400e;font-weight:600;border-top:1px solid #fde68a;">&#9888; 외 ' + str(len(extra_alerted)) + '개 종목 추가 탐지 — 담당자 즉시 확인 <span style="font-weight:400;color:#b45309;font-size:10px;">(' + ", ".join([x[0] for x in sorted(extra_alerted, key=lambda x: x[4], reverse=True)[:5]]) + ("..." if len(extra_alerted) > 5 else "") + ')</span></td></tr>') if extra_alerted else ''}
+            {('<tr style="background:#fff3cd;"><td colspan="5" style="padding:8px 10px;font-size:11px;color:#92400e;font-weight:600;border-top:1px solid #fde68a;">&#9888; 외 ' + str(len(extra_alerted)) + '개 종목 추가 탐지 — eBiz고객부 담당자 즉시 확인 <span style="font-weight:400;color:#b45309;font-size:10px;">(' + ", ".join([x[0] for x in sorted(extra_alerted, key=lambda x: x[4], reverse=True)[:5]]) + ("..." if len(extra_alerted) > 5 else "") + ')</span></td></tr>') if extra_alerted else ''}
             <tr bgcolor="#fafafa" style="background:#fafafa;">
-              <td colspan="4" style="padding:7px 10px;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
-                가격·등락률 출처: 야후파이낸스 (15분 지연) &nbsp;·&nbsp; 당일 -5% 초과 하락 + 위험고객 보유 종목만 표시{_legend}
+              <td colspan="5" style="padding:7px 10px;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
+                가격·등락률 출처: 야후파이낸스 (15분 지연) &nbsp;·&nbsp; 당일 -5% 초과 하락 + 위험고객 보유 종목만 표시
               </td>
             </tr>
           </tbody>
@@ -611,60 +559,9 @@ def normalize_ticker(name: str) -> str:
         return TICKER_MAP_RUNTIME.get(stripped, stripped)
     return stripped
 
-def _synthesize_channel_totals(row: dict) -> dict:
-    """20컬럼(뱅/영 채널 분리) 스키마 row에 레거시 합산 키를 합성해 반환.
-    - 뱅잔고 키가 없으면(기존 12컬럼) 원본 그대로 반환 — 하위호환
-    - 합성 키: 잔고(억)·고객수·리스크종목·리스크고객수·리스크잔고(억) = 채널 합산,
-      최고리스크잔고·최고리스크고객·유지담보비율 = 담보비율 낮은(더 위험한) 채널 대표값
-    - 원본 뱅*/영* 키는 그대로 보존 → 표시 함수가 채널 병기에 사용
-    """
-    if "뱅잔고" not in row:
-        return row
-
-    def _f(v):
-        try:
-            return float(str(v or "0").replace(",", "") or "0")
-        except (ValueError, TypeError):
-            return 0.0
-
-    def _i(v):
-        return int(_f(v))
-
-    b_bal, y_bal   = _f(row.get("뱅잔고")), _f(row.get("영잔고"))
-    b_cus, y_cus   = _i(row.get("뱅고객수")), _i(row.get("영고객수"))
-    b_rc,  y_rc    = _i(row.get("뱅리스크고객수")), _i(row.get("영리스크고객수"))
-    b_rb,  y_rb    = _f(row.get("뱅리스크잔고")), _f(row.get("영리스크잔고"))
-    b_y = (row.get("뱅리스크종목") or "").strip().upper() == "Y"
-    y_y = (row.get("영리스크종목") or "").strip().upper() == "Y"
-
-    row["잔고(억)"]     = f"{b_bal + y_bal:g}"
-    row["고객수"]       = str(b_cus + y_cus)
-    row["리스크종목"]   = "Y" if (b_y or y_y) else ""
-    row["리스크고객수"] = str(b_rc + y_rc)
-    row["리스크잔고(억)"] = f"{b_rb + y_rb:g}"
-
-    # 대표 최고리스크 = 담보비율이 낮은(마진콜에 가까운) 채널
-    b_ratio = _f(row.get("뱅유지담보비율")) if (row.get("뱅유지담보비율") or "").strip() else None
-    y_ratio = _f(row.get("영유지담보비율")) if (row.get("영유지담보비율") or "").strip() else None
-    if b_ratio is not None and (y_ratio is None or b_ratio <= y_ratio):
-        row["최고리스크잔고"] = row.get("뱅최고리스크잔고", "")
-        row["최고리스크고객"] = row.get("뱅최고리스크고객", "")
-        row["유지담보비율"]   = row.get("뱅유지담보비율", "")
-    elif y_ratio is not None:
-        row["최고리스크잔고"] = row.get("영최고리스크잔고", "")
-        row["최고리스크고객"] = row.get("영최고리스크고객", "")
-        row["유지담보비율"]   = row.get("영유지담보비율", "")
-    else:
-        row.setdefault("최고리스크잔고", "")
-        row.setdefault("최고리스크고객", "")
-        row.setdefault("유지담보비율", "")
-    return row
-
 def load_exposure_data() -> dict:
-    """CSV에서 익스포저 데이터 로드 — {종목명: [row, ...]} 리스트 딕셔너리 반환
-    지원 스키마:
-      (신) 20컬럼: 기준일,종목명,종목코드,종목유형 + 뱅/영 채널별 8항목 — 합산키 자동 합성
-      (구) 12컬럼: 기준일,종목명,종목코드,종목유형,잔고(억),고객수,리스크종목,... — 그대로 사용
+    """CSV에서 eBiz본부 익스포저 데이터 로드 — {종목명: [row, ...]} 리스트 딕셔너리 반환
+    컬럼 순서: 기준일, 종목명, 종목코드, 종목유형, 잔고(억), 고객수, 리스크종목, 리스크고객수, 리스크잔고(억)
     헤더 깨진 경우 positional 파싱으로 자동 fallback"""
     if not os.path.exists(EXPOSURE_FILE):
         print(f"  [경고] {EXPOSURE_FILE} 파일 없음 — 익스포저 매칭 비활성화 (리스크 점수 보정 불가)")
@@ -680,7 +577,6 @@ def load_exposure_data() -> dict:
                     row["종목명"] = name  # 티커→한글명 정규화
                     if not name:
                         continue
-                    row = _synthesize_channel_totals(row)
                     # 시장 컬럼 없으면 국내 기본값
                     if "시장" not in row:
                         row["시장"] = "국내"
@@ -742,23 +638,20 @@ def sanitize_action_numbers(action: str, exp_rows: list) -> tuple:
         return (False, [])
 
     # 실제 익스포저에서 정당한 잔고·고객수 값 수집
-    # 20컬럼 스키마면 채널별(뱅/영) 값도 허용 — AI가 채널 수치를 인용해도 오염 아님
     bal_vals, cust_vals = [], []
     for r in exp_rows:
-        for _bk in ('잔고(억)', '뱅잔고', '영잔고', '리스크잔고(억)', '뱅리스크잔고', '영리스크잔고'):
-            try:
-                b = int(round(float(str(r.get(_bk, '0') or '0').replace(',', ''))))
-                if b > 0:
-                    bal_vals.append(b)
-            except (ValueError, TypeError):
-                pass
-        for _ck in ('고객수', '뱅고객수', '영고객수', '리스크고객수', '뱅리스크고객수', '영리스크고객수'):
-            try:
-                c = int(float(str(r.get(_ck, '0') or '0').replace(',', '')))
-                if c > 0:
-                    cust_vals.append(c)
-            except (ValueError, TypeError):
-                pass
+        try:
+            b = int(round(float(str(r.get('잔고(억)', '0') or '0').replace(',', ''))))
+            if b > 0:
+                bal_vals.append(b)
+        except (ValueError, TypeError):
+            pass
+        try:
+            c = int(float(str(r.get('고객수', '0') or '0').replace(',', '')))
+            if c > 0:
+                cust_vals.append(c)
+        except (ValueError, TypeError):
+            pass
 
     def _allowed_sums(vals, cap=12):
         """개별 값 + 부분집합 합산(최대 cap개 종목까지)을 허용 집합으로."""
@@ -2340,7 +2233,7 @@ def _verify_high_risk_by_claude(articles: list):
         for i, a in enumerate(articles)
     )
     _verify_static = (
-        "당신은 한국투자증권 개인고객그룹 리스크 담당자입니다.\n"
+        "당신은 한국투자증권 eBiz본부 리스크 담당자입니다.\n"
         "Gemini AI가 아래 기사들을 리스크 등급(긴급/주의/참고)으로 분류했습니다.\n"
         "각 기사의 등급이 실제 내용에 맞는지 재검토하고, 필요시 조정하세요.\n\n"
         "긴급 기준: 상장폐지·거래정지·부도·파산·회생 확정, MTS 장애, 당사 직접 제재 등 확정된 손실·부실\n"
@@ -2578,7 +2471,7 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             _ai_badge1 = _AI_BADGE if _ai_rs_html else ""
             return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:10px 16px;">
-        <p style="margin:0 0 6px 0;font-size:11px;font-weight:700;color:#1e293b;">한국투자증권 익스포저
+        <p style="margin:0 0 6px 0;font-size:11px;font-weight:700;color:#1e293b;">뱅키스 익스포저
           <span style="font-weight:400;color:#94a3b8;">{date_label}</span>{_ai_badge1}
         </p>
         {inner_r}{_ai_rs_html}
@@ -2593,7 +2486,7 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         _ai_badge2 = _AI_BADGE if _rs2_html else ""
         return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:10px 16px;">
-        <p style="margin:0 0 4px 0;font-size:11px;font-weight:700;color:#1e293b;">한국투자증권 익스포저
+        <p style="margin:0 0 4px 0;font-size:11px;font-weight:700;color:#1e293b;">뱅키스 익스포저
           <span style="font-weight:400;color:#94a3b8;">{date_label}</span>{_ai_badge2}
         </p>
         {_inner2}{_rs2_html}
@@ -2628,35 +2521,19 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             bal = float(str(r.get("잔고(억)","0")).replace(",",""))
             cus = int(float(str(r.get("고객수","0")).replace(",","")))
             if name not in merged:
-                merged[name] = {"잔고": 0, "고객수": 0, "뱅잔고": 0.0, "뱅고객수": 0, "영잔고": 0.0, "영고객수": 0, "_ch": False}
+                merged[name] = {"잔고": 0, "고객수": 0}
             merged[name]["잔고"] += bal
             merged[name]["고객수"] += cus
-            if "뱅잔고" in r:  # 20컬럼 스키마 — 채널 병기용 집계
-                def _mf(v):
-                    try:
-                        return float(str(v or "0").replace(",", "") or "0")
-                    except (ValueError, TypeError):
-                        return 0.0
-                merged[name]["뱅잔고"]   += _mf(r.get("뱅잔고"))
-                merged[name]["뱅고객수"] += int(_mf(r.get("뱅고객수")))
-                merged[name]["영잔고"]   += _mf(r.get("영잔고"))
-                merged[name]["영고객수"] += int(_mf(r.get("영고객수")))
-                merged[name]["_ch"] = True
-        return merged  # {종목명: {잔고, 고객수, (채널합계)}}
+        return merged  # {종목명: {잔고, 고객수}}
 
     # 여신잔고 합산 — 종목명별 잔고·고객수 합계 (신용+대출+해외대출 통합)
     _merge_yeosin = _merge_by_name
 
     def _fmt_merged(name, v):
-        ch_sub = ""
-        if v.get("_ch"):
-            ch_sub = (f' <span style="font-size:11px;color:#94a3b8;font-weight:400;">'
-                      f'(뱅) {v["뱅잔고"]:,.0f}억·{v["뱅고객수"]:,}명 · '
-                      f'영) {v["영잔고"]:,.0f}억·{v["영고객수"]:,}명)</span>')
         return (
             f'<div style="font-size:13px;color:#1e293b;line-height:1.7;">'
             f'<span style="font-weight:700;">{name}</span>'
-            f' {v["잔고"]:,.0f}억원 / {v["고객수"]:,}명{ch_sub}</div>'
+            f' {v["잔고"]:,.0f}억원 / {v["고객수"]:,}명</div>'
         )
 
     MAX_DISPLAY_ITEMS = 3
@@ -2774,7 +2651,7 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
 
     return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:10px 16px;">
-        <p style="margin:0 0 8px 0;font-size:11px;font-weight:700;color:#1e293b;">한국투자증권 익스포저
+        <p style="margin:0 0 8px 0;font-size:11px;font-weight:700;color:#1e293b;">뱅키스 익스포저
           <span style="font-weight:400;color:#94a3b8;">{date_label}</span>{_ai_badge3}
         </p>
         {inner}{related_html}
@@ -3036,7 +2913,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:12px;">
         <tr>
           <td valign="middle">
-            <p style="margin:0 0 4px 0;font-size:19px;font-weight:bold;color:#ffffff;">🤖 개인고객그룹 리스크 탐지봇</p>
+            <p style="margin:0 0 4px 0;font-size:19px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇</p>
             <p style="margin:0 0 3px 0;font-size:10px;color:#c8d8f0;text-align:right;">Claude {CLAUDE_MODEL.split("-")[1].capitalize()} / Gemini {GEMINI_MODEL.replace("gemini-","")}</p>
             <p style="margin:0;font-size:13px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (KST)</p>
           </td>
@@ -3128,7 +3005,7 @@ def build_empty_html(now) -> str:
 <table width="100%" cellpadding="0" cellspacing="0" border="0" class="main" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
   <tr>
     <td class="header-td" style="background:#3b5491;padding:22px 26px;">
-      <p style="margin:0 0 6px 0;font-size:20px;font-weight:bold;color:#ffffff;">🤖 개인고객그룹 리스크 탐지봇
+      <p style="margin:0 0 6px 0;font-size:20px;font-weight:bold;color:#ffffff;">🤖 eBiz본부 리스크 탐지봇
         <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">Claude {CLAUDE_MODEL.split("-")[1].capitalize()} / Gemini {GEMINI_MODEL.replace("gemini-","")}</span>
       </p>
       <p style="margin:0;font-size:14px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</p>
@@ -3271,7 +3148,7 @@ def send_email_error(error_msg: str, trace: str):
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
   <tr>
     <td style="background:#7f1d1d;padding:20px 26px;">
-      <p style="margin:0 0 4px 0;font-size:19px;font-weight:bold;color:#ffffff;">❗ 개인고객그룹 리스크 탐지봇 — 런타임 오류</p>
+      <p style="margin:0 0 4px 0;font-size:19px;font-weight:bold;color:#ffffff;">❗ eBiz본부 리스크 탐지봇 — 런타임 오류</p>
       <p style="margin:0;font-size:12px;color:#fca5a5;">{now_str} 기준 (KST)</p>
     </td>
   </tr>
@@ -3295,7 +3172,7 @@ def send_email_error(error_msg: str, trace: str):
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"❗ [리스크봇 오류] {now_str} 기준 — 런타임 오류 발생"
-    msg["From"]    = f"❗ 개인고객그룹 리스크봇 <{EMAIL_SENDER}>"
+    msg["From"]    = f"❗ eBiz 리스크봇 <{EMAIL_SENDER}>"
     msg["To"]      = receiver
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     try:
@@ -3312,7 +3189,7 @@ def send_email_no_result(subject: str, html_body: str):
     receiver = NO_RESULT_RECEIVER if NO_RESULT_RECEIVER else EMAIL_SENDER
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = f"❗ 개인고객그룹 리스크봇 <{EMAIL_SENDER}>"
+    msg["From"]    = f"❗ eBiz 리스크봇 <{EMAIL_SENDER}>"
     msg["To"]      = receiver
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     try:
@@ -3342,7 +3219,7 @@ def send_email(subject: str, html_body: str, self_only: bool = False):
         cc_list = EMAIL_CC
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = f"❗ 개인고객그룹 리스크봇 <{EMAIL_SENDER}>"
+    msg["From"]    = f"❗ eBiz 리스크봇 <{EMAIL_SENDER}>"
     msg["To"]      = ", ".join(to_list)
     if cc_list:
         msg["Cc"] = ", ".join(cc_list)
@@ -3822,7 +3699,7 @@ def main():
         # 본문 앞 600자만 사용 (토큰 절약)
         body_preview = body[:600]
 
-        prompt = f"""당신은 한국투자증권 개인고객그룹 리스크 담당자입니다.
+        prompt = f"""당신은 한국투자증권 eBiz본부 리스크 담당자입니다.
 아래 기사 제목과 본문을 읽고, 이 기사가 진짜 금융 리스크 기사인지 판단하세요.
 
 판단 기준:
