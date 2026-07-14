@@ -2704,7 +2704,7 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             items = sorted(merged.items(),
                            key=lambda kv: -max(kv[1].get("뱅잔고", 0), kv[1].get("영잔고", 0)))
             shown, rest = items[:MAX_DISPLAY_ITEMS], items[MAX_DISPLAY_ITEMS:]
-            _td_n = 'style="font-size:12px;font-weight:700;color:#1e293b;line-height:1.9;white-space:nowrap;padding-right:6px;"'
+            _td_n = 'width="150" style="font-size:12px;font-weight:700;color:#1e293b;line-height:1.9;white-space:nowrap;padding-right:6px;"'
             _td_v = 'align="center" style="font-size:12px;color:#1e293b;line-height:1.9;white-space:nowrap;"'
             _td_v2 = 'align="center" style="font-size:12px;color:#1e293b;line-height:1.9;white-space:nowrap;border-left:1px solid #f1f5f9;"'
             rows = "".join(
@@ -2718,7 +2718,9 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                 rows += (f'<tr><td style="font-size:11px;color:#94a3b8;line-height:1.9;white-space:nowrap;">外 {len(rest)}개</td>'
                          f'<td width="120" align="center" style="font-size:11px;color:#94a3b8;line-height:1.9;white-space:nowrap;">{_sumv("뱅","잔고"):,.0f}억 ({_sumv("뱅","고객수"):,}명)</td>'
                          f'<td width="120" align="center" style="font-size:11px;color:#94a3b8;line-height:1.9;white-space:nowrap;border-left:1px solid #f1f5f9;">{_sumv("영","잔고"):,.0f}억 ({_sumv("영","고객수"):,}명)</td></tr>')
-            return f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">{rows}</table>'
+            # width="100%" 제거 — 내용만큼만 폭을 차지하고 좌측으로 뭉치도록(카드 우측에 여백,
+            # 종목명·값 사이 중간 여백 제거). table-layout 강제하지 않아 긴 종목명은 자연 확장됨
+            return f'<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">{rows}</table>'
         items = sorted(merged.items(), key=lambda kv: -kv[1]["잔고"])
         shown = items[:MAX_DISPLAY_ITEMS]
         rest = items[MAX_DISPLAY_ITEMS:]
@@ -2780,14 +2782,19 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         inner = '<div style="font-size:12px;color:#94a3b8;">잔고 없음</div>'
     else:
         inner = DIVIDER.join(sections)
-        # 채널 모드 — ● 뱅키스 | ● 영업점 컬럼 헤더 (섹션 badge 80px + 종목명 컬럼 오프셋 정렬)
+        # 채널 모드 — ● 뱅키스 | ● 영업점 컬럼 헤더 (badge 80px + 종목명 150px 오프셋,
+        # 데이터 행과 동일한 폭 구조로 중첩해 값 컬럼 위치를 정확히 정렬)
         if any('뱅잔고' in r for r in all_rows):
             _ch_header = (
-                '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:4px;border-collapse:collapse;"><tr>'
+                '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:4px;"><tr>'
                 '<td style="width:80px;">&nbsp;</td>'
-                '<td style="border-bottom:1px solid #e2e8f0;">&nbsp;</td>'
+                '<td>'
+                '<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr>'
+                '<td width="150" style="border-bottom:1px solid #e2e8f0;">&nbsp;</td>'
                 f'<td width="120" align="center" style="padding:2px 4px 3px;font-size:10px;font-weight:700;color:{_C_BANK};border-bottom:1px solid #e2e8f0;white-space:nowrap;">● 뱅키스</td>'
                 f'<td width="120" align="center" style="padding:2px 4px 3px;font-size:10px;font-weight:700;color:{_C_BRANCH};border-bottom:1px solid #e2e8f0;white-space:nowrap;">● 영업점</td>'
+                '</tr></table>'
+                '</td>'
                 '</tr></table>'
             )
             inner = _ch_header + inner
