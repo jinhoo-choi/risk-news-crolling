@@ -496,26 +496,26 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             return f'${curr:,.2f}'
         return f'{int(curr):,}원' if curr >= 1000 else f'{curr:.2f}원'
 
-    _SUB = 'font-size:10px;font-weight:400;margin-top:2px;'
+    _SUB = 'font-size:11px;font-weight:400;'
 
     def _cust_bal_cell(cust, bal, ch):
-        """고객수/여신잔고 병합 칸 — 합계 + 채널 2줄"""
-        sub = ''
+        """고객수/여신잔고 칸 — 채널 모드: 합산 없이 채널별 2줄 (중복고객 존재로 단순합산 부정확)"""
         if ch:
-            sub = (f'<div style="{_SUB}color:#94a3b8;">뱅) {ch["b"]["cust"]:,}명·{ch["b"]["bal"]:,.0f}억</div>'
-                   f'<div style="font-size:10px;font-weight:400;color:#94a3b8;">영) {ch["y"]["cust"]:,}명·{ch["y"]["bal"]:,.0f}억</div>')
+            return (f'<td class="price-alert-td" style="padding:8px 6px;font-size:12px;color:#1e293b;text-align:center;white-space:nowrap;">'
+                    f'<div>뱅키스 : {ch["b"]["cust"]:,}명·{ch["b"]["bal"]:,.0f}억</div>'
+                    f'<div style="margin-top:3px;">영업점 : {ch["y"]["cust"]:,}명·{ch["y"]["bal"]:,.0f}억</div></td>')
         return (f'<td class="price-alert-td" style="padding:8px 6px;font-size:12px;color:#1e293b;text-align:center;white-space:nowrap;">'
-                f'{cust:,}명 / {bal:,.0f}억{sub}</td>')
+                f'{cust:,}명 / {bal:,.0f}억</td>')
 
     def _risk_cell(rcust, rbal, ch):
         if rcust == 0:
             return '<td style="padding:8px 6px;font-size:13px;color:#cbd5e1;text-align:center;white-space:nowrap;">없음</td>'
-        sub = ''
         if ch:
-            sub = (f'<div style="{_SUB}color:#b45309;">뱅) {ch["b"]["rcust"]:,}명·{ch["b"]["rbal"]:,.0f}억</div>'
-                   f'<div style="font-size:10px;font-weight:400;color:#b45309;">영) {ch["y"]["rcust"]:,}명·{ch["y"]["rbal"]:,.0f}억</div>')
+            return (f'<td style="padding:8px 6px;font-size:12px;font-weight:600;color:#92400e;text-align:center;white-space:nowrap;">'
+                    f'<div>뱅키스 : {ch["b"]["rcust"]:,}명·{ch["b"]["rbal"]:,.0f}억</div>'
+                    f'<div style="margin-top:3px;">영업점 : {ch["y"]["rcust"]:,}명·{ch["y"]["rbal"]:,.0f}억</div></td>')
         return (f'<td style="padding:8px 6px;font-size:12px;font-weight:600;color:#92400e;text-align:center;white-space:nowrap;">'
-                f'{rcust:,}명 / {rbal:.0f}억{sub}</td>')
+                f'{rcust:,}명 / {rbal:.0f}억</td>')
 
     def _top_line(prefix, rbal, cust, ratio):
         parts = []
@@ -528,8 +528,8 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
 
     def _top_risk_cell(top_rbal, top_cust, top_ratio, ch):
         if ch:
-            b_line = _top_line('뱅) ', ch['b']['top_rbal'], ch['b']['top_cust'], ch['b']['top_ratio'])
-            y_line = _top_line('영) ', ch['y']['top_rbal'], ch['y']['top_cust'], ch['y']['top_ratio'])
+            b_line = _top_line('뱅키스 : ', ch['b']['top_rbal'], ch['b']['top_cust'], ch['b']['top_ratio'])
+            y_line = _top_line('영업점 : ', ch['y']['top_rbal'], ch['y']['top_cust'], ch['y']['top_ratio'])
             lines = []
             if b_line: lines.append(f'<div>{b_line}</div>')
             if y_line: lines.append(f'<div style="margin-top:3px;">{y_line}</div>')
@@ -555,8 +555,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
               {_top_risk_cell(top_rbal, top_cust, top_ratio, ch)}
             </tr>'''
 
-    _has_channel = any(a[11] for a in display_alerted)
-    _legend = ' &nbsp;·&nbsp; 뱅)=뱅키스 영)=영업점' if _has_channel else ''
+    _legend = ''
 
     return f'''
     <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;border:1px solid #e2e8f0;border-top:3px solid #475569;">
@@ -2514,11 +2513,25 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             def _rr2(rows, label, bg, col):
                 if not rows:
                     return ""
-                bal = sum(float(str(r.get("잔고(억)","0")).replace(",","")) for r in rows)
-                cus = sum(int(float(str(r.get("고객수","0")).replace(",",""))) for r in rows)
+                _has_ch = any('뱅잔고' in r for r in rows)
+                def _sf(r, k):
+                    try:
+                        return float(str(r.get(k, '0') or '0').replace(',', '') or '0')
+                    except (ValueError, TypeError):
+                        return 0.0
+                if _has_ch:
+                    b_bal = sum(_sf(r, '뱅잔고') for r in rows);  b_cus = int(sum(_sf(r, '뱅고객수') for r in rows))
+                    y_bal = sum(_sf(r, '영잔고') for r in rows);  y_cus = int(sum(_sf(r, '영고객수') for r in rows))
+                    body = (f'<div style="font-size:12px;color:#374151;line-height:1.7;">{rs_name}</div>'
+                            f'<div style="font-size:12px;color:#374151;line-height:1.7;">뱅키스 : {b_bal:,.0f}억원 / {b_cus:,}명</div>'
+                            f'<div style="font-size:12px;color:#374151;line-height:1.7;">영업점 : {y_bal:,.0f}억원 / {y_cus:,}명</div>')
+                else:
+                    bal = sum(_sf(r, '잔고(억)') for r in rows)
+                    cus = int(sum(_sf(r, '고객수') for r in rows))
+                    body = f'<div style="font-size:12px;color:#374151;line-height:1.8;">{rs_name} {bal:,.0f}억원 / {cus:,}명</div>'
                 return (f'<div style="margin-bottom:4px;">'
                         f'<span style="font-size:10px;background:{bg};color:{col};padding:1px 6px;border-radius:2px;font-weight:700;">{label}</span>'
-                        f'<div style="font-size:12px;color:#374151;line-height:1.8;">{rs_name} {bal:,.0f}억원 / {cus:,}명</div>'
+                        f'{body}'
                         f'</div>')
             chunk = (
                 _rr2([r for r in rows_all if r.get("종목유형","") in {"주식"}],   "관련주·주식", "#dbeafe", "#1d4ed8") +
@@ -2560,8 +2573,20 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             rl = [r for r in related_rows if r.get("종목유형","") in YEOSIN_L]
             rb = [r for r in related_rows if r.get("종목유형","") in BOND_L]
             def _rrow_merged(rows, rn):
-                bal = sum(float(str(r.get("잔고(억)","0")).replace(",","")) for r in rows)
-                cus = sum(int(float(str(r.get("고객수","0")).replace(",",""))) for r in rows)
+                _has_ch = any('뱅잔고' in r for r in rows)
+                def _sf2(r, k):
+                    try:
+                        return float(str(r.get(k, '0') or '0').replace(',', '') or '0')
+                    except (ValueError, TypeError):
+                        return 0.0
+                if _has_ch:
+                    b_bal = sum(_sf2(r, '뱅잔고') for r in rows);  b_cus = int(sum(_sf2(r, '뱅고객수') for r in rows))
+                    y_bal = sum(_sf2(r, '영잔고') for r in rows);  y_cus = int(sum(_sf2(r, '영고객수') for r in rows))
+                    return (f'<div style="font-size:12px;color:#374151;line-height:1.7;">{rn}</div>'
+                            f'<div style="font-size:12px;color:#374151;line-height:1.7;">뱅키스 : {b_bal:,.0f}억원 / {b_cus:,}명</div>'
+                            f'<div style="font-size:12px;color:#374151;line-height:1.7;">영업점 : {y_bal:,.0f}억원 / {y_cus:,}명</div>')
+                bal = sum(_sf2(r, '잔고(억)') for r in rows)
+                cus = int(sum(_sf2(r, '고객수') for r in rows))
                 return f'<div style="font-size:12px;color:#374151;line-height:1.8;">{rn} {bal:,.0f}억원 / {cus:,}명</div>'
             inner_r = ""
             if rs:
@@ -2648,21 +2673,47 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
     _merge_yeosin = _merge_by_name
 
     def _fmt_merged(name, v):
-        ch_sub = ""
-        if v.get("_ch"):
-            ch_sub = (f' <span style="font-size:11px;color:#94a3b8;font-weight:400;">'
-                      f'(뱅) {v["뱅잔고"]:,.0f}억·{v["뱅고객수"]:,}명 · '
-                      f'영) {v["영잔고"]:,.0f}억·{v["영고객수"]:,}명)</span>')
         return (
             f'<div style="font-size:13px;color:#1e293b;line-height:1.7;">'
             f'<span style="font-weight:700;">{name}</span>'
-            f' {v["잔고"]:,.0f}억원 / {v["고객수"]:,}명{ch_sub}</div>'
+            f' {v["잔고"]:,.0f}억원 / {v["고객수"]:,}명</div>'
         )
 
     MAX_DISPLAY_ITEMS = 3
 
+    def _fmt_channel_col(merged: dict, pre: str) -> str:
+        """채널 한쪽 컬럼 렌더 — pre '뱅' 또는 '영'. 해당 채널 잔고·고객 있는 종목만,
+        채널 자체 값 기준 정렬·표시 (합산 미사용 — 중복고객으로 단순합산 부정확)"""
+        items = [(n, v) for n, v in merged.items()
+                 if v.get(f"{pre}잔고", 0) > 0 or v.get(f"{pre}고객수", 0) > 0]
+        items.sort(key=lambda kv: -kv[1][f"{pre}잔고"])
+        if not items:
+            return '<div style="font-size:12px;color:#94a3b8;line-height:1.7;">잔고 없음</div>'
+        shown, rest = items[:MAX_DISPLAY_ITEMS], items[MAX_DISPLAY_ITEMS:]
+        html = "".join(
+            f'<div style="font-size:12px;color:#1e293b;line-height:1.7;">'
+            f'<span style="font-weight:700;">{n}</span>'
+            f' {v[f"{pre}잔고"]:,.0f}억원 / {v[f"{pre}고객수"]:,}명</div>'
+            for n, v in shown)
+        if rest:
+            r_bal = sum(v[f"{pre}잔고"] for _, v in rest)
+            r_cus = sum(v[f"{pre}고객수"] for _, v in rest)
+            html += (f'<div style="font-size:11px;color:#94a3b8;line-height:1.7;">'
+                     f'外 {len(rest)}개 {r_bal:,.0f}억원 / {r_cus:,}명</div>')
+        return html
+
     def _fmt_merged_limited(merged: dict) -> str:
-        """종목명별 합산 딱셔너리 → 잔고 내림차순 상위 N개 표시 + 초과분 '外 N개 종목 X억 Y명(중복포함)' 요약"""
+        """종목유형 섹션 본문 — 채널 데이터 있으면 뱅키스|영업점 좌우 분할,
+        없으면(구 12컬럼) 기존 단일 리스트"""
+        if any(v.get("_ch") for v in merged.values()):
+            left  = _fmt_channel_col(merged, "뱅")
+            right = _fmt_channel_col(merged, "영")
+            return (
+                f'<table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>'
+                f'<td width="50%" valign="top" style="padding-right:8px;border-right:1px solid #e2e8f0;">{left}</td>'
+                f'<td width="50%" valign="top" style="padding-left:10px;">{right}</td>'
+                f'</tr></table>'
+            )
         items = sorted(merged.items(), key=lambda kv: -kv[1]["잔고"])
         shown = items[:MAX_DISPLAY_ITEMS]
         rest = items[MAX_DISPLAY_ITEMS:]
@@ -2724,6 +2775,16 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         inner = '<div style="font-size:12px;color:#94a3b8;">잔고 없음</div>'
     else:
         inner = DIVIDER.join(sections)
+        # 채널 모드 — 뱅키스|영업점 컬럼 헤더 (섹션 badge 80px 오프셋과 정렬)
+        if any('뱅잔고' in r for r in all_rows):
+            _ch_header = (
+                '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:4px;"><tr>'
+                '<td style="width:80px;">&nbsp;</td>'
+                '<td width="50%" align="center" style="padding:2px 8px 3px 4px;font-size:10px;font-weight:700;color:#64748b;border-bottom:1px solid #e2e8f0;">뱅키스</td>'
+                '<td width="50%" align="center" style="padding:2px 0 3px 10px;font-size:10px;font-weight:700;color:#64748b;border-bottom:1px solid #e2e8f0;">영업점</td>'
+                '</tr></table>'
+            )
+            inner = _ch_header + inner
 
     # ── AI 추출 관련주 섹션 ─────────────────────────────────────────
     def _build_related_html(related_stocks_raw: list, seen: set) -> str:
