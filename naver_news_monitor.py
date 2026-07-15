@@ -2505,52 +2505,24 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
     }
 
     def _early_related_html(rs_raw, seen_set):
-        """조기반환 경로용 관련주 HTML — P1~P3 적용"""
+        """조기반환 경로용 관련주 — '관련주' 배지 + 종목명 나열만 (P1~P3 적용)"""
         rs_list = [s.strip() for s in (rs_raw or []) if s and s.strip()][:3]
-        chunks = []
+        names = []
         for rs_name in rs_list:
             if rs_name in seen_set or rs_name in _RS_BL:
                 continue
-            rows_all = find_exposure(rs_name, exposure_data) if exposure_data else []
-            if not rows_all:
+            if exposure_data and not find_exposure(rs_name, exposure_data):
                 continue
             seen_set.add(rs_name)
-            def _rr2(rows, label, bg, col):
-                if not rows:
-                    return ""
-                _has_ch = any('뱅잔고' in r for r in rows)
-                def _sf(r, k):
-                    try:
-                        return float(str(r.get(k, '0') or '0').replace(',', '') or '0')
-                    except (ValueError, TypeError):
-                        return 0.0
-                if _has_ch:
-                    b_bal = sum(_sf(r, '뱅잔고') for r in rows);  b_cus = int(sum(_sf(r, '뱅고객수') for r in rows))
-                    y_bal = sum(_sf(r, '영잔고') for r in rows);  y_cus = int(sum(_sf(r, '영고객수') for r in rows))
-                    body = (f'<div style="font-size:12px;color:#374151;line-height:1.7;">{rs_name}</div>'
-                            f'<div style="font-size:12px;color:#2563eb;line-height:1.7;">● {b_bal:,.0f}억 ({b_cus:,}명)</div>'
-                            f'<div style="font-size:12px;color:#8b5e3c;line-height:1.7;">● {y_bal:,.0f}억 ({y_cus:,}명)</div>')
-                else:
-                    bal = sum(_sf(r, '잔고(억)') for r in rows)
-                    cus = int(sum(_sf(r, '고객수') for r in rows))
-                    body = f'<div style="font-size:12px;color:#374151;line-height:1.8;">{rs_name} {bal:,.0f}억원 / {cus:,}명</div>'
-                return (f'<div style="margin-bottom:4px;">'
-                        f'<span style="font-size:10px;background:{bg};color:{col};padding:1px 6px;border-radius:2px;font-weight:700;">{label}</span>'
-                        f'{body}'
-                        f'</div>')
-            chunk = (
-                _rr2([r for r in rows_all if r.get("종목유형","") in {"주식"}],   "관련주·주식", "#dbeafe", "#1d4ed8") +
-                _rr2([r for r in rows_all if r.get("종목유형","") in {"채권"}],   "관련주·채권", "#ede9fe", "#5b21b6") +
-                _rr2([r for r in rows_all if r.get("종목유형","") in {"여신","해외대출"}], "관련주·여신", "#fef3c7", "#b45309")
-            )
-            if chunk:
-                chunks.append(chunk)
-        if not chunks:
+            names.append(rs_name)
+        if not names:
             return ""
+        chips = " &nbsp;·&nbsp; ".join(
+            f'<span style="font-weight:600;color:#334155;">{n}</span>' for n in names)
         return (
             f'<div style="margin-top:8px;padding-top:6px;border-top:1px dashed #e2e8f0;">'
-            f'<span style="font-size:10px;color:#64748b;font-weight:600;">▸ AI 추출 관련 상장주 익스포저</span>'
-            f'<div style="margin-top:4px;">{"".join(chunks)}</div>'
+            f'<span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:2px;font-weight:700;">관련주</span>'
+            f'<span style="font-size:12px;color:#334155;margin-left:8px;">{chips}</span>'
             f'</div>'
         )
 
@@ -2572,34 +2544,10 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                         related_rows = cand_rows
                         break
         if related_name and related_rows:
-            YEOSIN_L = {"여신", "해외대출"}
-            BOND_L   = {"채권"}
-            rs = [r for r in related_rows if r.get("종목유형","") not in YEOSIN_L and r.get("종목유형","") not in BOND_L]
-            rl = [r for r in related_rows if r.get("종목유형","") in YEOSIN_L]
-            rb = [r for r in related_rows if r.get("종목유형","") in BOND_L]
-            def _rrow_merged(rows, rn):
-                _has_ch = any('뱅잔고' in r for r in rows)
-                def _sf2(r, k):
-                    try:
-                        return float(str(r.get(k, '0') or '0').replace(',', '') or '0')
-                    except (ValueError, TypeError):
-                        return 0.0
-                if _has_ch:
-                    b_bal = sum(_sf2(r, '뱅잔고') for r in rows);  b_cus = int(sum(_sf2(r, '뱅고객수') for r in rows))
-                    y_bal = sum(_sf2(r, '영잔고') for r in rows);  y_cus = int(sum(_sf2(r, '영고객수') for r in rows))
-                    return (f'<div style="font-size:12px;color:#374151;line-height:1.7;">{rn}</div>'
-                            f'<div style="font-size:12px;color:#2563eb;line-height:1.7;">● {b_bal:,.0f}억 ({b_cus:,}명)</div>'
-                            f'<div style="font-size:12px;color:#8b5e3c;line-height:1.7;">● {y_bal:,.0f}억 ({y_cus:,}명)</div>')
-                bal = sum(_sf2(r, '잔고(억)') for r in rows)
-                cus = int(sum(_sf2(r, '고객수') for r in rows))
-                return f'<div style="font-size:12px;color:#374151;line-height:1.8;">{rn} {bal:,.0f}억원 / {cus:,}명</div>'
-            inner_r = ""
-            if rs:
-                inner_r += f'<div style="margin-bottom:4px;"><span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:2px;font-weight:700;">관련주·주식잔고</span> ' + _rrow_merged(rs, related_name) + "</div>"
-            if rl:
-                inner_r += f'<div style="margin-bottom:4px;"><span style="font-size:10px;background:#fef3c7;color:#b45309;padding:1px 6px;border-radius:2px;font-weight:700;">관련주·여신잔고</span> ' + _rrow_merged(rl, related_name) + "</div>"
-            if rb:
-                inner_r += f'<div style="margin-bottom:4px;"><span style="font-size:10px;background:#ede9fe;color:#5b21b6;padding:1px 6px;border-radius:2px;font-weight:700;">관련주·채권잔고</span> ' + _rrow_merged(rb, related_name) + "</div>"
+            inner_r = (
+                f'<div><span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:2px;font-weight:700;">관련주</span>'
+                f'<span style="font-size:12px;color:#334155;margin-left:8px;font-weight:600;">{related_name}</span></div>'
+            )
             # AI related_stocks도 추가
             _seen_e = set(entities_list) | {related_name}
             for _ge in entities_list:
@@ -2658,8 +2606,7 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             bal = float(str(r.get("잔고(억)","0")).replace(",",""))
             cus = int(float(str(r.get("고객수","0")).replace(",","")))
             if name not in merged:
-                merged[name] = {"잔고": 0, "고객수": 0, "뱅잔고": 0.0, "뱅고객수": 0, "영잔고": 0.0, "영고객수": 0,
-                                "뱅리스크고객수": 0, "뱅리스크잔고": 0.0, "영리스크고객수": 0, "영리스크잔고": 0.0, "_ch": False}
+                merged[name] = {"잔고": 0, "고객수": 0, "뱅잔고": 0.0, "뱅고객수": 0, "영잔고": 0.0, "영고객수": 0, "_ch": False}
             merged[name]["잔고"] += bal
             merged[name]["고객수"] += cus
             if "뱅잔고" in r:  # 20컬럼 스키마 — 채널 병기용 집계
@@ -2672,10 +2619,6 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                 merged[name]["뱅고객수"] += int(_mf(r.get("뱅고객수")))
                 merged[name]["영잔고"]   += _mf(r.get("영잔고"))
                 merged[name]["영고객수"] += int(_mf(r.get("영고객수")))
-                merged[name]["뱅리스크고객수"] += int(_mf(r.get("뱅리스크고객수")))
-                merged[name]["뱅리스크잔고"]   += _mf(r.get("뱅리스크잔고"))
-                merged[name]["영리스크고객수"] += int(_mf(r.get("영리스크고객수")))
-                merged[name]["영리스크잔고"]   += _mf(r.get("영리스크잔고"))
                 merged[name]["_ch"] = True
         return merged  # {종목명: {잔고, 고객수, (채널합계)}}
 
@@ -2697,18 +2640,17 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
     _VAL_W = 130            # 값 컬럼 폭 — 리스크잔고 서브라인 수용 위해 120→130
 
     def _ch_val(v, pre):
-        """채널 셀 값 — 'X억 (Y명)' + 위험고객 있으면 붉은 서브라인 '⚠ 위험 X억 (Y명)'.
-        잔고·고객 모두 0이면 '-'"""
+        """채널 셀 값 — 'X억 (Y명)', 잔고·고객 모두 0이면 '-'"""
         bal, cus = v.get(f"{pre}잔고", 0), v.get(f"{pre}고객수", 0)
         if bal <= 0 and cus <= 0:
             return '<span style="color:#cbd5e1;">-</span>'
         bal_str = f"{bal:,.1f}".rstrip('0').rstrip('.') if bal < 10 else f"{bal:,.0f}"
-        html = f'<div>{bal_str}억 ({cus:,}명)</div>'
-        r_cus, r_bal = v.get(f"{pre}리스크고객수", 0), v.get(f"{pre}리스크잔고", 0)
-        if r_cus > 0:
-            r_bal_str = f"{r_bal:,.1f}".rstrip('0').rstrip('.') if r_bal < 10 else f"{r_bal:,.0f}"
-            html += f'<div style="font-size:10px;color:#dc2626;font-weight:600;margin-top:2px;">⚠ {r_bal_str}억 ({r_cus:,}명)</div>'
-        return html
+        return f'{bal_str}억 ({cus:,}명)'
+
+    def _trunc_name(n: str, limit: int = 14) -> str:
+        """종목명 말줄임 — 긴 명칭(리츠·SPC 등)이 150px 컬럼을 밀어내 섹션 간
+        값 컬럼 정렬이 깨지는 문제 방지"""
+        return n if len(n) <= limit else n[:limit - 1] + '…'
 
     def _fmt_merged_limited(merged: dict) -> str:
         """종목유형 섹션 본문 — 채널 데이터 있으면 종목명|뱅키스|영업점 행정렬 3컬럼,
@@ -2723,7 +2665,7 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             _td_v2 = f'width="{_VAL_W}" align="center" style="font-size:12px;color:#1e293b;padding:6px 8px;white-space:nowrap;vertical-align:top;border-left:1px solid #f1f5f9;"'
             rows = "".join(
                 f'<tr style="border-bottom:1px solid #f8fafc;">'
-                f'<td {_td_n}>{n}</td>'
+                f'<td {_td_n}>{_trunc_name(n)}</td>'
                 f'<td {_td_v}>{_ch_val(v, "뱅")}</td>'
                 f'<td {_td_v2}>{_ch_val(v, "영")}</td></tr>'
                 for n, v in shown)
@@ -2816,39 +2758,30 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
 
     # ── AI 추출 관련주 섹션 ─────────────────────────────────────────
     def _build_related_html(related_stocks_raw: list, seen: set) -> str:
-        """AI 추출 관련주 HTML 생성 — 공용 함수 (P4 중복 해소)
+        """AI 추출 관련주 — '관련주' 배지 + 종목명 나열만 (수치 미표기)
         - P1: 최대 3개 제한
         - P2: seen(entities + GROUP_ENTITIES_MAP 계열사) 중복 제외
         - P3: _RS_BL 대형주 제외
+        - 당사 익스포저 보유 종목만 나열 (find_exposure 매칭 기준)
         """
         _rs_list = [s.strip() for s in (related_stocks_raw or []) if s and s.strip()]
         _rs_list = _rs_list[:3]  # P1: 코드단 강제 3개 제한
-        _sections = []
+        _names = []
         for rs_name in _rs_list:
             if rs_name in seen or rs_name in _RS_BL:  # P2, P3
                 continue
-            rs_rows_all = find_exposure(rs_name, exposure_data) if exposure_data else []
-            if not rs_rows_all:
+            if exposure_data and not find_exposure(rs_name, exposure_data):
                 continue
             seen.add(rs_name)
-            rs_s = [r for r in rs_rows_all if r.get("종목유형","") in {"주식"}]
-            rs_b = [r for r in rs_rows_all if r.get("종목유형","") in {"채권"}]
-            rs_l = [r for r in rs_rows_all if r.get("종목유형","") in {"여신","해외대출"}]
-            if rs_s:
-                _sections.append(_section("관련주·주식", "#dbeafe", "#1d4ed8",
-                                          _fmt_merged_limited(_merge_by_name(rs_s))))
-            if rs_b:
-                _sections.append(_section("관련주·채권", "#ede9fe", "#5b21b6",
-                                          _fmt_merged_limited(_merge_by_name(rs_b))))
-            if rs_l:
-                _sections.append(_section("관련주·여신", "#fef3c7", "#b45309",
-                                          _fmt_merged_limited(_merge_by_name(rs_l))))
-        if not _sections:
+            _names.append(rs_name)
+        if not _names:
             return ""
+        _chips = " &nbsp;·&nbsp; ".join(
+            f'<span style="font-weight:600;color:#334155;">{n}</span>' for n in _names)
         return (
-            f'<div style="margin-top:8px;padding-top:6px;border-top:1px dashed #e2e8f0;">'
-            f'<span style="font-size:10px;color:#64748b;font-weight:600;">▸ AI 추출 관련 상장주 익스포저</span>'
-            f'<div style="margin-top:4px;">{DIVIDER.join(_sections)}</div>'
+            f'<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #e2e8f0;">'
+            f'<span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:2px;font-weight:700;">관련주</span>'
+            f'<span style="font-size:12px;color:#334155;margin-left:8px;">{_chips}</span>'
             f'</div>'
         )
 
