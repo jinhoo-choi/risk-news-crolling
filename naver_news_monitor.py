@@ -286,7 +286,7 @@ def get_price_change(entity: str) -> float | None:
 def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     """여신잔고 리스크 현황 섹션 HTML
     - 리스크종목 = Y + 종목유형 = 신용 행 추출 → 신용잔고 합산
-    - yfinance 당일 등락률 조회 → -5% 이하 종목만 표시
+    - yfinance 당일 등락률 조회 → -3% 이하 종목만 표시
     - 위험고객(리스크고객수 > 0) 컬럼 별도 표시
     - 탐지 종목 없으면 빈 문자열 반환
     - 모바일: 6컬럼 → font-size 10px + padding 축소로 대응
@@ -298,7 +298,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         return ''
 
     build_price_alert_section.last_alerted_count = 0
-    THRESHOLD = -5.0  # 2026-07-13: -3% → -5% 변경 (docstring엔 반영돼 있었으나 실제 값 누락 상태였음)
+    THRESHOLD = -3.0  # 2026-07-15: -5% → -3% 환원 (탐지 범위 확대)
 
     # 잔고 기준일 파싱
     bal_date = ref_date
@@ -461,7 +461,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         print(f'  [price_alert] yfinance 조회 실패 또는 오늘 데이터 없음')
         return ''
 
-    # -5% 이하 필터
+    # -3% 이하 필터
     alerted_raw = [
         (name, bal, cust, rcust, rbal,
          price_map[name]['chg'], price_map[name]['curr'], price_map[name]['ticker'],
@@ -481,7 +481,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         key=lambda x: (-x[4], -x[3])
     )
     # 발송 게이트(main)에서 참조할 수 있도록 최종 종목 수를 함수 속성에 기록.
-    # (-5% 초과 하락 + 위험고객 보유 종목이 다수여도 관련 뉴스가 하나도 안 잡히면
+    # (-3% 초과 하락 + 위험고객 보유 종목이 다수여도 관련 뉴스가 하나도 안 잡히면
     # 메일 자체가 안 나가던 문제 방지용 — 시장 급락 시 뉴스 매칭 여부와 무관하게
     # 강제 전체발송 트리거로 사용)
     build_price_alert_section.last_alerted_count = len(alerted_sorted)
@@ -599,7 +599,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             {('<tr style="background:#fff3cd;"><td colspan="4" style="padding:8px 10px;font-size:11px;color:#92400e;font-weight:600;border-top:1px solid #fde68a;">&#9888; 외 ' + str(len(extra_alerted)) + '개 종목 추가 탐지 — 담당자 즉시 확인 <span style="font-weight:400;color:#b45309;font-size:10px;">(' + ", ".join([x[0] for x in sorted(extra_alerted, key=lambda x: x[4], reverse=True)[:5]]) + ("..." if len(extra_alerted) > 5 else "") + ')</span></td></tr>') if extra_alerted else ''}
             <tr bgcolor="#fafafa" style="background:#fafafa;">
               <td colspan="4" style="padding:7px 10px;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
-                가격·등락률 출처: 야후파이낸스 (15분 지연) &nbsp;·&nbsp; 당일 -5% 초과 하락 + 위험고객 보유 종목만 표시
+                가격·등락률 출처: 야후파이낸스 (15분 지연) &nbsp;·&nbsp; 당일 -3% 초과 하락 + 위험고객 보유 종목만 표시
               </td>
             </tr>
           </tbody>
@@ -3795,7 +3795,7 @@ def main():
     if not filtered:
         now = datetime.now(timezone(timedelta(hours=9)))
         # 여신잔고 위험고객 여부 확인 — 있으면 전체 발송
-        # [설계 참고] 이 분기(뉴스 0건)는 위험고객 보유 -5%↓ 종목이 1개만 있어도
+        # [설계 참고] 이 분기(뉴스 0건)는 위험고객 보유 -3%↓ 종목이 1개만 있어도
         # 전체 발송한다. 뉴스가 있는 경우의 시장급락 안전장치(10개 이상, main 하단
         # _MARKET_CRASH_STOCK_THRESHOLD)와 기준이 다른 것은 의도된 설계:
         # 여기서는 메일 콘텐츠가 여신잔고 현황 그 자체라 1개라도 알릴 가치가 있고,
@@ -4230,7 +4230,7 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
         and (a.get("_conf_raw") or a.get("_ai_confidence") or 0) >= 0.80
         for a in filtered
     )
-    # 시장 급락 안전장치: -5% 초과 하락 + 위험고객 보유 종목이 10개 이상이면,
+    # 시장 급락 안전장치: -3% 초과 하락 + 위험고객 보유 종목이 10개 이상이면,
     # 관련 리스크 뉴스가 하나도 안 잡혀 등급·점수가 낮더라도 전체 발송.
     # (build_price_alert_section이 이미 위에서 호출되어 last_alerted_count에
     # 최종 집계된 종목 수가 기록돼 있음 — 재계산 없이 재사용)
@@ -4238,7 +4238,7 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
     _alerted_stock_count = getattr(build_price_alert_section, "last_alerted_count", 0)
     _market_crash = _alerted_stock_count >= _MARKET_CRASH_STOCK_THRESHOLD
     if _market_crash:
-        print(f"  [시장급락 강제발송] 위험고객 보유 -5%↓ 종목 {_alerted_stock_count}개 — 뉴스 매칭과 무관하게 전체 발송")
+        print(f"  [시장급락 강제발송] 위험고객 보유 -3%↓ 종목 {_alerted_stock_count}개 — 뉴스 매칭과 무관하게 전체 발송")
     _force_full = _has_urgent or _has_strong_caution or _market_crash
     _self_only = (_max_score < SELF_ONLY_MAX_SCORE) and not _force_full
 
