@@ -2658,7 +2658,8 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             bal = float(str(r.get("잔고(억)","0")).replace(",",""))
             cus = int(float(str(r.get("고객수","0")).replace(",","")))
             if name not in merged:
-                merged[name] = {"잔고": 0, "고객수": 0, "뱅잔고": 0.0, "뱅고객수": 0, "영잔고": 0.0, "영고객수": 0, "_ch": False}
+                merged[name] = {"잔고": 0, "고객수": 0, "뱅잔고": 0.0, "뱅고객수": 0, "영잔고": 0.0, "영고객수": 0,
+                                "뱅리스크고객수": 0, "뱅리스크잔고": 0.0, "영리스크고객수": 0, "영리스크잔고": 0.0, "_ch": False}
             merged[name]["잔고"] += bal
             merged[name]["고객수"] += cus
             if "뱅잔고" in r:  # 20컬럼 스키마 — 채널 병기용 집계
@@ -2671,6 +2672,10 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                 merged[name]["뱅고객수"] += int(_mf(r.get("뱅고객수")))
                 merged[name]["영잔고"]   += _mf(r.get("영잔고"))
                 merged[name]["영고객수"] += int(_mf(r.get("영고객수")))
+                merged[name]["뱅리스크고객수"] += int(_mf(r.get("뱅리스크고객수")))
+                merged[name]["뱅리스크잔고"]   += _mf(r.get("뱅리스크잔고"))
+                merged[name]["영리스크고객수"] += int(_mf(r.get("영리스크고객수")))
+                merged[name]["영리스크잔고"]   += _mf(r.get("영리스크잔고"))
                 merged[name]["_ch"] = True
         return merged  # {종목명: {잔고, 고객수, (채널합계)}}
 
@@ -2684,41 +2689,51 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             f' {v["잔고"]:,.0f}억원 / {v["고객수"]:,}명</div>'
         )
 
-    MAX_DISPLAY_ITEMS = 3
+    MAX_DISPLAY_ITEMS = 3       # 구(12컬럼) 단일 리스트 표시 개수 — 기존 유지
+    CHANNEL_MAX_ITEMS = 2       # 채널모드(뱅/영) 표시 개수 — 정보량 증가로 2개로 축소, 나머지는 外 요약
 
     _C_BANK   = '#2563eb'  # 뱅키스 채널 컬러 (여신표와 동일)
     _C_BRANCH = '#8b5e3c'  # 영업점 채널 컬러
+    _VAL_W = 130            # 값 컬럼 폭 — 리스크잔고 서브라인 수용 위해 120→130
 
     def _ch_val(v, pre):
-        """채널 셀 값 — 'X억 (Y명)', 잔고·고객 모두 0이면 '-'"""
+        """채널 셀 값 — 'X억 (Y명)' + 위험고객 있으면 붉은 서브라인 '⚠ 위험 X억 (Y명)'.
+        잔고·고객 모두 0이면 '-'"""
         bal, cus = v.get(f"{pre}잔고", 0), v.get(f"{pre}고객수", 0)
         if bal <= 0 and cus <= 0:
             return '<span style="color:#cbd5e1;">-</span>'
         bal_str = f"{bal:,.1f}".rstrip('0').rstrip('.') if bal < 10 else f"{bal:,.0f}"
-        return f'{bal_str}억 ({cus:,}명)'
+        html = f'<div>{bal_str}억 ({cus:,}명)</div>'
+        r_cus, r_bal = v.get(f"{pre}리스크고객수", 0), v.get(f"{pre}리스크잔고", 0)
+        if r_cus > 0:
+            r_bal_str = f"{r_bal:,.1f}".rstrip('0').rstrip('.') if r_bal < 10 else f"{r_bal:,.0f}"
+            html += f'<div style="font-size:10px;color:#dc2626;font-weight:600;margin-top:2px;">⚠ {r_bal_str}억 ({r_cus:,}명)</div>'
+        return html
 
     def _fmt_merged_limited(merged: dict) -> str:
-        """종목유형 섹션 본문 — 채널 데이터 있으면 종목명|뱅키스|영업점 행정렬 3컬럼
+        """종목유형 섹션 본문 — 채널 데이터 있으면 종목명|뱅키스|영업점 행정렬 3컬럼,
+        위험고객 리스크잔고 서브라인 병기, 상위 2개만 노출하고 나머지는 外 요약행
         (합산 미표기 — 중복고객으로 단순합산 부정확), 없으면(구 12컬럼) 기존 단일 리스트"""
         if any(v.get("_ch") for v in merged.values()):
             items = sorted(merged.items(),
                            key=lambda kv: -max(kv[1].get("뱅잔고", 0), kv[1].get("영잔고", 0)))
-            shown, rest = items[:MAX_DISPLAY_ITEMS], items[MAX_DISPLAY_ITEMS:]
-            _td_n = 'width="150" style="font-size:12px;font-weight:700;color:#1e293b;line-height:1.9;white-space:nowrap;padding-right:6px;"'
-            _td_v = 'align="center" style="font-size:12px;color:#1e293b;line-height:1.9;white-space:nowrap;"'
-            _td_v2 = 'align="center" style="font-size:12px;color:#1e293b;line-height:1.9;white-space:nowrap;border-left:1px solid #f1f5f9;"'
+            shown, rest = items[:CHANNEL_MAX_ITEMS], items[CHANNEL_MAX_ITEMS:]
+            _td_n = f'width="150" style="font-size:12px;font-weight:700;color:#1e293b;padding:6px 8px 6px 0;white-space:nowrap;vertical-align:top;"'
+            _td_v = f'width="{_VAL_W}" align="center" style="font-size:12px;color:#1e293b;padding:6px 8px;white-space:nowrap;vertical-align:top;"'
+            _td_v2 = f'width="{_VAL_W}" align="center" style="font-size:12px;color:#1e293b;padding:6px 8px;white-space:nowrap;vertical-align:top;border-left:1px solid #f1f5f9;"'
             rows = "".join(
-                f'<tr><td {_td_n}>{n}</td>'
-                f'<td width="120" {_td_v}>{_ch_val(v, "뱅")}</td>'
-                f'<td width="120" {_td_v2}>{_ch_val(v, "영")}</td></tr>'
+                f'<tr style="border-bottom:1px solid #f8fafc;">'
+                f'<td {_td_n}>{n}</td>'
+                f'<td {_td_v}>{_ch_val(v, "뱅")}</td>'
+                f'<td {_td_v2}>{_ch_val(v, "영")}</td></tr>'
                 for n, v in shown)
             if rest:
                 def _sumv(pre, key):
                     return sum(v.get(f"{pre}{key}", 0) for _, v in rest)
-                rows += (f'<tr><td style="font-size:11px;color:#94a3b8;line-height:1.9;white-space:nowrap;">外 {len(rest)}개</td>'
-                         f'<td width="120" align="center" style="font-size:11px;color:#94a3b8;line-height:1.9;white-space:nowrap;">{_sumv("뱅","잔고"):,.0f}억 ({_sumv("뱅","고객수"):,}명)</td>'
-                         f'<td width="120" align="center" style="font-size:11px;color:#94a3b8;line-height:1.9;white-space:nowrap;border-left:1px solid #f1f5f9;">{_sumv("영","잔고"):,.0f}억 ({_sumv("영","고객수"):,}명)</td></tr>')
-            # width="100%" 제거 — 내용만큼만 폭을 차지하고 좌측으로 뭉치도록(카드 우측에 여백,
+                rows += (f'<tr><td style="font-size:11px;color:#94a3b8;padding:6px 8px 2px 0;white-space:nowrap;">外 {len(rest)}개</td>'
+                         f'<td width="{_VAL_W}" align="center" style="font-size:11px;color:#94a3b8;padding:6px 8px 2px;white-space:nowrap;">{_sumv("뱅","잔고"):,.0f}억 ({_sumv("뱅","고객수"):,}명)</td>'
+                         f'<td width="{_VAL_W}" align="center" style="font-size:11px;color:#94a3b8;padding:6px 8px 2px;white-space:nowrap;border-left:1px solid #f1f5f9;">{_sumv("영","잔고"):,.0f}억 ({_sumv("영","고객수"):,}명)</td></tr>')
+            # width="100%" 미지정 — 내용만큼만 폭을 차지하고 좌측으로 뭉치도록(카드 우측에 여백,
             # 종목명·값 사이 중간 여백 제거). table-layout 강제하지 않아 긴 종목명은 자연 확장됨
             return f'<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">{rows}</table>'
         items = sorted(merged.items(), key=lambda kv: -kv[1]["잔고"])
@@ -2738,12 +2753,12 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
 
     def _section(label, bg, color, rows_html):
         return (
-            f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:2px;">'
+            f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:4px;">'
             f'<tr>'
-            f'<td valign="top" style="padding-top:2px;width:80px;white-space:nowrap;">'
+            f'<td valign="top" style="padding-top:6px;width:80px;white-space:nowrap;">'
             f'<span style="font-size:10px;background:{bg};color:{color};padding:1px 5px;border-radius:2px;font-weight:700;">{label}</span>'
             f'</td>'
-            f'<td style="padding-left:4px;">{rows_html}</td>'
+            f'<td style="padding-left:8px;">{rows_html}</td>'
             f'</tr></table>'
         )
 
@@ -2786,13 +2801,13 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         # 데이터 행과 동일한 폭 구조로 중첩해 값 컬럼 위치를 정확히 정렬)
         if any('뱅잔고' in r for r in all_rows):
             _ch_header = (
-                '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:4px;"><tr>'
+                '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:6px;"><tr>'
                 '<td style="width:80px;">&nbsp;</td>'
                 '<td>'
                 '<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr>'
                 '<td width="150" style="border-bottom:1px solid #e2e8f0;">&nbsp;</td>'
-                f'<td width="120" align="center" style="padding:2px 4px 3px;font-size:10px;font-weight:700;color:{_C_BANK};border-bottom:1px solid #e2e8f0;white-space:nowrap;">● 뱅키스</td>'
-                f'<td width="120" align="center" style="padding:2px 4px 3px;font-size:10px;font-weight:700;color:{_C_BRANCH};border-bottom:1px solid #e2e8f0;white-space:nowrap;">● 영업점</td>'
+                f'<td width="130" align="center" style="padding:2px 8px 4px;font-size:10px;font-weight:700;color:{_C_BANK};border-bottom:1px solid #e2e8f0;white-space:nowrap;">● 뱅키스</td>'
+                f'<td width="130" align="center" style="padding:2px 8px 4px;font-size:10px;font-weight:700;color:{_C_BRANCH};border-bottom:1px solid #e2e8f0;white-space:nowrap;">● 영업점</td>'
                 '</tr></table>'
                 '</td>'
                 '</tr></table>'
@@ -2847,8 +2862,8 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
     _ai_badge3 = _AI_BADGE if related_html else ""
 
     return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
-      <tr><td style="padding:10px 16px;">
-        <p style="margin:0 0 8px 0;font-size:11px;font-weight:700;color:#1e293b;">한국투자증권 익스포저
+      <tr><td style="padding:14px 18px;">
+        <p style="margin:0 0 10px 0;font-size:11px;font-weight:700;color:#1e293b;">한국투자증권 익스포저
           <span style="font-weight:400;color:#94a3b8;">{date_label}</span>{_ai_badge3}
         </p>
         {inner}{related_html}
@@ -3003,10 +3018,10 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                         urgent_badges += f'<span style="font-size:10px;background:#f1f5f9;color:#4a6099;padding:2px 7px;border-radius:3px;font-weight:600;white-space:nowrap;display:inline-block;">{a["entity"]}</span>'
                     urgent_badges += _price_badge(a)  # 등락률 뱃지 — 키워드 옆
                     action_row = f'<tr><td class="action-td" bgcolor="#fef2f2" style="padding:10px 16px;border-bottom:1px solid {gs["card_border"]};background:#fef2f2;"><p style="margin:0 0 3px 0;font-size:11px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
-                    exposure_row = f'<tr><td style="padding:0;border-bottom:1px solid {gs["card_border"]};background:#ffffff;">{exposure_html}</td></tr>' if exposure_html else ""
+                    exposure_row = f'<tr><td style="padding:0;border-top:1px solid #e2e8f0;border-bottom:1px solid {gs["card_border"]};background:#ffffff;">{exposure_html}</td></tr>' if exposure_html else ""
                     notice_text = _esc((a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice",""))
                     notice_row = f'<tr><td class="care-td" bgcolor="#f8fafc" style="padding:10px 16px;background:#f8fafc;border-top:1px solid #e2e8f0;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#334155;">고객케어 안내 추천 문구</span></p><p style="margin:0;font-size:12px;color:#334155;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
-                    bottom_box = f'<tr><td bgcolor="#fff8f8" style="background:#fff8f8;border-top:1px solid {gs["card_border"]};padding:0;"><table width="100%" cellpadding="0" cellspacing="0" border="0">{action_row}{exposure_row}{notice_row}</table></td></tr>' if (action_row or exposure_row or notice_row) else ""
+                    bottom_box = f'<tr><td bgcolor="#fff8f8" style="background:#fff8f8;border-top:1px solid {gs["card_border"]};padding:0;"><table width="100%" cellpadding="0" cellspacing="0" border="0">{action_row}{notice_row}{exposure_row}</table></td></tr>' if (action_row or exposure_row or notice_row) else ""
                     is_last = (display_items.index(a) == len([x for x in display_items if x.get("grade")=="긴급"]) - 1 + sum(1 for x in display_items if x.get("grade")!="긴급"))
                     divider = "" if is_last else f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0;"><tr><td style="padding:0;height:1px;background:#ef4444;font-size:0;line-height:0;">&nbsp;</td></tr></table>'
                     rows += f'''
