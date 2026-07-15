@@ -559,8 +559,8 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             </tr>'''
 
     _has_channel = any(a[11] for a in display_alerted)
-    _legend = (f'<span style="color:{_C_BANK};font-weight:700;">● 뱅키스</span>'
-               f' &nbsp;<span style="color:{_C_BRANCH};font-weight:700;">● 영업점</span>') if _has_channel else ''
+    _legend = (f'<span style="color:{_C_BANK};">●</span><span style="color:#ffffff;font-weight:700;"> 뱅키스</span>'
+               f' &nbsp;<span style="color:{_C_BRANCH};">●</span><span style="color:#ffffff;font-weight:700;"> 영업점</span>') if _has_channel else ''
 
     return f'''
     <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;border:1px solid #e2e8f0;border-top:3px solid #475569;">
@@ -2696,18 +2696,13 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             if not rest:
                 return top_table
 
-            def _sumv(pre, key):
-                return sum(v.get(f"{pre}{key}", 0) for _, v in rest)
-            bank_sum = f'{_sumv("뱅","잔고"):,.0f}억 ({_sumv("뱅","고객수"):,}명)'
-            branch_sum = f'{_sumv("영","잔고"):,.0f}억 ({_sumv("영","고객수"):,}명)'
             rest_table = f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">{"".join(_row(n, v) for n, v in rest)}</table>'
             # 外 항목은 기본 닫힘(details, open 속성 없음) — 클릭 시 개별 종목 행으로 펼쳐짐.
-            # summary에는 채널별 소계를 표시해 펼치지 않아도 대략적 규모는 파악 가능
+            # 합산잔고·고객수는 표기하지 않음(중복고객 존재로 단순합산 부정확 — 안내 문구만)
             fold = (
-                f'<details style="margin-top:2px;">'
-                f'<summary style="cursor:pointer;list-style:revert;padding:4px 0 4px 0;">'
-                f'<span style="font-size:11px;color:#94a3b8;">外 {len(rest)}개 종목 더보기</span>'
-                f'{_val_pair(bank_sum, branch_sum, muted=True)}'
+                f'<details style="margin-top:0;">'
+                f'<summary style="cursor:pointer;list-style:revert;padding:2px 0;font-size:11px;color:#94a3b8;">'
+                f'外 {len(rest)}개 종목 더보기'
                 f'</summary>{rest_table}</details>'
             )
             return top_table + fold
