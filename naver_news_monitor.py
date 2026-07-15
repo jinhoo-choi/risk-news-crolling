@@ -2644,6 +2644,10 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
 
     _C_BANK   = '#2563eb'  # 뱅키스 채널 컬러 (여신표와 동일)
     _C_BRANCH = '#8b5e3c'  # 영업점 채널 컬러
+    _VAL_W = 140  # 값 컬럼 고정폭(px) — 헤더·top1·外 각 행이 독립된 nested table이라
+                  # width=50% 등 상대폭을 쓰면 행마다 텍스트 길이에 따라 실제 렌더 폭이
+                  # 미세하게 달라져 구분선이 행마다 어긋나 보임. 고정 px로 모든 행·헤더에
+                  # 동일하게 적용해 세로 구분선이 항상 같은 위치에 오도록 함
 
     def _ch_val(v, pre):
         """채널 셀 값 — 'X억 (Y명)', 잔고·고객 모두 0이면 '-'"""
@@ -2679,9 +2683,9 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                 color = "#94a3b8" if muted else "#1e293b"
                 fs = "11" if muted else "12"
                 return (
-                    f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr>'
-                    f'<td width="50%" align="center" style="font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{bank_html}</td>'
-                    f'<td width="50%" align="center" style="font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;border-left:1px solid #e2e8f0;">{branch_html}</td>'
+                    f'<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;"><tr>'
+                    f'<td width="{_VAL_W}" align="center" style="font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{bank_html}</td>'
+                    f'<td width="{_VAL_W}" align="center" style="font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;border-left:1px solid #e2e8f0;">{branch_html}</td>'
                     f'</tr></table>'
                 )
 
@@ -2767,8 +2771,8 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
     else:
         inner = DIVIDER.join(sections)
         # 채널 모드 — ● 뱅키스 | ● 영업점 컬럼 헤더. 데이터 행과 동일한 구조
-        # (badge 80px + 종목명 100px + nested width=100% 2분할 값 영역)로 값
-        # 컬럼 위치와 밑줄이 정확히 일치·카드 우측 끝까지 이어지도록 함
+        # (badge 80px + 종목명 100px + 고정폭 값 컬럼)로 값 컬럼 위치와
+        # 세로 구분선이 모든 행·헤더에서 정확히 일치하도록 함
         if any('뱅잔고' in r for r in all_rows):
             _bb = 'border-bottom:1px solid #e2e8f0;'
             _ch_header = (
@@ -2776,12 +2780,9 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                 f'<td width="80" style="{_bb}">&nbsp;</td>'
                 f'<td width="8" style="{_bb}">&nbsp;</td>'
                 f'<td width="100" style="{_bb}">&nbsp;</td>'
-                f'<td style="padding:0;{_bb}">'
-                f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr>'
-                f'<td width="50%" align="center" style="padding:2px 10px 5px;font-size:10px;font-weight:700;color:{_C_BANK};white-space:nowrap;">● 뱅키스</td>'
-                f'<td width="50%" align="center" style="padding:2px 10px 5px;font-size:10px;font-weight:700;color:{_C_BRANCH};white-space:nowrap;border-left:1px solid #e2e8f0;">● 영업점</td>'
-                f'</tr></table>'
-                f'</td>'
+                f'<td width="{_VAL_W}" align="center" style="padding:2px 10px 5px;font-size:10px;font-weight:700;color:{_C_BANK};{_bb}white-space:nowrap;">● 뱅키스</td>'
+                f'<td width="{_VAL_W}" align="center" style="padding:2px 10px 5px;font-size:10px;font-weight:700;color:{_C_BRANCH};{_bb}white-space:nowrap;border-left:1px solid #e2e8f0;">● 영업점</td>'
+                f'<td style="{_bb}">&nbsp;</td>'
                 '</tr></table>'
             )
             inner = _ch_header + inner
