@@ -2662,9 +2662,10 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         """종목명 말줄임 — 긴 명칭(리츠·SPC 등)이 컬럼을 밀어내 섹션 간
         값 컬럼 정렬이 깨지는 문제 방지 (문자수 제한 + CSS 폭 강제 이중 적용)"""
         short = n if len(n) <= limit else n[:limit - 1] + '…'
-        # td width="100"는 auto layout에서 강제력이 약해(한글은 폭이 넓어 14자도
-        # 100px를 초과) div로 감싸 overflow:hidden 하드 클립 — 섹션 간 정렬 보장
-        return f'<div style="max-width:92px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{short}</div>'
+        # td width="100"만으로는 긴 한글 종목명이 여전히 넘칠 수 있어(14자 기준으로도
+        # 폭 초과 가능) div로 감싸 overflow:hidden 하드 클립 이중 적용 — table-layout:fixed
+        # 라 컬럼폭 자체는 보장되지만, 셀 내부 텍스트가 폭을 넘으면 시각적으로 삐져나올 수 있음
+        return f'<div style="max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{short}</div>'
 
     def _fmt_merged_limited(merged: dict) -> str:
         """종목유형 섹션 본문 — 채널 데이터 있으면 종목명|뱅키스|영업점 단일 평면
@@ -2682,6 +2683,8 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             shown, rest = items[:CHANNEL_MAX_ITEMS], items[CHANNEL_MAX_ITEMS:]
 
             _td_n = 'width="100" style="font-size:12px;font-weight:700;color:#1e293b;padding:8px 6px 8px 0;white-space:nowrap;vertical-align:top;"'
+            # 모바일(≤600px)에서는 exp-val-td 폭을 CSS로 축소해 가로 스크롤 방지
+            # (width HTML 속성은 !important CSS width로 재정의 시 우선순위 밀림 — 아래 <style> 참고)
 
             def _row(n, v, muted=False):
                 bank = _ch_val(v, "뱅"); branch = _ch_val(v, "영")
@@ -2689,9 +2692,9 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                 fs = "11" if muted else "12"
                 return (
                     f'<tr style="border-bottom:1px solid #f8fafc;">'
-                    f'<td {_td_n}>{_trunc_name(n)}</td>'
-                    f'<td width="{_VAL_W}" align="center" style="box-sizing:border-box;text-align:center;font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{bank}</td>'
-                    f'<td width="{_VAL_W}" align="center" style="box-sizing:border-box;text-align:center;font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{branch}</td>'
+                    f'<td class="exp-name-td" {_td_n}>{_trunc_name(n)}</td>'
+                    f'<td class="exp-val-td" width="{_VAL_W}" align="center" style="box-sizing:border-box;text-align:center;font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{bank}</td>'
+                    f'<td class="exp-val-td" width="{_VAL_W}" align="center" style="box-sizing:border-box;text-align:center;font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{branch}</td>'
                     f'</tr>'
                 )
 
@@ -2780,9 +2783,9 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             _bb = 'border-bottom:1px solid #e2e8f0;'
             _header_inner = (
                 f'<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;"><tr>'
-                f'<td width="100" style="{_bb}">&nbsp;</td>'
-                f'<td width="{_VAL_W}" align="center" style="box-sizing:border-box;text-align:center;padding:2px 6px 5px;font-size:10px;font-weight:700;color:{_C_BANK};{_bb}white-space:nowrap;">뱅키스</td>'
-                f'<td width="{_VAL_W}" align="center" style="box-sizing:border-box;text-align:center;padding:2px 6px 5px;font-size:10px;font-weight:700;color:{_C_BRANCH};{_bb}white-space:nowrap;">영업점</td>'
+                f'<td class="exp-name-td" width="100" style="{_bb}">&nbsp;</td>'
+                f'<td class="exp-val-td" width="{_VAL_W}" align="center" style="box-sizing:border-box;text-align:center;padding:2px 6px 5px;font-size:10px;font-weight:700;color:{_C_BANK};{_bb}white-space:nowrap;">뱅키스</td>'
+                f'<td class="exp-val-td" width="{_VAL_W}" align="center" style="box-sizing:border-box;text-align:center;padding:2px 6px 5px;font-size:10px;font-weight:700;color:{_C_BRANCH};{_bb}white-space:nowrap;">영업점</td>'
                 f'</tr></table>'
             )
             _ch_header = (
@@ -2838,7 +2841,7 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
     )
 
     return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
-      <tr><td style="padding:14px 18px;">
+      <tr><td class="exp-card-td" style="padding:14px 18px;">
         <p style="margin:0 0 10px 0;">{_title}</p>
         {inner}{related_html}
       </td></tr>
@@ -3085,6 +3088,13 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
     .price-alert-table th {{ font-size: 10px !important; padding: 6px 3px !important; white-space: normal !important; word-break: keep-all !important; }}
     .price-alert-table td {{ font-size: 11px !important; padding: 7px 3px !important; white-space: normal !important; word-break: keep-all !important; }}
     .loan-hdr-right {{ display: none !important; }}
+    /* 한국투자증권 익스포저 카드 모바일 대응 — 고정폭(100+205+205=510px) 컬럼이
+       375px 이하 화면에서 가로 스크롤을 유발하던 문제(Playwright 실측 48px 초과 확인).
+       정렬 정확도를 위해 데스크톱은 고정 px를 유지하되, 모바일에서만 CSS width로
+       재정의(HTML width 속성보다 우선순위 높음)해 축소 */
+    .exp-card-td {{ padding: 10px 12px !important; }}
+    .exp-name-td {{ width: 58px !important; font-size: 11px !important; padding-right: 4px !important; }}
+    .exp-val-td {{ width: 68px !important; font-size: 10px !important; padding: 6px 3px !important; white-space: normal !important; word-break: keep-all !important; }}
   }}
 </style>
 </head>
