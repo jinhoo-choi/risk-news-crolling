@@ -503,15 +503,15 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     def _cust_bal_cell(cust, bal, ch):
         """전체 여신 칸 — 채널 모드: '● 잔고억 (고객수명)' 채널 컬러 2줄 (합산 없음)"""
         if ch:
-            return (f'<td class="price-alert-td" style="padding:8px 6px;font-size:12px;text-align:center;white-space:nowrap;">'
+            return (f'<td class="price-alert-td" style="padding:8px 6px;font-size:12px;font-weight:600;text-align:center;white-space:nowrap;">'
                     f'<div style="color:{_C_BANK};">● {ch["b"]["bal"]:,.0f}억 ({ch["b"]["cust"]:,}명)</div>'
                     f'<div style="margin-top:3px;color:{_C_BRANCH};">● {ch["y"]["bal"]:,.0f}억 ({ch["y"]["cust"]:,}명)</div></td>')
-        return (f'<td class="price-alert-td" style="padding:8px 6px;font-size:12px;color:#1e293b;text-align:center;white-space:nowrap;">'
+        return (f'<td class="price-alert-td" style="padding:8px 6px;font-size:12px;font-weight:600;color:#1e293b;text-align:center;white-space:nowrap;">'
                 f'{bal:,.0f}억 ({cust:,}명)</td>')
 
     def _risk_cell(rcust, rbal, ch):
         if rcust == 0:
-            return '<td style="padding:8px 6px;font-size:13px;color:#cbd5e1;text-align:center;white-space:nowrap;">없음</td>'
+            return '<td style="padding:8px 6px;font-size:12px;color:#cbd5e1;text-align:center;white-space:nowrap;">없음</td>'
         if ch:
             return (f'<td style="padding:8px 6px;font-size:12px;font-weight:600;text-align:center;white-space:nowrap;">'
                     f'<div style="color:{_C_BANK};">● {ch["b"]["rbal"]:,.0f}억 ({ch["b"]["rcust"]:,}명)</div>'
@@ -537,12 +537,12 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             if b_line: lines.append(f'<div>{b_line}</div>')
             if y_line: lines.append(f'<div style="margin-top:3px;">{y_line}</div>')
             if lines:
-                return (f'<td style="padding:8px 6px;font-size:11px;font-weight:600;text-align:center;white-space:nowrap;">'
+                return (f'<td style="padding:8px 6px;font-size:12px;font-weight:600;text-align:center;white-space:nowrap;">'
                         f'{"".join(lines)}</td>')
         if not top_rbal and not top_cust:
             return '<td style="padding:8px 6px;font-size:12px;color:#cbd5e1;text-align:center;white-space:nowrap;">-</td>'
         line = _top_line('', top_rbal, top_cust, top_ratio)
-        return f'<td style="padding:8px 6px;font-size:11px;font-weight:600;text-align:center;white-space:nowrap;">{line}</td>'
+        return f'<td style="padding:8px 6px;font-size:12px;font-weight:600;text-align:center;white-space:nowrap;">{line}</td>'
 
     rows_html = ''
     for i, (name, bal, cust, rcust, rbal, chg, curr, ticker, top_rbal, top_cust, top_ratio, ch) in enumerate(display_alerted):
@@ -2640,7 +2640,7 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         )
 
     MAX_DISPLAY_ITEMS = 3       # 구(12컬럼) 단일 리스트 표시 개수 — 기존 유지
-    CHANNEL_MAX_ITEMS = 2       # 채널모드(뱅/영) 표시 개수 — 정보량 증가로 2개로 축소, 나머지는 外 요약
+    CHANNEL_MAX_ITEMS = 1       # 기사와 직접 연동되는 top1만 기본 노출, 나머지는 外 접기(details)
 
     _C_BANK   = '#2563eb'  # 뱅키스 채널 컬러 (여신표와 동일)
     _C_BRANCH = '#8b5e3c'  # 영업점 채널 컬러
@@ -2668,7 +2668,9 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         부정확), 없으면(구 12컬럼) 기존 단일 리스트.
         값 영역(뱅키스+영업점)은 nested width=100% 2분할 테이블로 구성 —
         종목명 칸은 좁게(100px) 유지하면서 남는 공간을 값 영역이 전부 채워
-        카드 우측에 빈 여백이 남지 않도록 함."""
+        카드 우측에 빈 여백이 남지 않도록 함.
+        기사와 직접 연동되는 top1만 기본 노출, 나머지(外)는 <details>로
+        접어둠(기본 닫힘) — 클릭하면 개별 종목 행으로 펼쳐짐."""
         if any(v.get("_ch") for v in merged.values()):
             items = sorted(merged.items(),
                            key=lambda kv: -max(kv[1].get("뱅잔고", 0), kv[1].get("영잔고", 0)))
@@ -2676,28 +2678,39 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
 
             def _val_pair(bank_html, branch_html, muted=False):
                 color = "#94a3b8" if muted else "#1e293b"
+                fs = "11" if muted else "12"
                 return (
                     f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr>'
-                    f'<td width="50%" align="center" style="font-size:{"11" if muted else "12"}px;color:{color};padding:6px 10px;white-space:nowrap;vertical-align:top;">{bank_html}</td>'
-                    f'<td width="50%" align="center" style="font-size:{"11" if muted else "12"}px;color:{color};padding:6px 10px;white-space:nowrap;vertical-align:top;border-left:1px solid #e2e8f0;">{branch_html}</td>'
+                    f'<td width="50%" align="center" style="font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{bank_html}</td>'
+                    f'<td width="50%" align="center" style="font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;border-left:1px solid #e2e8f0;">{branch_html}</td>'
                     f'</tr></table>'
                 )
 
-            _td_n = 'width="100" style="font-size:12px;font-weight:700;color:#1e293b;padding:6px 6px 6px 0;white-space:nowrap;vertical-align:top;"'
-            rows = "".join(
+            _td_n = 'width="100" style="font-size:12px;font-weight:700;color:#1e293b;padding:8px 6px 8px 0;white-space:nowrap;vertical-align:top;"'
+            _row = lambda n, v: (
                 f'<tr style="border-bottom:1px solid #f8fafc;">'
                 f'<td {_td_n}>{_trunc_name(n)}</td>'
-                f'<td style="padding:0;vertical-align:top;">{_val_pair(_ch_val(v, "뱅"), _ch_val(v, "영"))}</td></tr>'
-                for n, v in shown)
-            if rest:
-                def _sumv(pre, key):
-                    return sum(v.get(f"{pre}{key}", 0) for _, v in rest)
-                bank_sum = f'{_sumv("뱅","잔고"):,.0f}억 ({_sumv("뱅","고객수"):,}명)'
-                branch_sum = f'{_sumv("영","잔고"):,.0f}억 ({_sumv("영","고객수"):,}명)'
-                rows += (f'<tr><td style="font-size:11px;color:#94a3b8;padding:6px 6px 2px 0;white-space:nowrap;">外 {len(rest)}개</td>'
-                         f'<td style="padding:0;vertical-align:top;">{_val_pair(bank_sum, branch_sum, muted=True)}</td></tr>')
-            # 종목명 칸(100px)만 고정, 나머지는 width=100% 테이블 전체 — 카드 우측까지 항상 채움
-            return f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">{rows}</table>'
+                f'<td style="padding:0;vertical-align:top;">{_val_pair(_ch_val(v, "뱅"), _ch_val(v, "영"))}</td></tr>')
+            top_table = f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">{"".join(_row(n, v) for n, v in shown)}</table>'
+
+            if not rest:
+                return top_table
+
+            def _sumv(pre, key):
+                return sum(v.get(f"{pre}{key}", 0) for _, v in rest)
+            bank_sum = f'{_sumv("뱅","잔고"):,.0f}억 ({_sumv("뱅","고객수"):,}명)'
+            branch_sum = f'{_sumv("영","잔고"):,.0f}억 ({_sumv("영","고객수"):,}명)'
+            rest_table = f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">{"".join(_row(n, v) for n, v in rest)}</table>'
+            # 外 항목은 기본 닫힘(details, open 속성 없음) — 클릭 시 개별 종목 행으로 펼쳐짐.
+            # summary에는 채널별 소계를 표시해 펼치지 않아도 대략적 규모는 파악 가능
+            fold = (
+                f'<details style="margin-top:2px;">'
+                f'<summary style="cursor:pointer;list-style:revert;padding:4px 0 4px 0;">'
+                f'<span style="font-size:11px;color:#94a3b8;">外 {len(rest)}개 종목 더보기</span>'
+                f'{_val_pair(bank_sum, branch_sum, muted=True)}'
+                f'</summary>{rest_table}</details>'
+            )
+            return top_table + fold
         items = sorted(merged.items(), key=lambda kv: -kv[1]["잔고"])
         shown = items[:MAX_DISPLAY_ITEMS]
         rest = items[MAX_DISPLAY_ITEMS:]
@@ -2822,28 +2835,11 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         f'<span style="font-size:11px;font-weight:700;color:#1e293b;">한국투자증권 익스포저</span>'
         f' <span style="font-weight:400;color:#94a3b8;font-size:11px;">{date_label}</span>'
     )
-    _body = f'{inner}{related_html}'
-
-    # 폴딩: 계열사 등으로 섹션이 3개 이상 쌓여 카드가 길어질 때만 details/summary 적용.
-    # open 속성으로 기본은 항상 펼친 상태 — 접기 미지원 클라이언트(Outlook 등)도
-    # 기존과 동일하게 전체 표시되며, 지원 클라이언트(Gmail·Apple Mail 등)에서만
-    # summary 클릭으로 접을 수 있는 점진적 향상(progressive enhancement) 방식
-    if len(sections) > 2:
-        return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
-      <tr><td style="padding:14px 18px;">
-        <details open style="cursor:pointer;">
-          <summary style="margin:0 0 10px 0;list-style:revert;cursor:pointer;">{_title}
-            <span style="font-size:10px;color:#94a3b8;font-weight:400;">(종목유형 {len(sections)}개 · 클릭해서 접기/펼치기)</span>
-          </summary>
-          {_body}
-        </details>
-      </td></tr>
-    </table>'''
 
     return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:14px 18px;">
         <p style="margin:0 0 10px 0;">{_title}</p>
-        {_body}
+        {inner}{related_html}
       </td></tr>
     </table>'''
 
@@ -2934,7 +2930,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
 
                 if grade == "주의":
                     c_exp_html = build_exposure_html(a_entities, exposure_data or {}, ref_date, border_color=gs["border_left"], article=a)
-                    c_action_row = f'<tr><td style="padding:10px 16px;background:#fff0ee;border-top:1px solid {gs["card_border"]};border-bottom:1px solid {gs["card_border"]};"><p style="margin:0 0 3px 0;font-size:10px;font-weight:700;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:13px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
+                    c_action_row = f'<tr><td style="padding:10px 16px;background:#ffffff;border-top:1px solid {gs["card_border"]};border-bottom:1px solid {gs["card_border"]};"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#dc2626;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">⚡ 대응방안</span></p><p style="margin:0;font-size:13px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
                     c_exp_row   = f'<tr><td style="padding:0;">{c_exp_html}</td></tr>' if c_exp_html else ""
                     c_risk = a.get("_risk_score", "")
                     if c_risk:
@@ -2994,7 +2990,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     if a.get("entity") and a.get("entity") != a.get("keyword"):
                         urgent_badges += f'<span style="font-size:10px;background:#f1f5f9;color:#4a6099;padding:2px 7px;border-radius:3px;font-weight:600;white-space:nowrap;display:inline-block;">{a["entity"]}</span>'
                     urgent_badges += _price_badge(a)  # 등락률 뱃지 — 키워드 옆
-                    action_row = f'<tr><td class="action-td" bgcolor="#fef2f2" style="padding:10px 16px;border-bottom:1px solid {gs["card_border"]};background:#fef2f2;"><p style="margin:0 0 3px 0;font-size:11px;font-weight:bold;color:{gs["label_color"]};letter-spacing:0.5px;">대응방안</p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
+                    action_row = f'<tr><td class="action-td" bgcolor="#ffffff" style="padding:10px 16px;border-bottom:1px solid {gs["card_border"]};background:#ffffff;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#dc2626;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">⚡ 대응방안</span></p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
                     exposure_row = f'<tr><td style="padding:0;border-top:1px solid #e2e8f0;border-bottom:1px solid {gs["card_border"]};background:#ffffff;">{exposure_html}</td></tr>' if exposure_html else ""
                     notice_text = _esc((a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice",""))
                     notice_row = f'<tr><td class="care-td" bgcolor="#f8fafc" style="padding:10px 16px;background:#f8fafc;border-top:1px solid #e2e8f0;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#334155;">고객케어 안내 추천 문구</span></p><p style="margin:0;font-size:12px;color:#334155;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
@@ -3056,7 +3052,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
     body, table, td, th, p, span, a, div {{ color-scheme: light only !important; }}
     .header-td  {{ background: #3b5491 !important; }}
     .card-bg    {{ background: #ffffff !important; color: #1e293b !important; }}
-    .action-td  {{ background: #fef2f2 !important; }}
+    .action-td  {{ background: #ffffff !important; }}
     .care-td    {{ background: #f8fafc !important; }}
     .ref-bg     {{ background: #f8fbff !important; }}
     a           {{ color: #4a6099 !important; }}
