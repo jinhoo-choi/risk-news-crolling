@@ -2520,10 +2520,11 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         chips = " &nbsp;·&nbsp; ".join(
             f'<span style="font-weight:600;color:#334155;">{n}</span>' for n in names)
         return (
-            f'<div style="margin-top:8px;padding-top:6px;border-top:1px dashed #e2e8f0;">'
-            f'<span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:2px;font-weight:700;">관련주</span>'
-            f'<span style="font-size:12px;color:#334155;margin-left:8px;">{chips}</span>'
-            f'</div>'
+            f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:8px;padding-top:6px;border-top:1px dashed #e2e8f0;"><tr>'
+            f'<td valign="top" style="width:80px;white-space:nowrap;">'
+            f'<span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:2px;font-weight:700;">관련주</span></td>'
+            f'<td style="padding-left:8px;font-size:12px;color:#334155;">{chips}</td>'
+            f'</tr></table>'
         )
 
     # 3개 다 없으면 → 관련주 확인 후 없으면 잔고 없음
@@ -2545,8 +2546,11 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                         break
         if related_name and related_rows:
             inner_r = (
-                f'<div><span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:2px;font-weight:700;">관련주</span>'
-                f'<span style="font-size:12px;color:#334155;margin-left:8px;font-weight:600;">{related_name}</span></div>'
+                f'<table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>'
+                f'<td valign="top" style="width:80px;white-space:nowrap;">'
+                f'<span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:2px;font-weight:700;">관련주</span></td>'
+                f'<td style="padding-left:8px;font-size:12px;color:#334155;font-weight:600;">{related_name}</td>'
+                f'</tr></table>'
             )
             # AI related_stocks도 추가
             _seen_e = set(entities_list) | {related_name}
@@ -2637,7 +2641,7 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
 
     _C_BANK   = '#2563eb'  # 뱅키스 채널 컬러 (여신표와 동일)
     _C_BRANCH = '#8b5e3c'  # 영업점 채널 컬러
-    _VAL_W = 130            # 값 컬럼 폭 — 리스크잔고 서브라인 수용 위해 120→130
+    _VAL_W = 140            # 값 컬럼 폭 — 리스크잔고 서브라인 수용 위해 120→130→140
 
     def _ch_val(v, pre):
         """채널 셀 값 — 'X억 (Y명)', 잔고·고객 모두 0이면 '-'"""
@@ -2661,8 +2665,10 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                            key=lambda kv: -max(kv[1].get("뱅잔고", 0), kv[1].get("영잔고", 0)))
             shown, rest = items[:CHANNEL_MAX_ITEMS], items[CHANNEL_MAX_ITEMS:]
             _td_n = f'width="150" style="font-size:12px;font-weight:700;color:#1e293b;padding:6px 8px 6px 0;white-space:nowrap;vertical-align:top;"'
-            _td_v = f'width="{_VAL_W}" align="center" style="font-size:12px;color:#1e293b;padding:6px 8px;white-space:nowrap;vertical-align:top;"'
-            _td_v2 = f'width="{_VAL_W}" align="center" style="font-size:12px;color:#1e293b;padding:6px 8px;white-space:nowrap;vertical-align:top;border-left:1px solid #f1f5f9;"'
+            # 뱅키스 칸은 우측 패딩을 넉넉히, 영업점 칸은 좌측 패딩을 넉넉히 줘서
+            # 구분선(연한 회색) 양옆으로 여백이 생기도록 — "벌어진" 느낌
+            _td_v = f'width="{_VAL_W}" align="center" style="font-size:12px;color:#1e293b;padding:6px 16px 6px 8px;white-space:nowrap;vertical-align:top;"'
+            _td_v2 = f'width="{_VAL_W}" align="center" style="font-size:12px;color:#1e293b;padding:6px 8px 6px 18px;white-space:nowrap;vertical-align:top;border-left:1px solid #e2e8f0;"'
             rows = "".join(
                 f'<tr style="border-bottom:1px solid #f8fafc;">'
                 f'<td {_td_n}>{_trunc_name(n)}</td>'
@@ -2673,8 +2679,8 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                 def _sumv(pre, key):
                     return sum(v.get(f"{pre}{key}", 0) for _, v in rest)
                 rows += (f'<tr><td style="font-size:11px;color:#94a3b8;padding:6px 8px 2px 0;white-space:nowrap;">外 {len(rest)}개</td>'
-                         f'<td width="{_VAL_W}" align="center" style="font-size:11px;color:#94a3b8;padding:6px 8px 2px;white-space:nowrap;">{_sumv("뱅","잔고"):,.0f}억 ({_sumv("뱅","고객수"):,}명)</td>'
-                         f'<td width="{_VAL_W}" align="center" style="font-size:11px;color:#94a3b8;padding:6px 8px 2px;white-space:nowrap;border-left:1px solid #f1f5f9;">{_sumv("영","잔고"):,.0f}억 ({_sumv("영","고객수"):,}명)</td></tr>')
+                         f'<td width="{_VAL_W}" align="center" style="font-size:11px;color:#94a3b8;padding:6px 16px 2px 8px;white-space:nowrap;">{_sumv("뱅","잔고"):,.0f}억 ({_sumv("뱅","고객수"):,}명)</td>'
+                         f'<td width="{_VAL_W}" align="center" style="font-size:11px;color:#94a3b8;padding:6px 8px 2px 18px;white-space:nowrap;border-left:1px solid #e2e8f0;">{_sumv("영","잔고"):,.0f}억 ({_sumv("영","고객수"):,}명)</td></tr>')
             # width="100%" 미지정 — 내용만큼만 폭을 차지하고 좌측으로 뭉치도록(카드 우측에 여백,
             # 종목명·값 사이 중간 여백 제거). table-layout 강제하지 않아 긴 종목명은 자연 확장됨
             return f'<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">{rows}</table>'
@@ -2740,18 +2746,18 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
     else:
         inner = DIVIDER.join(sections)
         # 채널 모드 — ● 뱅키스 | ● 영업점 컬럼 헤더 (badge 80px + 종목명 150px 오프셋,
-        # 데이터 행과 동일한 폭 구조로 중첩해 값 컬럼 위치를 정확히 정렬)
+        # 데이터 행과 동일한 폭·패딩 구조로 값 컬럼 위치를 정확히 정렬).
+        # 밑줄이 카드 우측 끝까지 이어지도록 트레일링 스페이서 컬럼을 같은 행에 추가
         if any('뱅잔고' in r for r in all_rows):
+            _bb = 'border-bottom:1px solid #e2e8f0;'
             _ch_header = (
-                '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:6px;"><tr>'
-                '<td style="width:80px;">&nbsp;</td>'
-                '<td>'
-                '<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr>'
-                '<td width="150" style="border-bottom:1px solid #e2e8f0;">&nbsp;</td>'
-                f'<td width="130" align="center" style="padding:2px 8px 4px;font-size:10px;font-weight:700;color:{_C_BANK};border-bottom:1px solid #e2e8f0;white-space:nowrap;">● 뱅키스</td>'
-                f'<td width="130" align="center" style="padding:2px 8px 4px;font-size:10px;font-weight:700;color:{_C_BRANCH};border-bottom:1px solid #e2e8f0;white-space:nowrap;">● 영업점</td>'
-                '</tr></table>'
-                '</td>'
+                '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:8px;border-collapse:collapse;"><tr>'
+                f'<td width="80" style="{_bb}">&nbsp;</td>'
+                f'<td width="8" style="{_bb}">&nbsp;</td>'
+                f'<td width="150" style="{_bb}">&nbsp;</td>'
+                f'<td width="{_VAL_W}" align="center" style="padding:2px 16px 5px 8px;font-size:10px;font-weight:700;color:{_C_BANK};{_bb}white-space:nowrap;">● 뱅키스</td>'
+                f'<td width="{_VAL_W}" align="center" style="padding:2px 8px 5px 18px;font-size:10px;font-weight:700;color:{_C_BRANCH};{_bb}white-space:nowrap;">● 영업점</td>'
+                f'<td style="{_bb}">&nbsp;</td>'
                 '</tr></table>'
             )
             inner = _ch_header + inner
@@ -2779,10 +2785,11 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         _chips = " &nbsp;·&nbsp; ".join(
             f'<span style="font-weight:600;color:#334155;">{n}</span>' for n in _names)
         return (
-            f'<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #e2e8f0;">'
-            f'<span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:2px;font-weight:700;">관련주</span>'
-            f'<span style="font-size:12px;color:#334155;margin-left:8px;">{_chips}</span>'
-            f'</div>'
+            f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:10px;padding-top:8px;border-top:1px dashed #e2e8f0;"><tr>'
+            f'<td valign="top" style="width:80px;white-space:nowrap;">'
+            f'<span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:2px;font-weight:700;">관련주</span></td>'
+            f'<td style="padding-left:8px;font-size:12px;color:#334155;">{_chips}</td>'
+            f'</tr></table>'
         )
 
     _art = article or {}
