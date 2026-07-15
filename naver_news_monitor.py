@@ -559,7 +559,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             </tr>'''
 
     _has_channel = any(a[11] for a in display_alerted)
-    _legend = (f' &nbsp;·&nbsp; <span style="color:{_C_BANK};font-weight:700;">● 뱅키스</span>'
+    _legend = (f'<span style="color:{_C_BANK};font-weight:700;">● 뱅키스</span>'
                f' &nbsp;<span style="color:{_C_BRANCH};font-weight:700;">● 영업점</span>') if _has_channel else ''
 
     return f'''
@@ -569,12 +569,15 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
           <table width="100%" cellpadding="0" cellspacing="0" border="0">
             <tr>
               <td style="font-size:14px;font-weight:500;color:#f8fafc;white-space:nowrap;">📉 여신잔고 리스크 현황</td>
-              <td align="right" class="loan-hdr-right" style="font-size:12px;color:#94a3b8;padding-left:10px;white-space:nowrap;">단일종목 여신잔고 1억↑ 종목 {total_count}개 · {bal_date_label} 기준</td>
+              <td align="right" style="font-size:11px;padding-left:10px;white-space:nowrap;">{_legend}</td>
             </tr>
             <tr>
-              <td colspan="2" style="padding-top:5px;">
+              <td colspan="2" style="padding-top:3px;">
                 <span style="font-size:12px;color:#fbbf24;">⚠ 위험고객: 단일종목 여신잔고 1억원이상 · 담보유지비율 140%~150%</span>
               </td>
+            </tr>
+            <tr>
+              <td colspan="2" class="loan-hdr-right" style="font-size:11px;color:#94a3b8;padding-top:2px;white-space:nowrap;">단일종목 여신잔고 1억↑ 종목 {total_count}개 · {bal_date_label} 기준</td>
             </tr>
           </table>
         </td>
@@ -596,7 +599,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
             {('<tr style="background:#fff3cd;"><td colspan="4" style="padding:8px 10px;font-size:11px;color:#92400e;font-weight:600;border-top:1px solid #fde68a;">&#9888; 외 ' + str(len(extra_alerted)) + '개 종목 추가 탐지 — 담당자 즉시 확인 <span style="font-weight:400;color:#b45309;font-size:10px;">(' + ", ".join([x[0] for x in sorted(extra_alerted, key=lambda x: x[4], reverse=True)[:5]]) + ("..." if len(extra_alerted) > 5 else "") + ')</span></td></tr>') if extra_alerted else ''}
             <tr bgcolor="#fafafa" style="background:#fafafa;">
               <td colspan="4" style="padding:7px 10px;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
-                가격·등락률 출처: 야후파이낸스 (15분 지연) &nbsp;·&nbsp; 당일 -5% 초과 하락 + 위험고객 보유 종목만 표시{_legend}
+                가격·등락률 출처: 야후파이낸스 (15분 지연) &nbsp;·&nbsp; 당일 -5% 초과 하락 + 위험고객 보유 종목만 표시
               </td>
             </tr>
           </tbody>
@@ -2522,7 +2525,8 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         return (
             f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:8px;padding-top:6px;border-top:1px dashed #e2e8f0;"><tr>'
             f'<td valign="top" style="width:80px;white-space:nowrap;">'
-            f'<span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:2px;font-weight:700;">관련주</span></td>'
+            f'<span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 6px 1px 6px;border-radius:2px 0 0 2px;font-weight:700;">관련주</span>'
+            f'<span style="font-size:9px;background:#eff6ff;color:#60a5fa;padding:1px 5px;border-radius:0 2px 2px 0;font-weight:600;">AI 추출</span></td>'
             f'<td style="padding-left:8px;font-size:12px;color:#334155;">{chips}</td>'
             f'</tr></table>'
         )
@@ -2548,7 +2552,8 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             inner_r = (
                 f'<table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>'
                 f'<td valign="top" style="width:80px;white-space:nowrap;">'
-                f'<span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:2px;font-weight:700;">관련주</span></td>'
+                f'<span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 6px 1px 6px;border-radius:2px 0 0 2px;font-weight:700;">관련주</span>'
+            f'<span style="font-size:9px;background:#eff6ff;color:#60a5fa;padding:1px 5px;border-radius:0 2px 2px 0;font-weight:600;">AI 추출</span></td>'
                 f'<td style="padding-left:8px;font-size:12px;color:#334155;font-weight:600;">{related_name}</td>'
                 f'</tr></table>'
             )
@@ -2557,11 +2562,10 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             for _ge in entities_list:
                 _seen_e.update(GROUP_ENTITIES_MAP.get(_ge, []))
             _ai_rs_html = _early_related_html(_art.get("related_stocks"), _seen_e)
-            _ai_badge1 = _AI_BADGE if _ai_rs_html else ""
             return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:10px 16px;">
         <p style="margin:0 0 6px 0;font-size:11px;font-weight:700;color:#1e293b;">한국투자증권 익스포저
-          <span style="font-weight:400;color:#94a3b8;">{date_label}</span>{_ai_badge1}
+          <span style="font-weight:400;color:#94a3b8;">{date_label}</span>
         </p>
         {inner_r}{_ai_rs_html}
       </td></tr>
@@ -2572,11 +2576,10 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             _seen_e2.update(GROUP_ENTITIES_MAP.get(_ge, []))
         _rs2_html = _early_related_html((_art).get("related_stocks"), _seen_e2)
         _inner2 = '<div style="font-size:12px;color:#94a3b8;">잔고 없음</div>' if not _rs2_html else ""
-        _ai_badge2 = _AI_BADGE if _rs2_html else ""
         return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:10px 16px;">
         <p style="margin:0 0 4px 0;font-size:11px;font-weight:700;color:#1e293b;">한국투자증권 익스포저
-          <span style="font-weight:400;color:#94a3b8;">{date_label}</span>{_ai_badge2}
+          <span style="font-weight:400;color:#94a3b8;">{date_label}</span>
         </p>
         {_inner2}{_rs2_html}
       </td></tr>
@@ -2652,38 +2655,49 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         return f'{bal_str}억 ({cus:,}명)'
 
     def _trunc_name(n: str, limit: int = 14) -> str:
-        """종목명 말줄임 — 긴 명칭(리츠·SPC 등)이 150px 컬럼을 밀어내 섹션 간
-        값 컬럼 정렬이 깨지는 문제 방지"""
-        return n if len(n) <= limit else n[:limit - 1] + '…'
+        """종목명 말줄임 — 긴 명칭(리츠·SPC 등)이 컬럼을 밀어내 섹션 간
+        값 컬럼 정렬이 깨지는 문제 방지 (문자수 제한 + CSS 폭 강제 이중 적용)"""
+        short = n if len(n) <= limit else n[:limit - 1] + '…'
+        # td width="100"는 auto layout에서 강제력이 약해(한글은 폭이 넓어 14자도
+        # 100px를 초과) div로 감싸 overflow:hidden 하드 클립 — 섹션 간 정렬 보장
+        return f'<div style="max-width:92px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{short}</div>'
 
     def _fmt_merged_limited(merged: dict) -> str:
         """종목유형 섹션 본문 — 채널 데이터 있으면 종목명|뱅키스|영업점 행정렬 3컬럼,
-        위험고객 리스크잔고 서브라인 병기, 상위 2개만 노출하고 나머지는 外 요약행
-        (합산 미표기 — 중복고객으로 단순합산 부정확), 없으면(구 12컬럼) 기존 단일 리스트"""
+        상위 2개만 노출하고 나머지는 外 요약행(합산 미표기 — 중복고객으로 단순합산
+        부정확), 없으면(구 12컬럼) 기존 단일 리스트.
+        값 영역(뱅키스+영업점)은 nested width=100% 2분할 테이블로 구성 —
+        종목명 칸은 좁게(100px) 유지하면서 남는 공간을 값 영역이 전부 채워
+        카드 우측에 빈 여백이 남지 않도록 함."""
         if any(v.get("_ch") for v in merged.values()):
             items = sorted(merged.items(),
                            key=lambda kv: -max(kv[1].get("뱅잔고", 0), kv[1].get("영잔고", 0)))
             shown, rest = items[:CHANNEL_MAX_ITEMS], items[CHANNEL_MAX_ITEMS:]
-            _td_n = f'width="150" style="font-size:12px;font-weight:700;color:#1e293b;padding:6px 8px 6px 0;white-space:nowrap;vertical-align:top;"'
-            # 뱅키스 칸은 우측 패딩을 넉넉히, 영업점 칸은 좌측 패딩을 넉넉히 줘서
-            # 구분선(연한 회색) 양옆으로 여백이 생기도록 — "벌어진" 느낌
-            _td_v = f'width="{_VAL_W}" align="center" style="font-size:12px;color:#1e293b;padding:6px 16px 6px 8px;white-space:nowrap;vertical-align:top;"'
-            _td_v2 = f'width="{_VAL_W}" align="center" style="font-size:12px;color:#1e293b;padding:6px 8px 6px 18px;white-space:nowrap;vertical-align:top;border-left:1px solid #e2e8f0;"'
+
+            def _val_pair(bank_html, branch_html, muted=False):
+                color = "#94a3b8" if muted else "#1e293b"
+                return (
+                    f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr>'
+                    f'<td width="50%" align="center" style="font-size:{"11" if muted else "12"}px;color:{color};padding:6px 10px;white-space:nowrap;vertical-align:top;">{bank_html}</td>'
+                    f'<td width="50%" align="center" style="font-size:{"11" if muted else "12"}px;color:{color};padding:6px 10px;white-space:nowrap;vertical-align:top;border-left:1px solid #e2e8f0;">{branch_html}</td>'
+                    f'</tr></table>'
+                )
+
+            _td_n = 'width="100" style="font-size:12px;font-weight:700;color:#1e293b;padding:6px 6px 6px 0;white-space:nowrap;vertical-align:top;"'
             rows = "".join(
                 f'<tr style="border-bottom:1px solid #f8fafc;">'
                 f'<td {_td_n}>{_trunc_name(n)}</td>'
-                f'<td {_td_v}>{_ch_val(v, "뱅")}</td>'
-                f'<td {_td_v2}>{_ch_val(v, "영")}</td></tr>'
+                f'<td style="padding:0;vertical-align:top;">{_val_pair(_ch_val(v, "뱅"), _ch_val(v, "영"))}</td></tr>'
                 for n, v in shown)
             if rest:
                 def _sumv(pre, key):
                     return sum(v.get(f"{pre}{key}", 0) for _, v in rest)
-                rows += (f'<tr><td style="font-size:11px;color:#94a3b8;padding:6px 8px 2px 0;white-space:nowrap;">外 {len(rest)}개</td>'
-                         f'<td width="{_VAL_W}" align="center" style="font-size:11px;color:#94a3b8;padding:6px 16px 2px 8px;white-space:nowrap;">{_sumv("뱅","잔고"):,.0f}억 ({_sumv("뱅","고객수"):,}명)</td>'
-                         f'<td width="{_VAL_W}" align="center" style="font-size:11px;color:#94a3b8;padding:6px 8px 2px 18px;white-space:nowrap;border-left:1px solid #e2e8f0;">{_sumv("영","잔고"):,.0f}억 ({_sumv("영","고객수"):,}명)</td></tr>')
-            # width="100%" 미지정 — 내용만큼만 폭을 차지하고 좌측으로 뭉치도록(카드 우측에 여백,
-            # 종목명·값 사이 중간 여백 제거). table-layout 강제하지 않아 긴 종목명은 자연 확장됨
-            return f'<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">{rows}</table>'
+                bank_sum = f'{_sumv("뱅","잔고"):,.0f}억 ({_sumv("뱅","고객수"):,}명)'
+                branch_sum = f'{_sumv("영","잔고"):,.0f}억 ({_sumv("영","고객수"):,}명)'
+                rows += (f'<tr><td style="font-size:11px;color:#94a3b8;padding:6px 6px 2px 0;white-space:nowrap;">外 {len(rest)}개</td>'
+                         f'<td style="padding:0;vertical-align:top;">{_val_pair(bank_sum, branch_sum, muted=True)}</td></tr>')
+            # 종목명 칸(100px)만 고정, 나머지는 width=100% 테이블 전체 — 카드 우측까지 항상 채움
+            return f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">{rows}</table>'
         items = sorted(merged.items(), key=lambda kv: -kv[1]["잔고"])
         shown = items[:MAX_DISPLAY_ITEMS]
         rest = items[MAX_DISPLAY_ITEMS:]
@@ -2745,19 +2759,22 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         inner = '<div style="font-size:12px;color:#94a3b8;">잔고 없음</div>'
     else:
         inner = DIVIDER.join(sections)
-        # 채널 모드 — ● 뱅키스 | ● 영업점 컬럼 헤더 (badge 80px + 종목명 150px 오프셋,
-        # 데이터 행과 동일한 폭·패딩 구조로 값 컬럼 위치를 정확히 정렬).
-        # 밑줄이 카드 우측 끝까지 이어지도록 트레일링 스페이서 컬럼을 같은 행에 추가
+        # 채널 모드 — ● 뱅키스 | ● 영업점 컬럼 헤더. 데이터 행과 동일한 구조
+        # (badge 80px + 종목명 100px + nested width=100% 2분할 값 영역)로 값
+        # 컬럼 위치와 밑줄이 정확히 일치·카드 우측 끝까지 이어지도록 함
         if any('뱅잔고' in r for r in all_rows):
             _bb = 'border-bottom:1px solid #e2e8f0;'
             _ch_header = (
                 '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:8px;border-collapse:collapse;"><tr>'
                 f'<td width="80" style="{_bb}">&nbsp;</td>'
                 f'<td width="8" style="{_bb}">&nbsp;</td>'
-                f'<td width="150" style="{_bb}">&nbsp;</td>'
-                f'<td width="{_VAL_W}" align="center" style="padding:2px 16px 5px 8px;font-size:10px;font-weight:700;color:{_C_BANK};{_bb}white-space:nowrap;">● 뱅키스</td>'
-                f'<td width="{_VAL_W}" align="center" style="padding:2px 8px 5px 18px;font-size:10px;font-weight:700;color:{_C_BRANCH};{_bb}white-space:nowrap;">● 영업점</td>'
-                f'<td style="{_bb}">&nbsp;</td>'
+                f'<td width="100" style="{_bb}">&nbsp;</td>'
+                f'<td style="padding:0;{_bb}">'
+                f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr>'
+                f'<td width="50%" align="center" style="padding:2px 10px 5px;font-size:10px;font-weight:700;color:{_C_BANK};white-space:nowrap;">● 뱅키스</td>'
+                f'<td width="50%" align="center" style="padding:2px 10px 5px;font-size:10px;font-weight:700;color:{_C_BRANCH};white-space:nowrap;border-left:1px solid #e2e8f0;">● 영업점</td>'
+                f'</tr></table>'
+                f'</td>'
                 '</tr></table>'
             )
             inner = _ch_header + inner
@@ -2787,7 +2804,8 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         return (
             f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:10px;padding-top:8px;border-top:1px dashed #e2e8f0;"><tr>'
             f'<td valign="top" style="width:80px;white-space:nowrap;">'
-            f'<span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 6px;border-radius:2px;font-weight:700;">관련주</span></td>'
+            f'<span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 6px 1px 6px;border-radius:2px 0 0 2px;font-weight:700;">관련주</span>'
+            f'<span style="font-size:9px;background:#eff6ff;color:#60a5fa;padding:1px 5px;border-radius:0 2px 2px 0;font-weight:600;">AI 추출</span></td>'
             f'<td style="padding-left:8px;font-size:12px;color:#334155;">{_chips}</td>'
             f'</tr></table>'
         )
@@ -2799,14 +2817,33 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
     for _ent in entities_list:
         _seen_related.update(GROUP_ENTITIES_MAP.get(_ent, []))
     related_html = _build_related_html(_rs_raw, _seen_related)
-    _ai_badge3 = _AI_BADGE if related_html else ""
+
+    _title = (
+        f'<span style="font-size:11px;font-weight:700;color:#1e293b;">한국투자증권 익스포저</span>'
+        f' <span style="font-weight:400;color:#94a3b8;font-size:11px;">{date_label}</span>'
+    )
+    _body = f'{inner}{related_html}'
+
+    # 폴딩: 계열사 등으로 섹션이 3개 이상 쌓여 카드가 길어질 때만 details/summary 적용.
+    # open 속성으로 기본은 항상 펼친 상태 — 접기 미지원 클라이언트(Outlook 등)도
+    # 기존과 동일하게 전체 표시되며, 지원 클라이언트(Gmail·Apple Mail 등)에서만
+    # summary 클릭으로 접을 수 있는 점진적 향상(progressive enhancement) 방식
+    if len(sections) > 2:
+        return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
+      <tr><td style="padding:14px 18px;">
+        <details open style="cursor:pointer;">
+          <summary style="margin:0 0 10px 0;list-style:revert;cursor:pointer;">{_title}
+            <span style="font-size:10px;color:#94a3b8;font-weight:400;">(종목유형 {len(sections)}개 · 클릭해서 접기/펼치기)</span>
+          </summary>
+          {_body}
+        </details>
+      </td></tr>
+    </table>'''
 
     return f'''<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
       <tr><td style="padding:14px 18px;">
-        <p style="margin:0 0 10px 0;font-size:11px;font-weight:700;color:#1e293b;">한국투자증권 익스포저
-          <span style="font-weight:400;color:#94a3b8;">{date_label}</span>{_ai_badge3}
-        </p>
-        {inner}{related_html}
+        <p style="margin:0 0 10px 0;">{_title}</p>
+        {_body}
       </td></tr>
     </table>'''
 
