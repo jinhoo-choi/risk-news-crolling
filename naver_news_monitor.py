@@ -2644,10 +2644,11 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
 
     _C_BANK   = '#2563eb'  # 뱅키스 채널 컬러 (여신표와 동일)
     _C_BRANCH = '#8b5e3c'  # 영업점 채널 컬러
-    _VAL_W = 140  # 값 컬럼 고정폭(px) — 헤더·top1·外 각 행이 독립된 nested table이라
+    _VAL_W = 205  # 값 컬럼 고정폭(px) — 헤더·top1·外 각 행이 독립된 nested table이라
                   # width=50% 등 상대폭을 쓰면 행마다 텍스트 길이에 따라 실제 렌더 폭이
                   # 미세하게 달라져 구분선이 행마다 어긋나 보임. 고정 px로 모든 행·헤더에
-                  # 동일하게 적용해 세로 구분선이 항상 같은 위치에 오도록 함
+                  # 동일하게 적용해 세로 구분선이 항상 같은 위치에 오도록 하고, 카드 실제
+                  # 폭(약 602px)에 맞춰 값을 계산해 우측 여백도 최소화
 
     def _ch_val(v, pre):
         """채널 셀 값 — 'X억 (Y명)', 잔고·고객 모두 0이면 '-'"""
