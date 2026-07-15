@@ -2644,7 +2644,6 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
 
     _C_BANK   = '#2563eb'  # 뱅키스 채널 컬러 (여신표와 동일)
     _C_BRANCH = '#8b5e3c'  # 영업점 채널 컬러
-    _VAL_W = 140            # 값 컬럼 폭 — 리스크잔고 서브라인 수용 위해 120→130→140
 
     def _ch_val(v, pre):
         """채널 셀 값 — 'X억 (Y명)', 잔고·고객 모두 0이면 '-'"""
