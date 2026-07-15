@@ -2667,40 +2667,40 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         return f'<div style="max-width:92px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{short}</div>'
 
     def _fmt_merged_limited(merged: dict) -> str:
-        """종목유형 섹션 본문 — 채널 데이터 있으면 종목명|뱅키스|영업점 행정렬 3컬럼,
-        상위 2개만 노출하고 나머지는 外 요약행(합산 미표기 — 중복고객으로 단순합산
-        부정확), 없으면(구 12컬럼) 기존 단일 리스트.
-        값 영역(뱅키스+영업점)은 nested width=100% 2분할 테이블로 구성 —
-        종목명 칸은 좁게(100px) 유지하면서 남는 공간을 값 영역이 전부 채워
-        카드 우측에 빈 여백이 남지 않도록 함.
+        """종목유형 섹션 본문 — 채널 데이터 있으면 종목명|뱅키스|영업점 단일 평면
+        3컬럼 표(헤더와 완전히 동일한 컬럼 구조: width=100+205+205, nesting 없음)로
+        구성. 상위 2개만 노출, 나머지는 外 요약행(합산 미표기 — 중복고객으로
+        단순합산 부정확), 없으면(구 12컬럼) 기존 단일 리스트.
         기사와 직접 연동되는 top1만 기본 노출, 나머지(外)는 <details>로
-        접어둠(기본 닫힘) — 클릭하면 개별 종목 행으로 펼쳐짐."""
+        접어둠(기본 닫힘) — 클릭하면 개별 종목 행으로 펼쳐짐.
+        [정렬 원칙] 중첩 테이블을 쓰면 헤더(단일 레벨)와 데이터 행(중첩 레벨)
+        컬럼 폭 계산 경로가 달라져 렌더링 엔진에 따라 미세하게 어긋날 수 있음
+        — 헤더·top1·外 모두 동일한 단일 레벨 3컬럼 구조로 통일해 원천 차단."""
         if any(v.get("_ch") for v in merged.values()):
             items = sorted(merged.items(),
                            key=lambda kv: -max(kv[1].get("뱅잔고", 0), kv[1].get("영잔고", 0)))
             shown, rest = items[:CHANNEL_MAX_ITEMS], items[CHANNEL_MAX_ITEMS:]
 
-            def _val_pair(bank_html, branch_html, muted=False):
+            _td_n = 'width="100" style="font-size:12px;font-weight:700;color:#1e293b;padding:8px 6px 8px 0;white-space:nowrap;vertical-align:top;"'
+
+            def _row(n, v, muted=False):
+                bank = _ch_val(v, "뱅"); branch = _ch_val(v, "영")
                 color = "#94a3b8" if muted else "#1e293b"
                 fs = "11" if muted else "12"
                 return (
-                    f'<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;"><tr>'
-                    f'<td width="{_VAL_W}" align="center" style="text-align:center;font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{bank_html}</td>'
-                    f'<td width="{_VAL_W}" align="center" style="text-align:center;font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{branch_html}</td>'
-                    f'</tr></table>'
+                    f'<tr style="border-bottom:1px solid #f8fafc;">'
+                    f'<td {_td_n}>{_trunc_name(n)}</td>'
+                    f'<td width="{_VAL_W}" align="center" style="text-align:center;font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{bank}</td>'
+                    f'<td width="{_VAL_W}" align="center" style="text-align:center;font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{branch}</td>'
+                    f'</tr>'
                 )
 
-            _td_n = 'width="100" style="font-size:12px;font-weight:700;color:#1e293b;padding:8px 6px 8px 0;white-space:nowrap;vertical-align:top;"'
-            _row = lambda n, v: (
-                f'<tr style="border-bottom:1px solid #f8fafc;">'
-                f'<td {_td_n}>{_trunc_name(n)}</td>'
-                f'<td style="padding:0;vertical-align:top;">{_val_pair(_ch_val(v, "뱅"), _ch_val(v, "영"))}</td></tr>')
-            top_table = f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">{"".join(_row(n, v) for n, v in shown)}</table>'
+            top_table = f'<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;">{"".join(_row(n, v) for n, v in shown)}</table>'
 
             if not rest:
                 return top_table
 
-            rest_table = f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">{"".join(_row(n, v) for n, v in rest)}</table>'
+            rest_table = f'<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;">{"".join(_row(n, v) for n, v in rest)}</table>'
             # 外 항목은 기본 닫힘(details, open 속성 없음) — 클릭 시 개별 종목 행으로 펼쳐짐.
             # 합산잔고·고객수는 표기하지 않음(중복고객 존재로 단순합산 부정확 — 안내 문구만)
             fold = (
@@ -2771,19 +2771,24 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         inner = '<div style="font-size:12px;color:#94a3b8;">잔고 없음</div>'
     else:
         inner = DIVIDER.join(sections)
-        # 채널 모드 — ● 뱅키스 | ● 영업점 컬럼 헤더. 데이터 행과 동일한 구조
-        # (badge 80px + 종목명 100px + 고정폭 값 컬럼)로 값 컬럼 위치와
-        # 세로 구분선이 모든 행·헤더에서 정확히 일치하도록 함
+        # 채널 모드 — 뱅키스 | 영업점 컬럼 헤더.
+        # 데이터 행과 '동일한 래핑 구조'(badge td width=80 + padding-left:8px로
+        # 감싼 name(100)+val(205)+val(205) 3컬럼 표)를 그대로 재사용 — 헤더만
+        # 별도의 단일 평면 6컬럼 표를 썼을 때 데이터 행(2단 래핑)과 컬럼 폭
+        # 계산 경로가 달라 미세하게 어긋나던 근본 원인을 제거
         if any('뱅잔고' in r for r in all_rows):
             _bb = 'border-bottom:1px solid #e2e8f0;'
-            _ch_header = (
-                '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:8px;border-collapse:collapse;"><tr>'
-                f'<td width="80" style="{_bb}">&nbsp;</td>'
-                f'<td width="8" style="{_bb}">&nbsp;</td>'
+            _header_inner = (
+                f'<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;"><tr>'
                 f'<td width="100" style="{_bb}">&nbsp;</td>'
                 f'<td width="{_VAL_W}" align="center" style="text-align:center;padding:2px 10px 5px;font-size:10px;font-weight:700;color:{_C_BANK};{_bb}white-space:nowrap;">뱅키스</td>'
                 f'<td width="{_VAL_W}" align="center" style="text-align:center;padding:2px 10px 5px;font-size:10px;font-weight:700;color:{_C_BRANCH};{_bb}white-space:nowrap;">영업점</td>'
-                f'<td style="{_bb}">&nbsp;</td>'
+                f'</tr></table>'
+            )
+            _ch_header = (
+                '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:8px;"><tr>'
+                f'<td style="width:80px;{_bb}">&nbsp;</td>'
+                f'<td style="padding-left:8px;{_bb}">{_header_inner}</td>'
                 '</tr></table>'
             )
             inner = _ch_header + inner
