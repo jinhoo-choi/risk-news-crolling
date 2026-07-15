@@ -2690,8 +2690,8 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                 return (
                     f'<tr style="border-bottom:1px solid #f8fafc;">'
                     f'<td {_td_n}>{_trunc_name(n)}</td>'
-                    f'<td width="{_VAL_W}" align="center" style="text-align:center;font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{bank}</td>'
-                    f'<td width="{_VAL_W}" align="center" style="text-align:center;font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{branch}</td>'
+                    f'<td width="{_VAL_W}" align="center" style="box-sizing:border-box;text-align:center;font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{bank}</td>'
+                    f'<td width="{_VAL_W}" align="center" style="box-sizing:border-box;text-align:center;font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{branch}</td>'
                     f'</tr>'
                 )
 
@@ -2781,8 +2781,8 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             _header_inner = (
                 f'<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;"><tr>'
                 f'<td width="100" style="{_bb}">&nbsp;</td>'
-                f'<td width="{_VAL_W}" align="center" style="text-align:center;padding:2px 10px 5px;font-size:10px;font-weight:700;color:{_C_BANK};{_bb}white-space:nowrap;">뱅키스</td>'
-                f'<td width="{_VAL_W}" align="center" style="text-align:center;padding:2px 10px 5px;font-size:10px;font-weight:700;color:{_C_BRANCH};{_bb}white-space:nowrap;">영업점</td>'
+                f'<td width="{_VAL_W}" align="center" style="box-sizing:border-box;text-align:center;padding:2px 6px 5px;font-size:10px;font-weight:700;color:{_C_BANK};{_bb}white-space:nowrap;">뱅키스</td>'
+                f'<td width="{_VAL_W}" align="center" style="box-sizing:border-box;text-align:center;padding:2px 6px 5px;font-size:10px;font-weight:700;color:{_C_BRANCH};{_bb}white-space:nowrap;">영업점</td>'
                 f'</tr></table>'
             )
             _ch_header = (
