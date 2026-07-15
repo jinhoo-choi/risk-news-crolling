@@ -2686,7 +2686,7 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                 return (
                     f'<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;"><tr>'
                     f'<td width="{_VAL_W}" align="center" style="font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{bank_html}</td>'
-                    f'<td width="{_VAL_W}" align="center" style="font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;border-left:1px solid #e2e8f0;">{branch_html}</td>'
+                    f'<td width="{_VAL_W}" align="center" style="font-size:{fs}px;color:{color};padding:8px 6px;white-space:nowrap;vertical-align:top;">{branch_html}</td>'
                     f'</tr></table>'
                 )
 
@@ -2782,7 +2782,7 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                 f'<td width="8" style="{_bb}">&nbsp;</td>'
                 f'<td width="100" style="{_bb}">&nbsp;</td>'
                 f'<td width="{_VAL_W}" align="center" style="padding:2px 10px 5px;font-size:10px;font-weight:700;color:{_C_BANK};{_bb}white-space:nowrap;">● 뱅키스</td>'
-                f'<td width="{_VAL_W}" align="center" style="padding:2px 10px 5px;font-size:10px;font-weight:700;color:{_C_BRANCH};{_bb}white-space:nowrap;border-left:1px solid #e2e8f0;">● 영업점</td>'
+                f'<td width="{_VAL_W}" align="center" style="padding:2px 10px 5px;font-size:10px;font-weight:700;color:{_C_BRANCH};{_bb}white-space:nowrap;">● 영업점</td>'
                 f'<td style="{_bb}">&nbsp;</td>'
                 '</tr></table>'
             )
