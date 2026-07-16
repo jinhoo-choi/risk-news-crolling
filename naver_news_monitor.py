@@ -3344,6 +3344,14 @@ def _from_header() -> str:
     return formataddr((str(Header("❗리스크봇", "utf-8")), EMAIL_SENDER))
 
 
+def _addr_header(addr: str) -> str:
+    """수신자(To/Cc) 표시명도 발신자와 동일하게 '❗리스크봇'으로 통일해 반환.
+    risk_vip@googlegroups.com 같은 그룹 주소 자체가 목록에 그대로 노출되던 것을
+    표시명으로 가려 발신자·수신자 전부 '❗리스크봇'만 보이도록 함 — 주소는
+    From과 마찬가지로 클릭·원본보기 시에만 확인 가능(SMTP 특성상 완전 은닉 불가)."""
+    return formataddr((str(Header("❗리스크봇", "utf-8")), addr))
+
+
 def send_email_error(error_msg: str, trace: str):
     """런타임 오류 발생 시 담당자에게 오류 내용 메일 발송"""
     kst = timezone(timedelta(hours=9))
@@ -3384,7 +3392,7 @@ def send_email_error(error_msg: str, trace: str):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"❗ [리스크봇 오류] {now_str} 기준 — 런타임 오류 발생"
     msg["From"]    = _from_header()
-    msg["To"]      = receiver
+    msg["To"]      = _addr_header(receiver)
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
@@ -3401,7 +3409,7 @@ def send_email_no_result(subject: str, html_body: str):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = _from_header()
-    msg["To"]      = receiver
+    msg["To"]      = _addr_header(receiver)
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
@@ -3426,14 +3434,17 @@ def send_email(subject: str, html_body: str, self_only: bool = False):
         to_list = [_self_rcv]
         cc_list = []
     else:
-        to_list = EMAIL_RECEIVERS
-        cc_list = EMAIL_CC
+        # To는 그룹을 넣지 않고 발신자 자신으로 고정(RFC 권장 관행 — To가 비어있으면
+        # 스팸 필터에 걸릴 위험) — 실제 수신 그룹(risk_vip 포함) 전부 Cc로 통합해
+        # 모든 수신자가 동일한 '❗리스크봇' 표시명으로만 보이도록 함
+        to_list = [EMAIL_SENDER]
+        cc_list = EMAIL_RECEIVERS + EMAIL_CC
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = _from_header()
-    msg["To"]      = ", ".join(to_list)
+    msg["To"]      = _addr_header(to_list[0]) if len(to_list) == 1 else ", ".join(_addr_header(a) for a in to_list)
     if cc_list:
-        msg["Cc"] = ", ".join(cc_list)
+        msg["Cc"] = ", ".join(_addr_header(a) for a in cc_list)
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     _all_rcv = to_list + cc_list
     for attempt in range(3):
