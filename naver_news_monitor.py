@@ -3432,21 +3432,23 @@ def send_email(subject: str, html_body: str, self_only: bool = False):
     if self_only:
         _self_rcv = NO_RESULT_RECEIVER if NO_RESULT_RECEIVER else EMAIL_SENDER
         to_list = [_self_rcv]
-        cc_list = []
+        bcc_list = []
     else:
         # To는 그룹을 넣지 않고 발신자 자신으로 고정(RFC 권장 관행 — To가 비어있으면
-        # 스팸 필터에 걸릴 위험) — 실제 수신 그룹(risk_vip 포함) 전부 Cc로 통합해
-        # 모든 수신자가 동일한 '❗리스크봇' 표시명으로만 보이도록 함
+        # 스팸 필터에 걸릴 위험) — 실제 수신 그룹(risk_vip 포함) 전부 Bcc로 통합.
+        # Bcc는 메시지 헤더 자체에 포함하지 않고 SMTP 전달 대상(rcpt)에만 넣는 것이
+        # 표준 구현 방식 — 수신자에게는 From/To만 보이고 다른 수신자 목록은 전혀
+        # 노출되지 않음(CC와 달리 서로가 서로를 볼 수 없음)
         to_list = [EMAIL_SENDER]
-        cc_list = EMAIL_RECEIVERS + EMAIL_CC
+        bcc_list = EMAIL_RECEIVERS + EMAIL_CC
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = _from_header()
     msg["To"]      = _addr_header(to_list[0]) if len(to_list) == 1 else ", ".join(_addr_header(a) for a in to_list)
-    if cc_list:
-        msg["Cc"] = ", ".join(cc_list)
+    # Bcc 헤더는 의도적으로 설정하지 않음 — 설정 시 발송 전 제거해야 하는 번거로움과
+    # 실수로 노출될 위험이 있어, 애초에 헤더에 안 넣고 SMTP 레벨에서만 처리
     msg.attach(MIMEText(html_body, "html", "utf-8"))
-    _all_rcv = to_list + cc_list
+    _all_rcv = to_list + bcc_list
     for attempt in range(3):
         try:
             with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
