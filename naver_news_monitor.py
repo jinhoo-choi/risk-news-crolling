@@ -111,6 +111,8 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import unicodedata
 from email.utils import parsedate_to_datetime as _pdt
+from email.utils import formataddr
+from email.header import Header
 
 # group_map.json (DART 자동 매핑) 로드 — GROUP_ENTITIES_MAP에 병합
 # group_mapper.py가 생성. 없어도 GROUP_ENTITIES_MAP fallback으로 동작
@@ -3329,6 +3331,19 @@ def save_filter_log(raw_articles: list, hard_excluded: list, ai_filtered: list, 
     except Exception as e:
         print(f"  로그 저장 실패: {e}")
 
+def _from_header() -> str:
+    """발신자 From 헤더를 RFC 2047 규격으로 인코딩해 반환.
+    기존엔 f"❗ 개인고객그룹 리스크봇 <{EMAIL_SENDER}>" 형태로 한글·이모지가
+    섞인 문자열을 인코딩 없이 그대로 헤더에 넣었음 — 이러면 이메일 클라이언트마다
+    헤더 파싱 결과가 달라져(RFC 5322 위반 소지), 일부 클라이언트에서 발신자
+    표시명이 깨지거나 CC에 포함된 구글그룹 주소(risk_aigent@googlegroups.com)로
+    잘못 표시되는 현상이 있었음. formataddr()+Header()로 표시명만 RFC 2047
+    인코딩하고 주소는 순수 ASCII로 분리해 모든 클라이언트에서 일관되게
+    "❗ 개인고객그룹 리스크봇"으로만 표시되도록 함 (주소는 표시명 뒤에 숨어
+    기본 목록 뷰에서는 노출되지 않음 — 클릭·원본보기 시에는 SMTP 특성상 확인 가능)"""
+    return formataddr((str(Header("❗ 개인고객그룹 리스크봇", "utf-8")), EMAIL_SENDER))
+
+
 def send_email_error(error_msg: str, trace: str):
     """런타임 오류 발생 시 담당자에게 오류 내용 메일 발송"""
     kst = timezone(timedelta(hours=9))
@@ -3368,7 +3383,7 @@ def send_email_error(error_msg: str, trace: str):
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"❗ [리스크봇 오류] {now_str} 기준 — 런타임 오류 발생"
-    msg["From"]    = f"❗ 개인고객그룹 리스크봇 <{EMAIL_SENDER}>"
+    msg["From"]    = _from_header()
     msg["To"]      = receiver
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     try:
@@ -3385,7 +3400,7 @@ def send_email_no_result(subject: str, html_body: str):
     receiver = NO_RESULT_RECEIVER if NO_RESULT_RECEIVER else EMAIL_SENDER
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = f"❗ 개인고객그룹 리스크봇 <{EMAIL_SENDER}>"
+    msg["From"]    = _from_header()
     msg["To"]      = receiver
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     try:
@@ -3415,7 +3430,7 @@ def send_email(subject: str, html_body: str, self_only: bool = False):
         cc_list = EMAIL_CC
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = f"❗ 개인고객그룹 리스크봇 <{EMAIL_SENDER}>"
+    msg["From"]    = _from_header()
     msg["To"]      = ", ".join(to_list)
     if cc_list:
         msg["Cc"] = ", ".join(cc_list)
