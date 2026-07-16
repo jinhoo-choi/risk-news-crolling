@@ -3444,7 +3444,7 @@ def send_email(subject: str, html_body: str, self_only: bool = False):
     msg["From"]    = _from_header()
     msg["To"]      = _addr_header(to_list[0]) if len(to_list) == 1 else ", ".join(_addr_header(a) for a in to_list)
     if cc_list:
-        msg["Cc"] = ", ".join(_addr_header(a) for a in cc_list)
+        msg["Cc"] = ", ".join(cc_list)
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     _all_rcv = to_list + cc_list
     for attempt in range(3):
