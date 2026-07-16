@@ -1,20 +1,28 @@
 # -*- coding: utf-8 -*-
-"""본인 한정(self_only) 테스트 발송 스크립트.
+"""본인 한정(하드코딩 수신자) 테스트 발송 스크립트.
 
-목적: 발신자 표시명(❗리스크봇)·수신자 표시 수정이 실제 Gmail SMTP
-환경에서 의도대로 렌더링되는지 확인. 실제 send_email()/build_email_html()
-함수를 그대로 사용하며, self_only=True로 강제해 EMAIL_SENDER(본인)
-에게만 발송하고 CC 그룹(risk_vip 등)에는 나가지 않는다.
+목적: 발신자 표시명(❗리스크봇)·수신자 헤더 구성 수정이 실제 Gmail SMTP
+환경에서 의도대로 렌더링되는지 확인.
+
+기존 send_email(self_only=True)는 EMAIL_SENDER/NO_RESULT_RECEIVER
+시크릿값을 수신자로 사용했으나, 이 스크립트는 그 경로를 타지 않고
+수신자를 111715@koreainvestment.com으로 직접 하드코딩한다
+(본인 확인 요청 — 노출 무관). EMAIL_SENDER/EMAIL_PASSWORD는 SMTP
+로그인(인증) 용도로만 사용되고 수신자 결정에는 관여하지 않는다.
 
 실행: python3 test_send_self.py  (GitHub Actions에서 workflow_dispatch로 트리거)
 """
-import os
+import smtplib
 from datetime import datetime, timezone, timedelta
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 import naver_news_monitor as m
 
 KST = timezone(timedelta(hours=9))
 now = datetime.now(KST)
+
+TEST_RECEIVER = "111715@koreainvestment.com"  # 하드코딩 — secrets(EMAIL_SENDER/EMAIL_RECEIVER) 미사용
 
 
 def main():
@@ -38,7 +46,7 @@ def main():
 
     html = m.build_email_html(
         articles, total_count=len(articles),
-        ai_summary="[발송 테스트] 이 메일은 본인에게만 발송되는 테스트입니다. "
+        ai_summary="[발송 테스트] 이 메일은 지정된 테스트 수신자에게만 발송됩니다. "
                     "실제 리스크 판단 결과가 아닙니다.",
         exposure_data=exposure_data,
         ref_date=next(iter(exposure_data.values()))[0].get("기준일", "") if exposure_data else "",
@@ -46,8 +54,19 @@ def main():
     )
 
     subject = f"[발송 테스트] ❗리스크봇 표시 확인 — {now.strftime('%m월 %d일 %H시 %M분')} 기준"
-    m.send_email(subject, html, self_only=True)
-    print("본인 한정 테스트 발송 완료 — Gmail에서 발신자·받는사람 표시를 확인하세요.")
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = m._from_header()
+    msg["To"]      = m._addr_header(TEST_RECEIVER)
+    msg.attach(MIMEText(html, "html", "utf-8"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.ehlo()
+        server.login(m.EMAIL_SENDER, m.EMAIL_PASSWORD)  # SMTP 인증 용도만 — 수신자와 무관
+        server.sendmail(m.EMAIL_SENDER, [TEST_RECEIVER], msg.as_string())
+
+    print(f"테스트 발송 완료 → {TEST_RECEIVER} (Gmail에서 발신자·받는사람 표시를 확인하세요.)")
 
 
 if __name__ == "__main__":
