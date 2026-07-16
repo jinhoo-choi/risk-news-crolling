@@ -3339,9 +3339,9 @@ def _from_header() -> str:
     표시명이 깨지거나 CC에 포함된 구글그룹 주소(risk_aigent@googlegroups.com)로
     잘못 표시되는 현상이 있었음. formataddr()+Header()로 표시명만 RFC 2047
     인코딩하고 주소는 순수 ASCII로 분리해 모든 클라이언트에서 일관되게
-    "❗ 개인고객그룹 리스크봇"으로만 표시되도록 함 (주소는 표시명 뒤에 숨어
+    "❗리스크봇"으로만 표시되도록 함 (주소는 표시명 뒤에 숨어
     기본 목록 뷰에서는 노출되지 않음 — 클릭·원본보기 시에는 SMTP 특성상 확인 가능)"""
-    return formataddr((str(Header("❗ 개인고객그룹 리스크봇", "utf-8")), EMAIL_SENDER))
+    return formataddr((str(Header("❗리스크봇", "utf-8")), EMAIL_SENDER))
 
 
 def send_email_error(error_msg: str, trace: str):
