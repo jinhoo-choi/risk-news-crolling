@@ -3409,8 +3409,11 @@ def send_email_error(error_msg: str, trace: str):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.ehlo()
             server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_SENDER, [receiver], msg.as_string())
-        print(f"  오류 메일 발송 완료 → {receiver}")
+            refused = server.sendmail(EMAIL_SENDER, [receiver], msg.as_string())
+        if refused:
+            print(f"  ⚠️ 오류 메일 수신자 거부됨: {refused}")
+        else:
+            print(f"  오류 메일 발송 완료 → {receiver}")
     except Exception as e:
         print(f"  오류 메일 발송 실패: {e}")
 
@@ -3426,8 +3429,11 @@ def send_email_no_result(subject: str, html_body: str):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.ehlo()
             server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_SENDER, [receiver], msg.as_string())
-        print(f"  결과없음 메일 발송 완료 → {receiver}")
+            refused = server.sendmail(EMAIL_SENDER, [receiver], msg.as_string())
+        if refused:
+            print(f"  ⚠️ 결과없음 메일 수신자 거부됨: {refused}")
+        else:
+            print(f"  결과없음 메일 발송 완료 → {receiver}")
     except smtplib.SMTPAuthenticationError as e:
         print(f"  결과없음 메일 인증 실패 (앱 비밀번호 확인 필요): {e}")
     except smtplib.SMTPException as e:
@@ -3465,11 +3471,34 @@ def send_email(subject: str, html_body: str, self_only: bool = False):
             with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
                 server.ehlo()
                 server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-                server.sendmail(EMAIL_SENDER, _all_rcv, msg.as_string())
+                refused = server.sendmail(EMAIL_SENDER, _all_rcv, msg.as_string())
+            # sendmail()은 수신자 중 "최소 1명"만 성공하면 예외를 던지지 않고
+            # 정상 반환한다 — To가 항상 EMAIL_SENDER(본인, 항상 성공)로 고정된
+            # 구조라 실제 발송 대상(Bcc)이 전원 거부돼도 예외가 절대 안 터지는
+            # 무음 실패(silent failure) 취약점이 있었음. refused(거부된 수신자
+            # dict)를 반드시 확인해 로그 남기고, 실제 리스크 발송(self_only=False)
+            # 에서 거부자가 있으면 본인에게 경고 메일을 별도 발송한다.
+            if refused:
+                print(f"  ⚠️ 일부 수신자 거부됨: {refused}")
+                if not self_only:
+                    _warn = MIMEMultipart("alternative")
+                    _warn["Subject"] = f"⚠️ [리스크봇] 수신자 일부 거부됨 — {subject[:40]}"
+                    _warn["From"] = _from_header()
+                    _warn["To"] = _addr_header(EMAIL_SENDER)
+                    _warn.attach(MIMEText(
+                        f"<p>본문 메일은 발송됐으나 다음 수신자가 SMTP에서 거부됐습니다:</p>"
+                        f"<pre>{refused}</pre>", "html", "utf-8"))
+                    try:
+                        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server2:
+                            server2.ehlo()
+                            server2.login(EMAIL_SENDER, EMAIL_PASSWORD)
+                            server2.sendmail(EMAIL_SENDER, [EMAIL_SENDER], _warn.as_string())
+                    except Exception as _e:
+                        print(f"  ⚠️ 거부 경고 메일 발송도 실패: {_e}")
             if self_only:
                 print(f"이메일 발송 완료 (보낸사람 한정 → {', '.join(to_list)})")
             else:
-                print("이메일 발송 완료")
+                print("이메일 발송 완료" + (f" (거부 {len(refused)}명 포함)" if refused else ""))
             return
         except smtplib.SMTPAuthenticationError as e:
             print(f"이메일 인증 실패 (비밀번호/앱 비밀번호 확인 필요): {e}")

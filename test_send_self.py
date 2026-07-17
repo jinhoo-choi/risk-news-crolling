@@ -64,9 +64,12 @@ def main():
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.ehlo()
         server.login(m.EMAIL_SENDER, m.EMAIL_PASSWORD)  # SMTP 인증 용도만 — 수신자와 무관
-        server.sendmail(m.EMAIL_SENDER, [TEST_RECEIVER], msg.as_string())
+        refused = server.sendmail(m.EMAIL_SENDER, [TEST_RECEIVER], msg.as_string())
 
-    print(f"테스트 발송 완료 → {TEST_RECEIVER} (Gmail에서 발신자·받는사람 표시를 확인하세요.)")
+    if refused:
+        print(f"⚠️ 테스트 수신자 거부됨: {refused}")
+    else:
+        print(f"테스트 발송 완료 → {TEST_RECEIVER} (Gmail에서 발신자·받는사람 표시를 확인하세요.)")
 
 
 if __name__ == "__main__":
