@@ -112,6 +112,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import unicodedata
 from email.utils import parsedate_to_datetime as _pdt
 from email.utils import formataddr
+from email.utils import formatdate, make_msgid
 from email.header import Header
 
 # group_map.json (DART 자동 매핑) 로드 — GROUP_ENTITIES_MAP에 병합
@@ -3363,6 +3364,30 @@ def _addr_header(addr: str) -> str:
     return formataddr((str(Header("❗리스크봇", "utf-8")), addr))
 
 
+_MSGID_DOMAIN = (EMAIL_SENDER.split("@", 1)[1] if "@" in EMAIL_SENDER else "localhost")
+
+
+def _build_msg(subject: str, html_body: str, to_addr: str) -> MIMEMultipart:
+    """단일 수신자용 메시지를 완전한 헤더로 구성해 반환.
+    - Date·Message-ID: RFC 5322 필수 헤더. MIMEMultipart()+sendmail() 조합은
+      이 둘을 자동으로 채워주지 않는다(send_message()라면 자동 보완되지만
+      sendmail()+as_string() 조합엔 그런 보정이 없음) — Date 누락은 특히
+      Gmail 등이 정책위반으로 조용히 거부(5.7.1류)할 수 있는 요인이라 필수.
+    - To: 항상 이 메시지의 실제 SMTP envelope 수신자(to_addr) 하나와
+      정확히 일치시킴 — 헤더와 envelope이 불일치하는 BCC 방식은 기업
+      보안 게이트웨이(Exchange Online/Defender 등)가 스팸 패턴으로 보고
+      무음 차단하는 경우가 있어, 발신 대상 각각에 개별 발송하며 To를
+      항상 그 수신자로 맞춘다."""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"]    = subject
+    msg["From"]       = _from_header()
+    msg["To"]         = _addr_header(to_addr)
+    msg["Date"]       = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=_MSGID_DOMAIN)
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    return msg
+
+
 def send_email_error(error_msg: str, trace: str):
     """런타임 오류 발생 시 담당자에게 오류 내용 메일 발송"""
     kst = timezone(timedelta(hours=9))
@@ -3400,11 +3425,7 @@ def send_email_error(error_msg: str, trace: str):
 </table>
 </body></html>"""
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"❗ [리스크봇 오류] {now_str} 기준 — 런타임 오류 발생"
-    msg["From"]    = _from_header()
-    msg["To"]      = _addr_header(receiver)
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    msg = _build_msg(f"❗ [리스크봇 오류] {now_str} 기준 — 런타임 오류 발생", html_body, receiver)
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.ehlo()
@@ -3420,11 +3441,7 @@ def send_email_error(error_msg: str, trace: str):
 def send_email_no_result(subject: str, html_body: str):
     """결과 없을 때 특정인(NO_RESULT_RECEIVER)에게만 발송"""
     receiver = NO_RESULT_RECEIVER if NO_RESULT_RECEIVER else EMAIL_SENDER
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = _from_header()
-    msg["To"]      = _addr_header(receiver)
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    msg = _build_msg(subject, html_body, receiver)
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.ehlo()
@@ -3441,78 +3458,110 @@ def send_email_no_result(subject: str, html_body: str):
     except Exception as e:
         print(f"  결과없음 메일 발송 실패: {e}")
 
+def _notify_partial_failure(subject: str, refused: dict, total: int):
+    """일부/전원 수신자 거부 시 본인에게 경고 메일 별도 발송 (자기 자신도
+    거부 대상에 포함돼 있으면 이 경고 자체도 실패할 수 있음 — 그 경우
+    GitHub Actions 로그가 최후 수단)"""
+    _warn = _build_msg(
+        f"⚠️ [리스크봇] 수신자 {len(refused)}/{total}명 거부됨 — {subject[:40]}",
+        f"<p>본문 메일 발송 중 다음 수신자가 실패했습니다:</p><pre>{_esc(str(refused))}</pre>",
+        EMAIL_SENDER,
+    )
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.ehlo()
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            server.sendmail(EMAIL_SENDER, [EMAIL_SENDER], _warn.as_string())
+    except Exception as _e:
+        print(f"  ⚠️ 거부 경고 메일 발송도 실패: {_e}")
+
+
 def send_email(subject: str, html_body: str, self_only: bool = False):
     """리스크 메일 발송.
     self_only=True면 전체 수신자 대신 보낸사람(NO_RESULT_RECEIVER 우선, 없으면 SENDER)
     에게만 발송한다. 카드 본문(html_body)은 동일하게 유지된다.
+
+    [BCC(envelope-only) → 수신자별 개별발송 전환]
+    기존엔 To를 발신자 본인으로 고정하고 실제 수신자(risk_vip 등)는 SMTP
+    envelope(RCPT TO)에만 넣는 순수 BCC 방식이었음 — 헤더의 To/Cc가 실제
+    envelope 수신자와 전혀 일치하지 않는 상태로 발송하면, 기업 보안
+    게이트웨이(Exchange Online/Defender 등)가 스팸/벌크메일의 전형적
+    패턴으로 보고 무음 차단하는 경우가 있다(개인 Gmail끼리는 통과해
+    테스트 단계에서 놓치기 쉬움). 수신자 한 명당 메시지를 개별 구성해
+    To를 항상 그 수신자와 정확히 일치시키는 방식으로 전환 — 수신자끼리
+    서로의 주소를 볼 수 없다는 원래 목적(숨은참조)은 그대로 유지된다
+    (각자 자기 앞으로 온 메일만 받으므로).
     """
     if self_only:
-        _self_rcv = NO_RESULT_RECEIVER if NO_RESULT_RECEIVER else EMAIL_SENDER
-        to_list = [_self_rcv]
-        bcc_list = []
+        targets = [NO_RESULT_RECEIVER if NO_RESULT_RECEIVER else EMAIL_SENDER]
     else:
-        # To는 그룹을 넣지 않고 발신자 자신으로 고정(RFC 권장 관행 — To가 비어있으면
-        # 스팸 필터에 걸릴 위험) — 실제 수신 그룹(risk_vip 포함) 전부 Bcc로 통합.
-        # Bcc는 메시지 헤더 자체에 포함하지 않고 SMTP 전달 대상(rcpt)에만 넣는 것이
-        # 표준 구현 방식 — 수신자에게는 From/To만 보이고 다른 수신자 목록은 전혀
-        # 노출되지 않음(CC와 달리 서로가 서로를 볼 수 없음)
-        to_list = [EMAIL_SENDER]
-        bcc_list = EMAIL_RECEIVERS + EMAIL_CC
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = _from_header()
-    msg["To"]      = _addr_header(to_list[0]) if len(to_list) == 1 else ", ".join(_addr_header(a) for a in to_list)
-    # Bcc 헤더는 의도적으로 설정하지 않음 — 설정 시 발송 전 제거해야 하는 번거로움과
-    # 실수로 노출될 위험이 있어, 애초에 헤더에 안 넣고 SMTP 레벨에서만 처리
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
-    _all_rcv = to_list + bcc_list
+        # 발신자 본인도 명시적으로 대상에 포함 — To 헤더에만 넣고 envelope에서
+        # 빠뜨리면 본인도 미착신되는 문제를 방지. dict.fromkeys로 순서 유지 중복제거
+        targets = list(dict.fromkeys([EMAIL_SENDER] + EMAIL_RECEIVERS + EMAIL_CC))
+
+    pending = list(targets)
+    succeeded = []
+    all_refused = {}
+    last_exc = None
+
     for attempt in range(3):
+        if not pending:
+            break
+        still_pending = []
         try:
             with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
                 server.ehlo()
                 server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-                refused = server.sendmail(EMAIL_SENDER, _all_rcv, msg.as_string())
-            # sendmail()은 수신자 중 "최소 1명"만 성공하면 예외를 던지지 않고
-            # 정상 반환한다 — To가 항상 EMAIL_SENDER(본인, 항상 성공)로 고정된
-            # 구조라 실제 발송 대상(Bcc)이 전원 거부돼도 예외가 절대 안 터지는
-            # 무음 실패(silent failure) 취약점이 있었음. refused(거부된 수신자
-            # dict)를 반드시 확인해 로그 남기고, 실제 리스크 발송(self_only=False)
-            # 에서 거부자가 있으면 본인에게 경고 메일을 별도 발송한다.
-            if refused:
-                print(f"  ⚠️ 일부 수신자 거부됨: {refused}")
-                if not self_only:
-                    _warn = MIMEMultipart("alternative")
-                    _warn["Subject"] = f"⚠️ [리스크봇] 수신자 일부 거부됨 — {subject[:40]}"
-                    _warn["From"] = _from_header()
-                    _warn["To"] = _addr_header(EMAIL_SENDER)
-                    _warn.attach(MIMEText(
-                        f"<p>본문 메일은 발송됐으나 다음 수신자가 SMTP에서 거부됐습니다:</p>"
-                        f"<pre>{refused}</pre>", "html", "utf-8"))
+                for addr in pending:
+                    msg = _build_msg(subject, html_body, addr)
                     try:
-                        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server2:
-                            server2.ehlo()
-                            server2.login(EMAIL_SENDER, EMAIL_PASSWORD)
-                            server2.sendmail(EMAIL_SENDER, [EMAIL_SENDER], _warn.as_string())
-                    except Exception as _e:
-                        print(f"  ⚠️ 거부 경고 메일 발송도 실패: {_e}")
-            if self_only:
-                print(f"이메일 발송 완료 (보낸사람 한정 → {', '.join(to_list)})")
-            else:
-                print("이메일 발송 완료" + (f" (거부 {len(refused)}명 포함)" if refused else ""))
-            return
+                        refused = server.sendmail(EMAIL_SENDER, [addr], msg.as_string())
+                        # sendmail()은 수신자 중 최소 1명만 성공하면 예외를 던지지
+                        # 않고 정상 반환한다(여기선 수신자가 1명뿐이므로 해당 없지만,
+                        # 방어적으로 반환값을 항상 확인) — 거부는 반환 dict로만 옴
+                        if refused:
+                            all_refused.update(refused)
+                        else:
+                            succeeded.append(addr)
+                    except smtplib.SMTPRecipientsRefused as e:
+                        all_refused.update(getattr(e, "recipients", {addr: (550, b"refused")}))
+                    except (smtplib.SMTPServerDisconnected, smtplib.SMTPException) as e:
+                        last_exc = e
+                        still_pending.append(addr)
         except smtplib.SMTPAuthenticationError as e:
             print(f"이메일 인증 실패 (비밀번호/앱 비밀번호 확인 필요): {e}")
             raise
         except smtplib.SMTPException as e:
+            last_exc = e
+            still_pending = still_pending or list(pending)
+        pending = still_pending
+        if pending and attempt < 2:
             wait = 10 * (2 ** attempt)
-            print(f"이메일 발송 실패 (SMTP, {attempt+1}/3): {e} — {wait}초 후 재시도")
-            if attempt < 2:
-                time.sleep(wait)
-            else:
-                raise
-        except Exception as e:
-            print(f"이메일 발송 실패: {e}")
-            raise
+            print(f"이메일 발송 실패({len(pending)}명, SMTP): {last_exc} — {wait}초 후 재시도")
+            time.sleep(wait)
+
+    if pending:  # 3회 재시도에도 연결/전송 자체가 실패한 수신자
+        for addr in pending:
+            all_refused[addr] = ("connection_failed", str(last_exc))
+
+    if self_only:
+        if succeeded:
+            print(f"이메일 발송 완료 (보낸사람 한정 → {', '.join(succeeded)})")
+        if all_refused:
+            print(f"  ⚠️ 본인한정 발송 실패: {all_refused}")
+            raise RuntimeError(f"본인한정 메일 발송 실패: {all_refused}")
+        return
+
+    print(f"이메일 발송 완료 ({len(succeeded)}/{len(targets)}명 성공)"
+          + (f", 실패 {len(all_refused)}명" if all_refused else ""))
+
+    if all_refused:
+        print(f"  ⚠️ 수신자 거부/실패: {all_refused}")
+        _notify_partial_failure(subject, all_refused, total=len(targets))
+
+    if len(all_refused) == len(targets):
+        # 전원 실패 — "발송완료" 로그로 오인되지 않도록 무음 실패를 예외로 승격
+        raise RuntimeError(f"SMTP 전원 거부(무음 실패 방지용 예외 승격): {all_refused}")
 
 def main():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 뉴스 모니터링 시작")
