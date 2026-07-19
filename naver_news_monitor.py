@@ -3343,6 +3343,22 @@ def save_filter_log(raw_articles: list, hard_excluded: list, ai_filtered: list, 
     except Exception as e:
         print(f"  로그 저장 실패: {e}")
 
+def _sanitize_header_text(text: str) -> str:
+    """헤더(Subject/표시명) 전용 새니타이저 — 게이트웨이가 거부하는 기호 유니코드만 제거.
+    사유: 일부 수신 게이트웨이가 '550 5.7.1 unicode character in disallowed header'로
+    거부(7/18 인사이트봇 반송 실사례, 원인=전각대시·이모지). ASCII는 거부 사유가
+    될 수 없으므로 ASCII 전체(0x20~0x7E)를 통째로 허용해 'M&A', '!', '?' 등이
+    깨지지 않게 한다. 한글(완성형+자모)도 수개월 정상 배달 이력이 있어 허용,
+    그 외(이모지·전각기호 등)만 제거한다. HTML 본문에는 적용하지 않는다."""
+    text = text.replace("—", "-").replace("–", "-")   # 전각대시 → ASCII 하이픈
+    return "".join(
+        c for c in text
+        if (0x20 <= ord(c) <= 0x7E)                    # ASCII 전체(문장부호 포함)
+        or ("\uac00" <= c <= "\ud7a3")                 # 한글 완성형
+        or ("\u3131" <= c <= "\u3163")                 # 한글 자모
+    ).strip()
+
+
 def _from_header() -> str:
     """발신자 From 헤더를 RFC 2047 규격으로 인코딩해 반환.
     기존엔 f"❗ 개인고객그룹 리스크봇 <{EMAIL_SENDER}>" 형태로 한글·이모지가
@@ -3353,7 +3369,7 @@ def _from_header() -> str:
     인코딩하고 주소는 순수 ASCII로 분리해 모든 클라이언트에서 일관되게
     "❗리스크봇"으로만 표시되도록 함 (주소는 표시명 뒤에 숨어
     기본 목록 뷰에서는 노출되지 않음 — 클릭·원본보기 시에는 SMTP 특성상 확인 가능)"""
-    return formataddr((str(Header("❗리스크봇", "utf-8")), EMAIL_SENDER))
+    return formataddr((str(Header(_sanitize_header_text("리스크봇"), "utf-8")), EMAIL_SENDER))
 
 
 def _addr_header(addr: str) -> str:
@@ -3361,7 +3377,7 @@ def _addr_header(addr: str) -> str:
     risk_vip@googlegroups.com 같은 그룹 주소 자체가 목록에 그대로 노출되던 것을
     표시명으로 가려 발신자·수신자 전부 '❗리스크봇'만 보이도록 함 — 주소는
     From과 마찬가지로 클릭·원본보기 시에만 확인 가능(SMTP 특성상 완전 은닉 불가)."""
-    return formataddr((str(Header("❗리스크봇", "utf-8")), addr))
+    return formataddr((str(Header(_sanitize_header_text("리스크봇"), "utf-8")), addr))
 
 
 _MSGID_DOMAIN = (EMAIL_SENDER.split("@", 1)[1] if "@" in EMAIL_SENDER else "localhost")
@@ -3379,7 +3395,7 @@ def _build_msg(subject: str, html_body: str, to_addr: str) -> MIMEMultipart:
       무음 차단하는 경우가 있어, 발신 대상 각각에 개별 발송하며 To를
       항상 그 수신자로 맞춘다."""
     msg = MIMEMultipart("alternative")
-    msg["Subject"]    = subject
+    msg["Subject"]    = _sanitize_header_text(subject)
     msg["From"]       = _from_header()
     msg["To"]         = _addr_header(to_addr)
     msg["Date"]       = formatdate(localtime=True)
