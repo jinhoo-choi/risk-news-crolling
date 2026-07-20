@@ -621,6 +621,26 @@ def normalize_ticker(name: str) -> str:
         return TICKER_MAP_RUNTIME.get(stripped, stripped)
     return stripped
 
+def _normalize_ratio_pct(v: str) -> str:
+    """유지담보비율 단위 방어 로직 — 소수(1.41)로 잘못 들어온 값을 퍼센트(141)로 보정.
+    사유: 7/20 exposure_data.csv 업로드 시 원본 엑셀 export 서식이 바뀌어
+    '146.87'(퍼센트) 대신 '1.4687'(소수)로 들어온 실사례 발생 → 코드가
+    CSV 값 뒤에 '%'만 그대로 붙이는 구조(_top_line())라 메일에 '1.41%'로
+    잘못 표기될 뻔함. 유지담보비율은 성격상 항상 두 자릿수 이상(보통
+    130~150대)이므로 10 미만이면 소수 표기로 판단해 ×100 한다. 이미
+    정상(퍼센트) 값이면 그대로 둔다."""
+    v = (v or "").strip()
+    if not v:
+        return v
+    try:
+        x = float(v)
+    except (ValueError, TypeError):
+        return v
+    if 0 < x < 10:
+        x *= 100
+    return f"{x:.2f}".rstrip("0").rstrip(".")
+
+
 def _synthesize_channel_totals(row: dict) -> dict:
     """20컬럼(뱅/영 채널 분리) 스키마 row에 레거시 합산 키를 합성해 반환.
     - 뱅잔고 키가 없으면(기존 12컬럼) 원본 그대로 반환 — 하위호환
@@ -628,6 +648,11 @@ def _synthesize_channel_totals(row: dict) -> dict:
       최고리스크잔고·최고리스크고객·유지담보비율 = 담보비율 낮은(더 위험한) 채널 대표값
     - 원본 뱅*/영* 키는 그대로 보존 → 표시 함수가 채널 병기에 사용
     """
+    # 스키마 무관 방어 로직 — 신/구 스키마 모두 유지담보비율 계열 키를 여기서 정규화
+    for _k in ("유지담보비율", "뱅유지담보비율", "영유지담보비율"):
+        if _k in row:
+            row[_k] = _normalize_ratio_pct(row[_k])
+
     if "뱅잔고" not in row:
         return row
 
@@ -719,7 +744,7 @@ def load_exposure_data() -> dict:
                     "리스크잔고(억)": row[8].strip() if len(row) > 8 else "0",
                     "최고리스크잔고": row[9].strip() if len(row) > 9 else "",
                     "최고리스크고객": row[10].strip() if len(row) > 10 else "",
-                    "유지담보비율":  row[11].strip() if len(row) > 11 else "",
+                    "유지담보비율":  _normalize_ratio_pct(row[11].strip() if len(row) > 11 else ""),
                 }
                 name = normalize_ticker(d["종목명"])
                 d["종목명"] = name
