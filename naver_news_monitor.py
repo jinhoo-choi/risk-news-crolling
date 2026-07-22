@@ -1709,6 +1709,17 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     if any(s in title for s in SECTOR_KW) and any(r in title for r in RISK_EXPR):
         return False, None  # 섹터 리스크 기사 → AI 판단
 
+    # 이벤트·할인 등 마케팅 키워드가 있어도 소비자 불만/지연 신호가 함께 있으면
+    # 하드제외 면제 — 7/22 "한투증권 이벤트 보상 하세월…참여자 불만 잇따라" 오탐(누락)
+    # 실사례. 순수 이벤트 공지("~이벤트 진행")는 계속 차단, 이벤트發 소비자 불만
+    # (지급 지연·미지급 등 당사 평판/운영 리스크)만 AI 판단으로 넘긴다.
+    _EVENT_MARKETING_KW = ("할인", "이벤트", "프로모션")
+    _EVENT_COMPLAINT_KW = ("불만", "지연", "미지급", "하세월", "늑장", "누락",
+                           "먹튀", "기만", "논란")
+    if (any(m in title for m in _EVENT_MARKETING_KW)
+            and any(c in title for c in _EVENT_COMPLAINT_KW)):
+        return False, None
+
     for pat in TITLE_ONLY_PATTERNS:
         if pat in title:
             return True, pat
