@@ -61,6 +61,6 @@ html = build_email_html(
     today_str=now.strftime("%Y-%m-%d"),
 )
 
-subject = f"[리스크 탐지] {now.strftime('%m월 %d일')} 수동 보정 발송 (필터 누락분)"
+subject = f"[리스크 탐지] {now.strftime('%m월 %d일')} {now.strftime('%H')}시 기준"
 send_email(subject, html, self_only=False)
 print("발송 완료:", subject)
