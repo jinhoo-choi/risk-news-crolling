@@ -31,7 +31,7 @@ jobs:
           ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
           NAVER_CLIENT_ID:      ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET:  ${{ secrets.NAVER_CLIENT_SECRET }}
-        run: python diag_new_kw.py | tee diag_result.txt
+        run: python diag_keyword_volume.py | tee diag_result.txt
 
       - name: 결과 파일 커밋 (로그 회수용, 이메일 발송 아님)
         run: |
