@@ -1,7 +1,10 @@
 name: 진단 - 키워드 수집량 실측
 
 on:
-  workflow_dispatch:  # 수동 트리거 전용 — 이메일 발송/파일 커밋 없음, 로그만 출력
+  workflow_dispatch:  # 수동 트리거 전용 — 이메일 발송 없음, 결과는 diag_result.txt로 커밋
+
+permissions:
+  contents: write
 
 jobs:
   diag:
@@ -28,4 +31,12 @@ jobs:
           ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
           NAVER_CLIENT_ID:      ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET:  ${{ secrets.NAVER_CLIENT_SECRET }}
-        run: python diag_keyword_volume.py
+        run: python diag_keyword_volume.py | tee diag_result.txt
+
+      - name: 결과 파일 커밋 (로그 회수용, 이메일 발송 아님)
+        run: |
+          git config user.name "claude-assistant"
+          git config user.email "claude@anthropic.com"
+          git add diag_result.txt
+          git commit -m "chore: 키워드 수집량 진단 결과 (자동, 이메일 발송 없음)" || echo "변경 없음"
+          git push
