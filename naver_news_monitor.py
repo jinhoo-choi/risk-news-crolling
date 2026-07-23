@@ -1248,10 +1248,17 @@ def save_seen_urls(seen: set, combos: set = None, title_norms: list = None, desc
         raise
 
 def crawl_naver_news(keyword: str) -> list:
-    """네이버 검색 API로 뉴스 수집 — 최근 6시간 기사만"""
+    """네이버 검색 API로 뉴스 수집 — 최근 14시간 기사만.
+    사유: 영업일 스케줄이 07/12/17시 3회라 07시↔12시, 12시↔17시는 5시간
+    간격이지만 17시→익일 07시는 14시간 간격. 기존 6시간 고정 윈도우로는
+    17시~익일01시 사이(8시간) 발행 기사가 어느 실행에도 안 걸려 영구
+    누락되는 구조적 사각지대가 있었음(7/23 실측 확인). 14시간으로 통일해
+    이 공백을 없앰 — 07/12시 실행은 창이 넓어져 재수집량이 늘지만,
+    seen_urls 기반 URL 중복제외가 크롤링 직후(AI 필터 이전)에 걸려
+    이미 처리된 기사는 비용 없이 스킵되므로 실질 비용 증가는 미미함."""
     kst = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst)
-    cutoff_kst = now_kst - timedelta(hours=6)
+    cutoff_kst = now_kst - timedelta(hours=14)
     today_kst = now_kst.date()
 
     headers = {
