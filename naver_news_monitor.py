@@ -2684,10 +2684,30 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
 
     # 종목명별 잔고·고객수 합계 (법인 표기차이·종목코드 상이 — 분할발행 등 통합)
     # 표시명은 정규화된(법인 표기 제거) 이름 사용
+    def _unify_prefix_names(names):
+        """법인명 잘림 변형 통합 — 한 이름이 다른 이름의 접두(6자 이상)면 동일
+        법인으로 보고 긴(완전한) 이름으로 통일. 엔티티 추출의 '접두 6자 공통 →
+        동일 법인' 원칙과 동일 기준.
+        실사례(7/24 07시): 채권 종목명이 '제이알글로벌위탁관리'(잘림)와
+        '제이알글로벌위탁관리부동산투자회사'로 나뉘어 같은 법인 익스포저가
+        카드에 609억/391억 두 줄로 중복 노출됨.
+        접두 6자 미만(예: 롯데케미칼↔롯데케미칼타이탄 5자)은 별개 법인
+        가능성이 있어 병합하지 않는다."""
+        mapping = {}
+        for n in names:
+            target = n
+            for other in names:
+                if other != n and len(n) >= 6 and other.startswith(n) and len(other) > len(target):
+                    target = other  # n이 other의 접두 → 더 긴(완전한) 이름으로
+            mapping[n] = target
+        return mapping
+
     def _merge_by_name(rows):
+        canon_names = [_canon_name(r.get("종목명","")) for r in rows]
+        name_map = _unify_prefix_names(set(canon_names))
         merged = {}
         for r in rows:
-            name = _canon_name(r.get("종목명",""))
+            name = name_map[_canon_name(r.get("종목명",""))]
             bal = float(str(r.get("잔고(억)","0")).replace(",",""))
             cus = int(float(str(r.get("고객수","0")).replace(",","")))
             if name not in merged:
