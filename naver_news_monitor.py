@@ -353,7 +353,49 @@ def get_entity_price_drop(entity: str, exposure_data: dict) -> float | None:
             prev = float(hist["Close"].iloc[-2])
             if prev > 0:
                 return round((curr - prev) / prev * 100, 2)
-        # 국내 코드 없으면 해외 종목으로 시도
+        # ── 해외 종목 폴백 ──
+        # exposure_data의 해외주식·해외대출은 종목코드/종목명이 이미 티커
+        # (TSLA, NVDA, QQQ 등)로 저장돼 있다. get_price_change()는 한글명을
+        # 티커로 역변환하는 함수라 이 경우 매핑에 실패한다(실측: 해외 고유
+        # 종목 2,224개 중 한글명 매핑 성공 25.4%, 미매핑 잔고 17.2조).
+        # 따라서 rows에서 티커 형태 코드를 직접 찾아 조회하고, 그래도 없으면
+        # entity 자체가 티커인지 확인한 뒤, 마지막으로 한글명 역변환을 시도한다.
+        import re as _re
+
+        def _is_ticker(s: str) -> bool:
+            # 미국 상장 티커: 영문 대문자 1~5자.
+            # 클래스 구분은 소스마다 표기가 다름 — CSV는 'BRK/B' 슬래시 형태,
+            # yfinance는 'BRK-B' 하이픈 형태를 쓴다(_norm_ticker에서 변환).
+            return bool(_re.fullmatch(r"[A-Z]{1,5}([./][A-Z])?", s or ""))
+
+        def _norm_ticker(s: str) -> str:
+            """CSV 표기(BRK/B)를 yfinance 표기(BRK-B)로 변환."""
+            return (s or "").replace("/", "-").replace(".", "-")
+
+        _ov_ticker = ""
+        for r in rows:
+            if r.get("종목유형") in ("해외주식", "해외대출"):
+                for _cand in ((r.get("종목코드") or "").strip(),
+                              (r.get("종목명") or "").strip()):
+                    if _is_ticker(_cand):
+                        _ov_ticker = _cand
+                        break
+            if _ov_ticker:
+                break
+        if not _ov_ticker and _is_ticker(entity.strip()):
+            _ov_ticker = entity.strip()
+
+        if _ov_ticker:
+            import yfinance as yf
+            hist = yf.Ticker(_norm_ticker(_ov_ticker)).history(period="5d", auto_adjust=False)
+            if len(hist) >= 2:
+                curr = float(hist["Close"].iloc[-1])
+                prev = float(hist["Close"].iloc[-2])
+                if prev > 0:
+                    return round((curr - prev) / prev * 100, 2)
+            return None
+
+        # 한글명으로 저장된 해외 종목은 기존 역변환 경로 사용
         return get_price_change(entity)
     except Exception:
         return None
