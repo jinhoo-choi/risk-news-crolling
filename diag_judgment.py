@@ -4,7 +4,7 @@
 프롬프트에 통과시켜, ①핵심사건 ②손실주체 ③확정여부 판정이 어떻게
 나오는지 수집한다. 체크리스트(1번안) 설계 근거 데이터 확보 목적.
 """
-import json, requests, os
+import json, requests, os, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from naver_news_monitor import ANTHROPIC_KEY, CLAUDE_MODEL
 
@@ -49,7 +49,17 @@ JSON만 출력:
         if res.status_code != 200:
             return {"error": f"HTTP {res.status_code}"}
         raw = res.json().get("content", [{}])[0].get("text", "").strip()
-        return json.loads(raw)
+        # 마크다운 코드펜스 제거 후 파싱 (```json ... ``` 형태 대응)
+        cleaned = raw
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```")[1] if "```" in cleaned[3:] else cleaned[3:]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+            cleaned = cleaned.strip()
+        try:
+            return json.loads(cleaned)
+        except Exception as pe:
+            return {"error": f"parse: {pe}", "_raw": raw[:200]}
     except Exception as e:
         return {"error": str(e)[:60]}
 
@@ -62,15 +72,21 @@ def run(items, expect_risk, label):
     print(f"[{label}] {len(items)}건 — 정답: risk={expect_risk}")
     print("=" * 78)
     results = []
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    with ThreadPoolExecutor(max_workers=2) as ex:
         futs = {ex.submit(judge, x['title'], x.get('desc','')): x for x in items}
         for fu in as_completed(futs):
             x = futs[fu]
             results.append((x, fu.result()))
+            time.sleep(0.3)
     wrong = []
+    errs = []
     for x, r in results:
         if "error" in r:
-            print(f"  ERR  {x['title'][:52]} — {r['error']}"); continue
+            errs.append((x, r))
+            print(f"  ERR  {x['title'][:44]} — {r['error'][:50]}")
+            if r.get("_raw"):
+                print(f"       원문: {r['_raw'][:120]}")
+            continue
         risk = r.get("risk", True)
         j = r.get("judgment", {}) or {}
         ok = (risk == expect_risk)
@@ -78,7 +94,8 @@ def run(items, expect_risk, label):
         mark = "OK  " if ok else "★오판"
         print(f"  {mark} risk={str(risk):5} | 사건:{str(j.get('핵심사건',''))[:16]:16} "
               f"손실주체:{str(j.get('손실주체','')):4} 확정:{str(j.get('확정여부','')):4} | {x['title'][:38]}")
-    print(f"\n  정확도: {len(results)-len(wrong)}/{len(results)}")
+    ok_n = len(results) - len(wrong) - len(errs)
+    print(f"\n  정확도: {ok_n}/{len(results)} (오판 {len(wrong)}건, 응답오류 {len(errs)}건)")
     return wrong
 
 w1 = run(fp, False, "오탐 이력 — 걸러내야 함")
