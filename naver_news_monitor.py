@@ -577,11 +577,20 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
                 f'{rbal:.0f}억 ({rcust:,}명)</td>')
 
     def _top_line(dot_color, rbal, cust, ratio):
-        """최고리스크 1줄 — 담보비율 선행(빨강 강조), 잔고·고객은 회색 보조"""
+        """최고리스크 1줄 — 담보비율 선행(빨강 강조), 잔고·고객은 회색 보조
+        담보비율은 정수 반올림 표시 — 소수점 2자리는 판단에 불필요하고,
+        원본이 142.00처럼 소수부가 0이면 '142%'로 잘려 자릿수가 들쭉날쭉
+        보이던 문제도 함께 해소(2026-07-24)."""
         if not (rbal or cust or ratio):
             return ''
         dot = f'<span style="color:{dot_color};">●</span> ' if dot_color else ''
-        ratio_html = f'<span style="color:#dc2626;font-weight:700;">{ratio}%</span> ' if ratio else ''
+        _ratio_disp = ratio
+        if ratio not in (None, ''):
+            try:
+                _ratio_disp = f'{round(float(ratio)):,}'
+            except (ValueError, TypeError):
+                _ratio_disp = ratio
+        ratio_html = f'<span style="color:#dc2626;font-weight:700;">{_ratio_disp}%</span> ' if ratio else ''
         detail = "·".join(str(x) for x in (f'{rbal}억' if rbal else '', cust or '') if x)
         detail_html = f'<span style="color:#64748b;font-weight:400;">({detail})</span>' if detail else ''
         return f'{dot}{ratio_html}{detail_html}'.strip()
