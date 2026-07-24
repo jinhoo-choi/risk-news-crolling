@@ -12,6 +12,8 @@
 GitHub Actions에서 workflow_dispatch로 1회성 실행하는 용도 — 정기 실행
 파이프라인(news_monitor.yml)과는 별개.
 """
+import os
+import sys
 from datetime import datetime, timezone, timedelta
 from naver_news_monitor import (
     build_email_html, send_email, load_exposure_data,
@@ -19,6 +21,26 @@ from naver_news_monitor import (
 
 KST = timezone(timedelta(hours=9))
 now = datetime.now(KST)
+
+# ── 오발송 방지 안전장치 ──────────────────────────────────────────────
+# 이 스크립트는 workflow_dispatch(수동 버튼)로 실행되며 전체 그룹메일로
+# 발송된다. 아래 ARTICLES_PREPARED_ON 날짜의 기사 내용이 그대로 남아 있어
+# 나중에 무심코 실행하면 낡은 기사가 임원진에게 다시 발송되는 사고가 난다.
+# 따라서 (1) 기사 작성일이 오늘이 아니면 중단하고,
+#        (2) CONFIRM_SEND=YES 환경변수가 있어야만 실제 발송한다.
+ARTICLES_PREPARED_ON = "2026-07-23"   # 아래 articles를 새로 채울 때 반드시 갱신
+
+_today = now.strftime("%Y-%m-%d")
+if ARTICLES_PREPARED_ON != _today:
+    print(f"[중단] 기사 준비일({ARTICLES_PREPARED_ON}) != 오늘({_today}).")
+    print("       manual_send.py의 articles를 오늘 내용으로 교체하고")
+    print("       ARTICLES_PREPARED_ON을 갱신한 뒤 다시 실행하세요.")
+    sys.exit(0)
+
+if os.environ.get("CONFIRM_SEND", "").upper() != "YES":
+    print("[중단] 전체 발송을 위해서는 CONFIRM_SEND=YES 가 필요합니다.")
+    print("       (워크플로우 수동 실행 시 입력값으로 지정)")
+    sys.exit(0)
 
 articles = [
     {

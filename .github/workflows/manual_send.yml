@@ -2,6 +2,11 @@ name: 수동 보정 발송 (필터 누락분)
 
 on:
   workflow_dispatch:  # 수동 트리거 전용 — 정기 스케줄 없음
+    inputs:
+      confirm_send:
+        description: "전체 그룹메일로 발송합니다. 발송하려면 YES를 입력하세요"
+        required: true
+        default: "NO"
 
 jobs:
   manual-send:
@@ -31,4 +36,5 @@ jobs:
           NAVER_CLIENT_SECRET:  ${{ secrets.NAVER_CLIENT_SECRET }}
           GOOGLE_API_KEY:       ${{ secrets.GOOGLE_API_KEY }}
           EMAIL_CC:             ${{ secrets.EMAIL_CC }}
+          CONFIRM_SEND:         ${{ inputs.confirm_send }}
         run: python manual_send.py
