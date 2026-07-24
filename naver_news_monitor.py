@@ -3584,6 +3584,10 @@ def save_filter_log(raw_articles: list, hard_excluded: list, ai_filtered: list, 
             "reason"    : reason,
             "confidence": confidence,
             "conf_raw"  : ai_conf_raw_map.get(title),  # 클램프 발동 시 원값 (캘리브레이션 추적)
+            # 2차 검증(Claude 본문 판독)의 구조화 판정 근거.
+            # 오탐 발생 시 ①핵심사건 파악 ②손실주체 판단 ③확정여부 중
+            # 어느 단계에서 틀렸는지 사후 추적하기 위해 저장한다.
+            "judgment"  : a.get("_judgment"),
         })
 
     from collections import Counter
@@ -4361,7 +4365,17 @@ def main():
 제목: {title}
 본문(앞부분): {body_preview}
 
-JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이유"}}"""
+먼저 아래 3가지를 순서대로 판단한 뒤 결론을 내리세요.
+① 핵심사건: 이 기사가 보도하는 사건 한 가지를 15자 이내로
+② 손실주체: 이 사건으로 손실을 보는 쪽 — "주주" / "회사" / "채권자" / "없음"
+   ★ 공개매수 프리미엄·완전자회사 편입·주식분할처럼 주주가 보상을 받거나
+     아무 영향이 없으면 "없음"입니다. 이 경우 risk는 반드시 false입니다.
+③ 확정여부: "확정" / "가능성" / "무관"
+
+JSON만 출력:
+{{"judgment": {{"핵심사건": "...", "손실주체": "...", "확정여부": "..."}}, "risk": true}}
+또는
+{{"judgment": {{"핵심사건": "...", "손실주체": "...", "확정여부": "..."}}, "risk": false, "reason": "한 줄 이유"}}"""
 
         try:
             res = requests.post(
@@ -4373,19 +4387,34 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
                 },
                 json={
                     "model": CLAUDE_MODEL,
-                    "max_tokens": 80,
+                    # judgment(핵심사건·손실주체·확정여부) 필드 추가로 응답이
+                    # 길어짐. 80이면 JSON이 중간에 잘려 파싱 실패 → 안전하게
+                    # 유지(return True)로 빠져 오탐이 그대로 통과하므로 상향.
+                    "max_tokens": 300,
                     "messages": [{"role": "user", "content": prompt}],
                 },
-                timeout=20,
+                timeout=25,
             )
             if res.status_code != 200:
                 return True  # API 오류 → 안전하게 유지
             raw = res.json().get("content", [{}])[0].get("text", "").strip()
             data = json.loads(raw)
             is_risk = data.get("risk", True)
+            # 판정 근거 기록 — 오탐 발생 시 어느 단계에서 틀렸는지 추적용.
+            # save_filter_log()로 filter_log.json에 함께 저장된다.
+            _judg = data.get("judgment") or {}
+            if _judg:
+                article["_judgment"] = _judg
+            _jstr = ""
+            if _judg:
+                _jstr = (f" | 사건:{_judg.get('핵심사건','')} "
+                         f"손실주체:{_judg.get('손실주체','')} "
+                         f"확정:{_judg.get('확정여부','')}")
             if not is_risk:
                 reason = data.get("reason", "")
-                print(f"  [2차 제외] {title[:40]} — {reason}")
+                print(f"  [2차 제외] {title[:40]} — {reason}{_jstr}")
+            elif _judg:
+                print(f"  [2차 유지] {title[:34]}{_jstr}")
             return is_risk
         except Exception:
             return True  # 파싱 실패 → 안전하게 유지
