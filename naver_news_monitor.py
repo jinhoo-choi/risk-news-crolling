@@ -98,7 +98,20 @@ RELATED_STOCK_MAP = {
 import requests
 import re
 import random
-from html import escape as _esc
+from html import escape as _html_escape
+
+
+def _esc(v) -> str:
+    """HTML 이스케이프 — None·숫자 등 비문자열 입력도 안전하게 처리.
+
+    기존엔 html.escape를 그대로 사용해, AI 응답에서 url·entity 등이 null로
+    오면 이메일 생성 전체가 AttributeError로 죽었다(2026-07-24 전수점검 발견).
+    발송 직전 단계에서 죽으면 그 회차 알림이 통째로 유실되므로 방어한다."""
+    if v is None:
+        return ""
+    if not isinstance(v, str):
+        v = str(v)
+    return _html_escape(v)
 from bs4 import BeautifulSoup
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -780,7 +793,7 @@ def load_exposure_data() -> dict:
             if rows_all and "종목명" in (rows_all[0] or {}):
                 result = {}
                 for row in rows_all:
-                    name = normalize_ticker(row.get("종목명", "").strip())
+                    name = normalize_ticker((row.get("종목명") or "").strip())
                     row["종목명"] = name  # 티커→한글명 정규화
                     if not name:
                         continue
@@ -2162,21 +2175,21 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 info = grade_map.get(i + offset + 1, {})
                 article["_ai_confidence"] = info.get("confidence", None)
                 if info.get("relevant") and info.get("grade"):
-                    if not info.get("entity", "").strip():
+                    if not (info.get("entity") or "").strip():
                         print(f"  [entity 빈값] relevant 무효화: {article.get('title','')[:30]}")
                         continue
                     article["grade"]      = info["grade"]
                     article["reason"]     = info.get("reason", "")
                     article["action"]     = info.get("action", "")
-                    article["entity"]     = info.get("entity", "").strip()
-                    _ent2 = info.get("entity","").strip()
+                    article["entity"]     = (info.get("entity") or "").strip()
+                    _ent2 = (info.get("entity") or "").strip()
                     _ents_clean2 = [e.strip() for e in (info.get("entities") or []) if e and e.strip()] or [_ent2]
                     if _ent2 not in _ents_clean2:
                         _ents_clean2 = [_ent2] + _ents_clean2
                     article["entities"]   = _ents_clean2
                     article["event_type"] = info.get("event_type", "")
                     # event_key: "entity_eventtype" 형태로 생성 — 사건 단위 dedup 기준
-                    _ent = info.get("entity", "").strip()
+                    _ent = (info.get("entity") or "").strip()
                     _evt = (info.get("event_type") or "").strip()
                     article["event_key"]  = f"{_ent}_{_evt}" if _ent and _evt else ""
                     result.append(article)
@@ -2234,11 +2247,11 @@ def dedup_deterministic(articles: list) -> list:
     for a in articles:
         title_norm = normalize(a.get("title", ""))
         desc_norm  = normalize(a.get("desc", ""))
-        entity     = a.get("entity", "").strip()
-        keyword    = a.get("keyword", "").strip()
+        entity     = (a.get("entity") or "").strip()
+        keyword    = (a.get("keyword") or "").strip()
         combo      = (entity, keyword) if entity else None
 
-        url = a.get("url", "").strip()
+        url = (a.get("url") or "").strip()
         if url and url in seen_urls_local:
             continue
         if url:
@@ -2337,7 +2350,7 @@ def calc_risk_score(article: dict, exposure_data: dict = None) -> float:
     # 익스포저 잔고 합산 → 구간별 boost
     exp_boost = 0.0
     if exposure_data is not None:
-        entity = article.get("entity", "").strip()
+        entity = (article.get("entity") or "").strip()
         rows = find_exposure(entity, exposure_data) if entity else []
         if rows:
             article["_has_exposure"] = True
@@ -2523,7 +2536,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     # 당사직접 이슈(_force_urgent) 및 entity 없는 시장전체 이슈는 면제
     # 긴급 → 주의, 주의 → 참고 (한 단계씩)
     for a in result:
-        entity_val = a.get("entity", "").strip()
+        entity_val = (a.get("entity") or "").strip()
         if a.get("_force_urgent"):
             continue                         # 당사직접 면제
         if not entity_val:
@@ -2573,8 +2586,8 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
                     key=lambda x: (x.get("_risk_score") or 0,
                                    _media_score(x.get("url",""))),
                     reverse=True):
-        entity     = a.get("entity","").strip()
-        event_type = a.get("event_type","").strip()
+        entity     = (a.get("entity") or "").strip()
+        event_type = (a.get("event_type") or "").strip()
         grade      = a.get("grade","")
         event_key  = a.get("event_key","")
 
@@ -2657,7 +2670,7 @@ def _verify_high_risk_by_claude(articles: list):
             timeout=20,
         )
         _res.raise_for_status()
-        _raw = _res.json().get("content", [{}])[0].get("text", "").strip()
+        _raw = (_res.json().get("content", [{}])[0].get("text") or "").strip()
         _raw = _raw.replace("```json", "").replace("```", "").strip()
         _s = _raw.find("["); _e = _raw.rfind("]") + 1
         if _s != -1 and _e > _s:
@@ -3251,7 +3264,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 0 0;">
                 <tr>
                   <td style="font-size:11px;"><a href="{_esc(a['url'])}" style="color:#4a6099;text-decoration:none;">↗ 기사 보기</a></td>
-                  <td align="right" style="font-size:12px;color:#94a3b8;">{a.get("pub_str","")}</td>
+                  <td align="right" style="font-size:12px;color:#94a3b8;">{a.get("pub_str") or ""}</td>
                 </tr>
               </table>
             </td>
@@ -3303,7 +3316,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:5px 0 8px 0;">
                 <tr>
                   <td style="font-size:13px;"><a href="{_esc(a['url'])}" style="color:#4a6099;text-decoration:none;font-weight:500;">↗ 기사 보기</a></td>
-                  <td align="right" style="font-size:12px;color:#94a3b8;">{a.get("pub_str","")}</td>
+                  <td align="right" style="font-size:12px;color:#94a3b8;">{a.get("pub_str") or ""}</td>
                 </tr>
               </table>
               {f'<p style="margin:0;font-size:11px;color:#94a3b8;line-height:1.6;word-break:keep-all;">{_esc(a["desc"])}</p>' if a.get("desc") else ""}
@@ -4041,10 +4054,10 @@ def main():
     _entity_canon = load_entity_canonical_map()
 
     for a in filtered:
-        entity   = a.get("entity", "").strip()
+        entity   = (a.get("entity") or "").strip()
         entity   = canonicalize_entity(entity, _entity_canon)
-        keyword  = a.get("keyword", "").strip()
-        event_type = a.get("event_type", "").strip()
+        keyword  = (a.get("keyword") or "").strip()
+        event_type = (a.get("event_type") or "").strip()
         combo    = (entity, event_type) if entity and event_type else \
                    (entity, keyword) if entity and keyword else None
         kw_only  = ("", keyword) if keyword else None
@@ -4058,7 +4071,7 @@ def main():
         # 정규화된 entity로 재구성해 비교한다 — 저장 시에도 동일 방식으로 재구성해
         # 비교·저장 키를 완전히 일치시킴 (2026-07-13 패치: 67b1f02는 비교만
         # 정규화하고 저장은 원본이라 별칭이 먼저 저장되면 dedup이 뚫리던 문제)
-        event_key  = a.get("event_key", "").strip()
+        event_key  = (a.get("event_key") or "").strip()
         if entity and event_type:
             event_key = f"{entity}_{event_type}"  # entity는 위에서 정규화 완료
         ek_combo   = ("ek", event_key) if event_key else None
@@ -4205,12 +4218,12 @@ def main():
     # 저장 키는 반드시 정규화 entity 기준 — dedup 비교 측과 대칭 유지
     for a in _known_removed:
         sent_urls.add(a.get("url", ""))
-        _ent = canonicalize_entity(a.get("entity", "").strip(), _entity_canon)
-        _et  = a.get("event_type", "").strip()
-        _ek  = a.get("event_key", "").strip()
+        _ent = canonicalize_entity((a.get("entity") or "").strip(), _entity_canon)
+        _et  = (a.get("event_type") or "").strip()
+        _ek  = (a.get("event_key") or "").strip()
         if _ent and _et:
             _ek = f"{_ent}_{_et}"  # 정규화 entity로 event_key 재구성
-        _kw  = a.get("keyword", "").strip()
+        _kw  = (a.get("keyword") or "").strip()
         if _ek:
             new_combos_this_run.add(("ek", _ek))
         if _et and _ent:
@@ -4466,7 +4479,7 @@ JSON만 출력:
             )
             if res.status_code != 200:
                 return True  # API 오류 → 안전하게 유지
-            raw = res.json().get("content", [{}])[0].get("text", "").strip()
+            raw = (res.json().get("content", [{}])[0].get("text") or "").strip()
             data = json.loads(raw)
             is_risk = data.get("risk", True)
             # 판정 근거 기록 — 오탐 발생 시 어느 단계에서 틀렸는지 추적용.
@@ -4506,10 +4519,10 @@ JSON만 출력:
     # 2차 검증 제거 기사 → seen_news에 등록 (다음 실행 재탐지 방지)
     for a in _removed_verify:
         sent_urls.add(a.get("url", ""))
-        _ent = a.get("entity", "").strip()
-        _et  = a.get("event_type", "").strip()
-        _ek  = a.get("event_key", "").strip()
-        _kw  = a.get("keyword", "").strip()
+        _ent = (a.get("entity") or "").strip()
+        _et  = (a.get("event_type") or "").strip()
+        _ek  = (a.get("event_key") or "").strip()
+        _kw  = (a.get("keyword") or "").strip()
         if _ek:
             new_combos_this_run.add(("ek", _ek))
         if _et and _ent:
@@ -4539,10 +4552,10 @@ JSON만 출력:
     # 재체크 차단 기사도 seen_news 등록
     for a in _recheck_removed:
         sent_urls.add(a.get("url", ""))
-        _ent = a.get("entity", "").strip()
-        _et  = a.get("event_type", "").strip()
-        _ek  = a.get("event_key", "").strip()
-        _kw  = a.get("keyword", "").strip()
+        _ent = (a.get("entity") or "").strip()
+        _et  = (a.get("event_type") or "").strip()
+        _ek  = (a.get("event_key") or "").strip()
+        _kw  = (a.get("keyword") or "").strip()
         if _ek:
             new_combos_this_run.add(("ek", _ek))
         if _et and _ent:
@@ -4633,7 +4646,7 @@ JSON만 출력:
             res.raise_for_status()
             payload = res.json()
             content = payload.get("content", [])
-            raw = content[0].get("text", "").strip() if content else ""
+            raw = (content[0].get("text") or "").strip() if content else ""
             if not raw:
                 return
             raw = raw.replace("```json", "").replace("```", "").strip()
@@ -4794,10 +4807,10 @@ JSON만 출력:
         sent_urls.add(a.get("url", ""))
         # 저장 키는 정규화 entity 기준 — dedup 비교(canonicalize 적용)와 대칭.
         # 원본 a['entity']는 카드 표시·익스포저 매칭용으로 이미 사용 완료라 무영향.
-        entity     = canonicalize_entity(a.get("entity", "").strip(), _entity_canon)
-        keyword    = a.get("keyword", "").strip()
-        event_type = a.get("event_type", "").strip()
-        event_key  = a.get("event_key", "").strip()
+        entity     = canonicalize_entity((a.get("entity") or "").strip(), _entity_canon)
+        keyword    = (a.get("keyword") or "").strip()
+        event_type = (a.get("event_type") or "").strip()
+        event_key  = (a.get("event_key") or "").strip()
         if entity and event_type:
             event_key = f"{entity}_{event_type}"  # 정규화 entity로 재구성
         # stage 기반 dedup — 발송 기사의 매칭 stage 키워드 기록 (차단 기사엔 미기록)
@@ -4815,10 +4828,10 @@ JSON만 출력:
     # entity dedup으로 제거된 기사도 URL·combo 등록 — 다음 실행 재탐지 방지
     for a in _removed:
         sent_urls.add(a.get("url", ""))
-        _ent = canonicalize_entity(a.get("entity", "").strip(), _entity_canon)
-        _kw  = a.get("keyword", "").strip()
-        _et  = a.get("event_type", "").strip()
-        _ek  = a.get("event_key", "").strip()
+        _ent = canonicalize_entity((a.get("entity") or "").strip(), _entity_canon)
+        _kw  = (a.get("keyword") or "").strip()
+        _et  = (a.get("event_type") or "").strip()
+        _ek  = (a.get("event_key") or "").strip()
         if _ent and _et:
             _ek = f"{_ent}_{_et}"  # 정규화 entity로 event_key 재구성
         if _ek:
