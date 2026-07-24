@@ -1825,15 +1825,39 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     # 금융 리스크가 아님. 실사례(7/24 21시): "이나연, 회생 신청한 JTBC
     # '출근 브이로그' 뭇매"가 점수 6.5(긴급 기사 6.8과 동급)로 산정됨.
     # 리스크 키워드(회생)가 제목에 있어 CRITICAL_KW bypass를 타는 게 근인.
+    #
+    # ※ 회귀세트 대조 결과 동일 유형 과거 오탐이 다수 확인돼 일반화:
+    #   - "샘킴, …정호영 배신하고 에스파 춤췄다..카리나 깜짝"(연예가십+키워드오염)
+    #   - "김미경, 회사 부도 위기·빚 수십억"(비상장 개인사업자)
+    #   초기 구현은 '브이로그/뭇매' 등 특정 어휘에만 반응해 위 2건을 놓쳤음.
     _GOSSIP_KW = ("브이로그", "유튜브", "인스타", "SNS", "뭇매", "구설",
                   "해명", "사과문", "논란 확산", "갑론을박", "누리꾼",
                   "네티즌", "악플", "댓글 반응", "팬들", "방송 출연",
                   "예능", "화보", "인터뷰 논란")
     _PERSON_CTX_KW = ("아나운서", "앵커", "배우", "가수", "아이돌", "연예인",
-                      "출연자", "MC", "개그맨", "모델", "인플루언서")
-    if any(g in title for g in _GOSSIP_KW) and (
-            any(p in _halt_text for p in _PERSON_CTX_KW)
-            or any(g in title for g in ("브이로그", "뭇매", "누리꾼", "악플"))):
+                      "출연자", "MC", "개그맨", "모델", "인플루언서",
+                      "셰프", "요리사", "방송인", "유튜버", "코미디언",
+                      "강사", "작가", "감독", "프로듀서")
+    # 연예·방송 고유 어휘 — 하나만 있어도 금융 기사가 아닐 가능성이 매우 높음
+    _SHOWBIZ_KW = ("에스파", "카리나", "아이유", "블랙핑크", "BTS", "방탄소년단",
+                   "드라마", "예능 프로", "출연료", "소속사", "데뷔", "컴백",
+                   "무대", "팬미팅", "콘서트", "앨범", "뮤직비디오",
+                   "열애", "결혼설", "이혼", "폭로", "사생활")
+    _gossip_hit = any(g in title for g in _GOSSIP_KW)
+    _person_hit = any(p in _halt_text for p in _PERSON_CTX_KW)
+    _showbiz_hits = [s for s in _SHOWBIZ_KW if s in title]
+    _showbiz_hit = bool(_showbiz_hits)
+    if (_gossip_hit and (_person_hit or any(
+            g in title for g in ("브이로그", "뭇매", "누리꾼", "악플")))) \
+            or (_showbiz_hit and _person_hit) \
+            or (_showbiz_hit and _gossip_hit):
+        return True, "연예·인물 논란 파생기사"
+    # 연예 고유어휘가 2개 이상 동시 등장하면 연예매체가 아닌 일반 매체
+    # 게재분이라도 연예 기사로 판단(도메인 차단 사각지대 보완).
+    # 이 조건만 넓게 걸리므로, 금융 리스크 어휘가 함께 있으면 면제한다.
+    if len(_showbiz_hits) >= 2 and not any(k in title for k in (
+            "주가", "급락", "반대매매", "상장", "공시", "유상증자",
+            "회생", "파산", "부도", "감사의견", "횡령", "배임", "제재")):
         return True, "연예·인물 논란 파생기사"
 
     # 치명적 키워드 bypass — AI 판단으로 넘김
