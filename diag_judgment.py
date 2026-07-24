@@ -7,7 +7,10 @@
 import json, requests, os, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from naver_news_monitor import (ANTHROPIC_KEY, CLAUDE_MODEL,
-                                 load_exposure_data, find_exposure)
+                                 load_exposure_data, find_exposure,
+                                 render_known_cases)
+
+_KNOWN = render_known_cases()
 
 _EXP = load_exposure_data()
 
@@ -54,7 +57,10 @@ def judge(title, body="", entity=""):
 
 {_exposure_text(entity)}
 
-먼저 아래 4가지를 순서대로 판단한 뒤 결론을 내리세요.
+이미 발송 완료된 기지(旣知) 사건 목록:
+{_KNOWN}
+
+먼저 아래 5가지를 순서대로 판단한 뒤 결론을 내리세요.
 ① 핵심사건: 이 기사가 보도하는 사건 한 가지를 15자 이내로
 ② 손실주체: "주주" / "회사" / "채권자" / "없음"
    ★ 공개매수 프리미엄·완전자회사 편입·주식분할처럼 주주가 보상을 받거나
@@ -68,12 +74,20 @@ def judge(title, body="", entity=""):
    ★ "무관"은 아래로 한정: 경쟁사 전산장애·민원 / 종목 미지목이며 확정사건도
      없는 시장 통계·전망 / 국내 상장·채권과 무관한 대상(해외 비상장·가상자산)
    ★ 경쟁사라도 대규모 손실·부도·상폐 등 주가 급락 유발 사건은 "직접"입니다.
-④ 확정여부: "확정" / "가능성" / "무관"
+④ 신규성: "신규" / "새국면" / "반복보도"
+   - 기지 목록에 없으면 "신규"
+   - 목록에 있어도 새 법적·재무 단계(회생계획 인가·기각, 파산선고, 청산개시,
+     추가계열사 회생신청, 손실규모 최초공개, 수사착수, 상폐확정)면 "새국면"
+   - 목록 사건의 경과·전망·업계파급·해설이면 "반복보도"
+   ★ "반복보도"이면 이미 알린 내용이므로 risk는 false입니다.
+⑤ 확정여부: "확정" / "가능성" / "무관"
+   ★ 거시 전망·시황 예측("~되나","~우려","뇌관","비상")은 "가능성"이며
+     특정 종목 미지목이면 risk는 false입니다.
 
 JSON만 출력:
-{{"judgment": {{"핵심사건": "...", "손실주체": "...", "당사연관": "...", "확정여부": "..."}}, "risk": true}}
+{{"judgment": {{"핵심사건": "...", "손실주체": "...", "당사연관": "...", "신규성": "...", "확정여부": "..."}}, "risk": true}}
 또는
-{{"judgment": {{"핵심사건": "...", "손실주체": "...", "당사연관": "...", "확정여부": "..."}}, "risk": false, "reason": "한 줄 이유"}}"""
+{{"judgment": {{"핵심사건": "...", "손실주체": "...", "당사연관": "...", "신규성": "...", "확정여부": "..."}}, "risk": false, "reason": "한 줄 이유"}}"""
     try:
         res = requests.post("https://api.anthropic.com/v1/messages",
             headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
@@ -127,7 +141,7 @@ def run(items, expect_risk, label):
         if not ok: wrong.append((x, r))
         mark = "OK  " if ok else "★오판"
         print(f"  {mark} risk={str(risk):5} | 사건:{str(j.get('핵심사건',''))[:16]:16} "
-              f"손실:{str(j.get('손실주체','')):4} 당사연관:{str(j.get('당사연관','')):5} | {x['title'][:34]}")
+              f"당사:{str(j.get('당사연관','')):4} 신규:{str(j.get('신규성','')):5} | {x['title'][:32]}")
     ok_n = len(results) - len(wrong) - len(errs)
     print(f"\n  정확도: {ok_n}/{len(results)} (오판 {len(wrong)}건, 응답오류 {len(errs)}건)")
     return wrong
@@ -144,5 +158,6 @@ for x, r in w1 + w2:
     print(f"\n  · {x['title']}")
     print(f"    category: {x.get('category', x.get('grade',''))}")
     print(f"    판정: risk={r.get('risk')} / 사건={j.get('핵심사건')} / "
-          f"손실주체={j.get('손실주체')} / 당사연관={j.get('당사연관')} / 확정={j.get('확정여부')}")
+          f"손실주체={j.get('손실주체')} / 당사연관={j.get('당사연관')} / "
+          f"신규성={j.get('신규성')} / 확정={j.get('확정여부')}")
     if r.get('reason'): print(f"    이유: {r.get('reason')}")
