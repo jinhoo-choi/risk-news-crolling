@@ -1681,6 +1681,36 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
             if _dom in _u:
                 return True, f"연예매체 도메인: {_dom}"
 
+    # ── 호재성 상장폐지 원천 차단 (AND 게이트) ──
+    # 배경: M&A·공개매수 자진상폐는 filter_prompt(75행)·gemini(109행)·
+    # 2차검증 프롬프트에 모두 규칙이 있는데도 AI가 반복적으로 놓쳐 왔음
+    # (7/19 골드그룹 참고, 7/23 동양생명 주의, 7/24 SK시그넷 긴급 6.5).
+    # "상장폐지" 단어가 CRITICAL_KW라 AI 우회 경로를 타는 게 근인.
+    # → 프롬프트에 의존하지 않고 코드에서 결정론적으로 차단한다.
+    #
+    # 단순 "공개매수" 단독 차단은 불가(적대적 M&A·경영권 분쟁 등 진짜
+    # 리스크 기사에도 등장). 따라서 ①상폐/매각 맥락 + ②주주 보상수단이
+    # 동시에 있을 때만 차단하는 AND 조건으로 오차단을 막는다.
+    _DELIST_CTX_KW = ("상장폐지", "상폐", "자진상장폐지", "자진 상장폐지",
+                      "코넥스", "매각", "인수")
+    _SHAREHOLDER_COMPENSATION_KW = (
+        "공개매수", "프리미엄", "잔여 지분", "잔여지분", "현금 교부금",
+        "교부금", "주식교환", "완전자회사", "지분 매입", "현금 매입",
+    )
+    # 단, 적대적 M&A·경영권 분쟁·실패 국면은 주주 보상이 확정되지 않아
+    # 실질 리스크가 있으므로 게이트에서 제외한다.
+    _HOSTILE_KW = ("적대적", "경영권 분쟁", "경영권분쟁", "방어", "무산",
+                   "불발", "실패", "철회", "반발", "소송", "가처분", "저지")
+    if (any(d in title for d in _DELIST_CTX_KW)
+            and any(c in title for c in _SHAREHOLDER_COMPENSATION_KW)
+            and not any(h in title for h in _HOSTILE_KW)):
+        return True, "호재성 상장폐지(공개매수·프리미엄 보상)"
+
+    # 적대적 M&A·경영권 분쟁은 실질 리스크 — 기존 '매수'(응원매수용) 등
+    # 일반 패턴에 걸려 조기 차단되지 않도록 AI 판단으로 우선 통과시킨다.
+    if any(h in title for h in ("적대적", "경영권 분쟁", "경영권분쟁")):
+        return False, None
+
     # 치명적 키워드 bypass — AI 판단으로 넘김
     CRITICAL_KW = ["상장폐지", "파산", "부도", "횡령", "배임", "거래정지",
                    "기업회생", "회생절차", "회생계획", "회생신청", "회생 신청", "회생 절차",
@@ -1734,6 +1764,7 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     if (any(m in title for m in _EVENT_MARKETING_KW)
             and any(c in title for c in _EVENT_COMPLAINT_KW)):
         return False, None
+
 
     for pat in TITLE_ONLY_PATTERNS:
         if pat in title:
