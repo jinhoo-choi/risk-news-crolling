@@ -305,11 +305,17 @@ def get_entity_price_drop(entity: str, exposure_data: dict) -> float | None:
     반환: 등락률(예: -12.6) 또는 조회 실패 시 None
     """
     try:
-        rows = exposure_data.get(entity) or []
+        # find_exposure() 사용 — 직접 dict 조회는 법인명 표기차이·영문 별칭을
+        # 못 잡아 종목코드를 찾지 못하고 조용히 None을 반환한다.
+        rows = find_exposure(entity, exposure_data) or []
+        # 국내 6자리 숫자 코드를 우선 선택. rows에는 채권(951F26 등 비숫자)·
+        # 해외주식(NVDA 등)이 섞여 있어, 단순히 첫 행의 코드를 쓰면 주식 코드가
+        # 있는데도 채권 코드를 집어 가격 조회에 실패한다.
         code = ""
         for r in rows:
-            code = (r.get("종목코드") or "").strip()
-            if code:
+            c = (r.get("종목코드") or "").strip()
+            if c.isdigit() and len(c.zfill(6)) == 6:
+                code = c
                 break
         if code and code.isdigit():
             import yfinance as yf
@@ -4041,13 +4047,18 @@ def main():
         # 확대되는 국면에서, 후속 기사가 전부 동일 조합(entity_기타리스크)으로
         # 판정돼 차단 → 정작 가장 알려야 할 시점에 봇이 침묵한 실사례.
         # 익스포저가 있는 종목만 조회(무관 종목 yfinance 호출 방지).
-        if matched and entity and entity in exposure_data:
-            _drop = get_entity_price_drop(entity, exposure_data)
-            if _drop is not None and _drop <= PRICE_RESEND_THRESHOLD:
-                matched = False
-                reason = ""
-                a["_price_resend"] = _drop
-                print(f"  [dedup 해제] {entity} 당일 {_drop}% 하락 → 재발송 허용")
+        # find_exposure() 사용 — 직접 dict 조회는 법인명 표기차이("중앙일보"↔
+        # "중앙일보(주)")·영문 별칭(JTBC→제이티비씨)을 못 잡아 실제 익스포저가
+        # 있는데도 재발송 기회를 놓친다.
+        if matched and entity:
+            _exp_rows = find_exposure(entity, exposure_data)
+            if _exp_rows:
+                _drop = get_entity_price_drop(entity, exposure_data)
+                if _drop is not None and _drop <= PRICE_RESEND_THRESHOLD:
+                    matched = False
+                    reason = ""
+                    a["_price_resend"] = _drop
+                    print(f"  [dedup 해제] {entity} 당일 {_drop}% 하락 → 재발송 허용")
 
         # 당일 동일 entity 1건 제한 — event_type 달라도 같은 사건으로 판단
         # 예외: _force_urgent(당사 직접 이슈), is_next_stage, 일반명사 entity
