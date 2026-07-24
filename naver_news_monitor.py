@@ -4605,6 +4605,19 @@ JSON만 출력: {{"risk": true}} 또는 {{"risk": false, "reason": "한 줄 이�
             new_combos_this_run.add((_ent, _et))
         elif _kw and _ent:
             new_combos_this_run.add((_ent, _kw))
+    # ── 본인 한정 발송(_self_only)은 사건 단위 dedup에서 제외 ──
+    # 전체 수신자에게는 안 나간 기사인데 combo/stage/context가 등록되면,
+    # 이후 같은 사건의 후속 기사가 "이미 발송함"으로 차단돼 수신자들은
+    # 그 사건을 영영 못 보게 된다(봇이 미탐한 것처럼 보이는 원인).
+    # URL만 등록해 동일 기사 재처리는 막고, 사건 단위 키는 남기지 않는다.
+    if _self_only:
+        print(f"  [dedup 제외] 본인 한정 발송 — 사건 단위 키 미등록 "
+              f"(combo {len(new_combos_this_run)}건, stage {len(new_stages_this_run)}건 스킵)")
+        new_combos_this_run = set()
+        new_stages_this_run = set()
+        new_title_norms = []
+        new_desc_norms  = []
+
     save_seen_urls(sent_urls, new_combos_this_run,
                    title_norms=new_title_norms, desc_norms=new_desc_norms,
                    stages=new_stages_this_run)
