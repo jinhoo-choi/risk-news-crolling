@@ -171,6 +171,14 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
 ]
 SEEN_FILE = "seen_news.json"
+# dedup 보존기간 — 2026-07-24: 7일(168h) → 3일(72h)로 단축.
+# 사유: 코오롱티슈진 임상실패 후 연속 하한가 국면에서 7/23 07시 1회 발송 뒤
+# 동일 조합(entity_기타리스크)으로 7일간 전 후속기사가 차단돼, 정작 손실이
+# 확대되는 시점에 봇이 침묵한 실사례. 3일로 줄여 재조명 주기를 짧게 한다.
+SEEN_RETENTION_HOURS = 72
+# 가격 연동 재발송 임계값 — 이미 발송한 사건이라도 당일 이 % 이상 추가
+# 하락하면 dedup을 무시하고 재발송한다(연속 하한가 국면 침묵 방지).
+PRICE_RESEND_THRESHOLD = -8.0
 EXPOSURE_FILE = "exposure_data.csv"
 CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL",        "claude-sonnet-4-6")  # Gemini fallback·재검증용
 CLAUDE_ACTION_MODEL = os.environ.get("CLAUDE_ACTION_MODEL", "claude-sonnet-4-6")  # action 생성 전용
@@ -284,6 +292,52 @@ def get_price_change(entity: str) -> float | None:
     except Exception:
         pass
     return None
+
+
+def get_entity_price_drop(entity: str, exposure_data: dict) -> float | None:
+    """dedup 우회 판정용 — 종목의 당일 등락률 조회 (국내·해외 겸용).
+
+    build_price_alert_section()의 가격 조회는 이메일 렌더링 단계에서 일어나
+    dedup 판정 시점에는 쓸 수 없으므로, 여기서 종목코드 기준으로 단건 조회한다.
+    exposure_data에서 종목코드를 찾아 국내는 .KS 티커로 변환, 없으면 해외
+    티커(get_price_change)로 폴백.
+
+    반환: 등락률(예: -12.6) 또는 조회 실패 시 None
+    """
+    try:
+        rows = exposure_data.get(entity) or []
+        code = ""
+        for r in rows:
+            code = (r.get("종목코드") or "").strip()
+            if code:
+                break
+        if code and code.isdigit():
+            import yfinance as yf
+            from datetime import datetime as _dt
+            ticker = code.zfill(6) + ".KS"
+            hist = yf.Ticker(ticker).history(period="5d", auto_adjust=False)
+            if len(hist) < 2:
+                return None
+            kst = timezone(timedelta(hours=9))
+            last_date = hist.index[-1]
+            try:
+                if last_date.tzinfo is not None:
+                    last_kst = last_date.tz_convert("Asia/Seoul")
+                else:
+                    last_kst = last_date
+                # 오늘 데이터가 아니면(휴장 등) 판정하지 않음
+                if last_kst.strftime("%Y-%m-%d") != datetime.now(kst).strftime("%Y-%m-%d"):
+                    return None
+            except Exception:
+                pass
+            curr = float(hist["Close"].iloc[-1])
+            prev = float(hist["Close"].iloc[-2])
+            if prev > 0:
+                return round((curr - prev) / prev * 100, 2)
+        # 국내 코드 없으면 해외 종목으로 시도
+        return get_price_change(entity)
+    except Exception:
+        return None
 
 
 def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
@@ -1013,7 +1067,7 @@ def build_competitor_html(notices: list, today_str: str) -> str:
     </table>"""
 
 def load_seen_urls() -> set:
-    """최근 7일 키(YYYY-MM-DD HH) 기준 seen URL 로드 — 오래된 키 자동 제거
+    """최근 3일 키(YYYY-MM-DD HH) 기준 seen URL 로드 — 오래된 키 자동 제거
     (2026-07 패치: 24시간→7일로 확대. load_seen_stages()와 보존기간을 맞춰,
     known_cases 진행 중 사건의 파생기사가 3일 이상 지나 URL이 바뀌면 dedup을
     빠져나가 참고 등급으로 매일 재노출되던 문제 해결. 저장(save_seen_urls)은
@@ -1022,7 +1076,7 @@ def load_seen_urls() -> set:
     now = datetime.now(kst)
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(168)
+        for i in range(SEEN_RETENTION_HOURS)
     }
     if os.path.exists(SEEN_FILE):
         try:
@@ -1043,12 +1097,12 @@ def load_seen_urls() -> set:
     return set()
 
 def load_seen_combos() -> set:
-    """최근 7일 내 발송된 (entity, keyword) 조합 로드 (2026-07: 24h→7일 확대)"""
+    """최근 3일 내 발송된 (entity, keyword) 조합 로드 (2026-07-24: 7일→3일 단축)"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(168)
+        for i in range(SEEN_RETENTION_HOURS)
     }
     if os.path.exists(SEEN_FILE):
         try:
@@ -1068,12 +1122,12 @@ def load_seen_combos() -> set:
     return set()
 
 def load_seen_stages() -> set:
-    """최근 7일 내 발송된 (entity, stage_keyword) 조합 로드 — stage 기반 dedup용"""
+    """최근 3일 내 발송된 (entity, stage_keyword) 조합 로드 — stage 기반 dedup용"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(168)  # 7일 — 파산선고 등 단계 보도는 수일간 지속
+        for i in range(SEEN_RETENTION_HOURS)  # 3일 — 파산선고 등 단계 보도는 수일간 지속
     }
     stages = set()
     if os.path.exists(SEEN_FILE):
@@ -1093,13 +1147,13 @@ def load_seen_stages() -> set:
     return stages
 
 def load_seen_context() -> dict:
-    """최근 7일 내 발송된 기사의 title_norms·desc_norms 로드 — 맥락 기반
-    중복 감지 (2026-07: 24h→7일 확대)"""
+    """최근 3일 내 발송된 기사의 title_norms·desc_norms 로드 — 맥락 기반
+    중복 감지 (2026-07-24: 7일→3일 단축)"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(168)
+        for i in range(SEEN_RETENTION_HOURS)
     }
     title_norms = []
     desc_norms  = []
@@ -1149,14 +1203,14 @@ def load_seen_entities_today() -> set:
 
 
 def load_known_entities() -> dict:
-    """최근 7일 seen_news에서 entity별 최초 발송일(days_ago) 계산
+    """최근 3일 seen_news에서 entity별 최초 발송일(days_ago) 계산
     반환: {entity: days_ago}  — days_ago=0: 오늘, 1: 어제, ...
     강등 기준: days_ago >= 3 → 등급 1단계 강등
     차단 기준: days_ago >= 7 → 완전 차단 (NEXT_STAGE 예외 유지)
     """
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
-    # 최대 7일 = 168시간치 슬롯 로드
+    # 최대 3일 = 72시간치 슬롯 로드
     entity_first: dict = {}  # {entity: 최초 발송 days_ago}
     if not os.path.exists(SEEN_FILE):
         return entity_first
@@ -1165,7 +1219,7 @@ def load_known_entities() -> dict:
             data = json.load(f)
         if not isinstance(data, dict):
             return entity_first
-        for i in range(168):
+        for i in range(SEEN_RETENTION_HOURS):
             slot_dt = now - timedelta(hours=i)
             slot_key = slot_dt.strftime("%Y-%m-%d %H")
             days_ago = i // 24
@@ -1183,13 +1237,13 @@ def load_known_entities() -> dict:
 
 def save_seen_urls(seen: set, combos: set = None, title_norms: list = None, desc_norms: list = None,
                    stages: set = None):
-    """현재 시각 키(YYYY-MM-DD HH)로 seen URL + 발송 조합 저장 — 최근 7일 키만 보존"""
+    """현재 시각 키(YYYY-MM-DD HH)로 seen URL + 발송 조합 저장 — 최근 3일 키만 보존"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     current_key = now.strftime("%Y-%m-%d %H")
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(168)  # 7일 = 168시간 보존 (강등·차단 이력 유지)
+        for i in range(SEEN_RETENTION_HOURS)  # 3일 = 72시간 보존 (강등·차단 이력 유지)
     }
     existing = {}
     if os.path.exists(SEEN_FILE):
@@ -3700,7 +3754,7 @@ def main():
     now_str_full    = now_kst.strftime("%m월 %d일 %H시")
     seen_urls           = load_seen_urls()
     seen_combos         = load_seen_combos()
-    seen_stages         = load_seen_stages()   # (entity, stage_kw) 7일 — stage 기반 dedup
+    seen_stages         = load_seen_stages()   # (entity, stage_kw) 3일 — stage 기반 dedup
     new_stages_this_run = set()
     seen_context        = load_seen_context()
     seen_entities_today = load_seen_entities_today()
@@ -3911,6 +3965,21 @@ def main():
 
         if not matched and not entity and kw_only and kw_only in seen_combos:
             matched = True; reason = "동일 키워드 이미 발송"
+
+        # ── 가격 연동 재발송 오버라이드 ──
+        # 이미 발송한 사건이라도 해당 종목이 당일 큰 폭으로 추가 하락했다면
+        # dedup을 무시하고 재발송한다.
+        # 사유: 코오롱티슈진 임상실패(7/23 07시 발송) 이후 연속 하한가로 손실이
+        # 확대되는 국면에서, 후속 기사가 전부 동일 조합(entity_기타리스크)으로
+        # 판정돼 차단 → 정작 가장 알려야 할 시점에 봇이 침묵한 실사례.
+        # 익스포저가 있는 종목만 조회(무관 종목 yfinance 호출 방지).
+        if matched and entity and entity in exposure_data:
+            _drop = get_entity_price_drop(entity, exposure_data)
+            if _drop is not None and _drop <= PRICE_RESEND_THRESHOLD:
+                matched = False
+                reason = ""
+                a["_price_resend"] = _drop
+                print(f"  [dedup 해제] {entity} 당일 {_drop}% 하락 → 재발송 허용")
 
         # 당일 동일 entity 1건 제한 — event_type 달라도 같은 사건으로 판단
         # 예외: _force_urgent(당사 직접 이슈), is_next_stage, 일반명사 entity
