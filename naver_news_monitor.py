@@ -2461,14 +2461,28 @@ def calc_risk_score(article: dict, exposure_data: dict = None) -> float:
       없음 (일반 기사)      → -0.05  ※ 당사 직접 이슈(MTS·전산장애 등) 면제
     국내·해외 동일 기준 적용
     """
-    conf  = article.get("_ai_confidence") or 0.3
+    # conf는 AI 응답(confidence)을 그대로 받으므로 이상값 방어가 필요하다.
+    # 음수·1 초과·문자열이 들어오면 점수가 범위를 벗어난다(실측: conf=-0.5 →
+    # -2.8점). 0.0~1.0으로 클램프하고, 변환 불가 시 보수적 기본값 0.3 사용.
+    try:
+        conf = float(article.get("_ai_confidence") if article.get("_ai_confidence") is not None else 0.3)
+    except (TypeError, ValueError):
+        conf = 0.3
+    conf = min(max(conf, 0.0), 1.0)
     _title_only = article.get("title", "")
     title = _title_only + article.get("reason", "")
     # kw_weight는 '제목'에 실제 리스크 키워드가 있을 때만 가중.
     # reason·event_type은 AI 생성물이라 제목에 없는 사건(거래정지·상폐 등)을
     # 붙이는 오분류가 잦음 → 제목 무근거 격상 방지 위해 제목 기준으로 산정.
+    # 키워드 가중치도 공백 무시로 매칭한다.
+    # 기존엔 원문 그대로 비교해 '전산장애'는 잡히고 '전산 장애'는 못 잡아
+    # 같은 사건이 5.0점 vs 8.2점으로 갈렸다(실측). RISK_PRIORITY에
+    # '매매거래 정지'/'매매거래정지'처럼 변형을 수동 등재해 둔 것도 있으나
+    # 누락된 게 많아, is_hard_excluded와 동일하게 공백 무시로 통일한다.
+    _kw_title_ns = _NS_RE.sub("", _title_only)
     kw_weight = max(
-        [v for k, v in RISK_PRIORITY.items() if k in _title_only],
+        [v for k, v in RISK_PRIORITY.items()
+         if k in _title_only or _NS_RE.sub("", k) in _kw_title_ns],
         default=1.0
     )
     is_direct_incident = any(kw in _title_only for kw in DIRECT_INCIDENT_KW)
@@ -2501,7 +2515,9 @@ def calc_risk_score(article: dict, exposure_data: dict = None) -> float:
     elif article.get("_has_exposure"):
         exp_boost = 0.05
     raw = conf * kw_weight + exp_boost
-    return round(min(raw * 5, 10.0), 1)
+    # 최종 점수도 0~10으로 클램프 — exp_boost 음수(-0.05)와 낮은 conf가
+    # 겹치면 음수가 나올 수 있다.
+    return round(min(max(raw * 5, 0.0), 10.0), 1)
 
 def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     """등급별 상한 초과 시 리스크 점수 기반으로 하위 등급 강등"""
