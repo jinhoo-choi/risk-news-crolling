@@ -4921,13 +4921,25 @@ JSON만 출력:
     _force_full = _has_urgent or _has_strong_caution or _market_crash
     _self_only = (_max_score < SELF_ONLY_MAX_SCORE) and not _force_full
 
+    # ── 판정 근거 로깅 ──────────────────────────────────────────────
+    # 발송 범위는 임원 신뢰도에 직결되므로, 왜 그렇게 판정했는지 로그만 보고
+    # 사후 재구성할 수 있어야 한다. 소수 2자리로 출력해 경계값(4.99 vs 5.00)이
+    # 반올림돼 "5.0 < 5.0"처럼 모순되게 보이지 않도록 한다.
+    _triggers = []
+    if _has_urgent:         _triggers.append("긴급 기사 존재")
+    if _has_strong_caution: _triggers.append("고신뢰 주의(conf≥0.80·익스포저 실재)")
+    if _market_crash:       _triggers.append(f"시장급락({_alerted_stock_count}종목)")
+    _trg = " + ".join(_triggers) if _triggers else "없음"
+    print(f"  [발송판정] 최고점수 {_max_score:.2f} / 임계 {SELF_ONLY_MAX_SCORE:.2f} / "
+          f"강제발송 조건: {_trg} / 대상기사 {len(_actionable)}건(긴급·주의)")
     if _self_only:
-        print(f"  [본인 한정 발송] 최고 리스크점수 {_max_score:.1f} < {SELF_ONLY_MAX_SCORE:.1f} — 전체 발송 보류")
-    elif _force_full and _max_score < SELF_ONLY_MAX_SCORE:
-        _reason = "긴급 기사 존재" if _has_urgent else "고신뢰 주의(conf≥0.80) 존재"
-        print(f"  [전체 발송] 최고점수 {_max_score:.1f} < {SELF_ONLY_MAX_SCORE:.1f}이나 {_reason} → 전체 발송")
+        print(f"  [본인 한정 발송] 점수 {_max_score:.2f} < {SELF_ONLY_MAX_SCORE:.2f} "
+              f"이고 강제발송 조건 없음 — 전체 발송 보류")
+    elif _max_score < SELF_ONLY_MAX_SCORE:
+        print(f"  [전체 발송] 점수 {_max_score:.2f} < {SELF_ONLY_MAX_SCORE:.2f}이나 "
+              f"{_trg} → 전체 발송")
     else:
-        print(f"  [전체 발송] 최고 리스크점수 {_max_score:.1f} ≥ {SELF_ONLY_MAX_SCORE:.1f}")
+        print(f"  [전체 발송] 최고 리스크점수 {_max_score:.2f} ≥ {SELF_ONLY_MAX_SCORE:.2f}")
     send_email(subject, html, self_only=_self_only)
 
     for a in filtered:
