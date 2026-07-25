@@ -2008,8 +2008,13 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     if _bracket_m:
         _bracket_content = _bracket_m.group(1)
         # 보도성 브래킷(허용) — 최소화된 화이트리스트
-        _NEWS_BRACKET_KW = {"단독", "속보", "공시", "특징주", "긴급속보", "공식"}
-        if not any(kw in _bracket_content for kw in _NEWS_BRACKET_KW):
+        # 보도성 브래킷(허용) — 부분일치가 아닌 '완전일치'로 판정한다.
+        # 부분일치였을 때 "[제약공시 책갈피]"가 '공시'에 걸려 보도성으로 오인돼
+        # 코너물이 그대로 통과했음(7/25 14시 주의 4.2 오탐 실사례).
+        _NEWS_BRACKET_KW = {"단독", "속보", "공시", "특징주", "긴급속보", "공식",
+                            "공시 종합", "오늘의 공시"}
+        _bc = _bracket_content.strip()
+        if _bc not in _NEWS_BRACKET_KW:
             _CRITICAL_KW_LOCAL = ["상장폐지", "파산", "부도", "횡령", "배임",
                                   "거래정지", "기업회생", "회생절차", "회생계획", "회생신청",
                                   "MTS 장애", "MTS 접속 장애"]
@@ -4831,9 +4836,16 @@ JSON만 출력:
     _max_score = max((a.get("_risk_score") or 0) for a in _actionable) if _actionable else 0
     _has_urgent = any(a.get("grade") == "긴급" for a in filtered)
     # 고신뢰 주의: confidence 원값(_conf_raw 우선, 없으면 현재값) 0.80 이상
+    # 고신뢰 주의 — conf만 높고 점수가 낮은 건은 전체 발송 트리거에서 제외한다.
+    # 사유: conf는 'AI가 이 기사를 리스크로 확신하는 정도'일 뿐 손실 규모와
+    # 무관해, 익스포저 0인 오탐이 conf 0.80을 받으면 5점 미만인데도 전체
+    # 발송됐음(7/25 14시 최고 4.6점인데 전체 발송 — 주의 2건 모두 오탐:
+    # 서천특화시장 시공사(익스포저 0 비상장), [제약공시 책갈피](코너물)).
+    # → conf가 높아도 '당사 익스포저가 실재하는' 주의만 전체 발송을 유발한다.
     _has_strong_caution = any(
         a.get("grade") == "주의"
         and (a.get("_conf_raw") or a.get("_ai_confidence") or 0) >= 0.80
+        and find_exposure((a.get("entity") or "").strip(), exposure_data)
         for a in filtered
     )
     # 시장 급락 안전장치: -3% 초과 하락 + 위험고객 보유 종목이 10개 이상이면,
