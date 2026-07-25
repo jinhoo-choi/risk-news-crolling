@@ -447,7 +447,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
                 continue
             def _pf(v):
                 try:
-                    return float(str(v or '0').replace(',', '') or '0')
+                    return _num(v)
                 except (ValueError, TypeError):
                     return 0.0
             bal, cust  = _pf(r.get('잔고(억)', 0)), int(_pf(r.get('고객수', 0)))
@@ -788,7 +788,7 @@ def _synthesize_channel_totals(row: dict) -> dict:
 
     def _f(v):
         try:
-            return float(str(v or "0").replace(",", "") or "0")
+            return _num(v)
         except (ValueError, TypeError):
             return 0.0
 
@@ -912,14 +912,14 @@ def sanitize_action_numbers(action: str, exp_rows: list) -> tuple:
     for r in exp_rows:
         for _bk in ('잔고(억)', '뱅잔고', '영잔고', '리스크잔고(억)', '뱅리스크잔고', '영리스크잔고'):
             try:
-                b = int(round(float(str(r.get(_bk, '0') or '0').replace(',', ''))))
+                b = int(round(_num(r.get(_bk))))
                 if b > 0:
                     bal_vals.append(b)
             except (ValueError, TypeError):
                 pass
         for _ck in ('고객수', '뱅고객수', '영고객수', '리스크고객수', '뱅리스크고객수', '영리스크고객수'):
             try:
-                c = int(float(str(r.get(_ck, '0') or '0').replace(',', '')))
+                c = int(_num(r.get(_ck)))
                 if c > 0:
                     cust_vals.append(c)
             except (ValueError, TypeError):
@@ -3104,7 +3104,7 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             if "뱅잔고" in r:  # 20컬럼 스키마 — 채널 병기용 집계
                 def _mf(v):
                     try:
-                        return float(str(v or "0").replace(",", "") or "0")
+                        return _num(v)
                     except (ValueError, TypeError):
                         return 0.0
                 merged[name]["뱅잔고"]   += _mf(r.get("뱅잔고"))
@@ -4557,7 +4557,7 @@ def main():
         def _f0(v):
             """'1,234' 같은 문자열·빈값을 안전하게 float으로. 실패 시 0.0"""
             try:
-                return float(str(v).replace(",", "").strip() or 0)
+                return _num(v)
             except (ValueError, TypeError):
                 return 0.0
 
@@ -4800,11 +4800,11 @@ JSON만 출력:
         is_overseas = any(r.get("시장","국내") == "해외" or r.get("종목유형","") in ("해외주식","해외대출") for r in exp_rows)
         def _fmt_exp(r):
             try:
-                잔고 = float(str(r.get('잔고(억)', '0') or '0').replace(',', ''))
+                잔고 = _num(r.get('잔고(억)'))
             except (ValueError, TypeError):
                 잔고 = 0.0
             try:
-                고객 = int(float(str(r.get('고객수', '0') or '0').replace(',', '')))
+                고객 = int(_num(r.get('고객수')))
             except (ValueError, TypeError):
                 고객 = 0
             return f"{r.get('종목유형','')} {잔고:,.0f}억원/{고객:,}명"
