@@ -155,11 +155,24 @@ NO_RESULT_RECEIVER = os.environ.get("NO_RESULT_RECEIVER", "").strip()  # 결과 
 EMAIL_CC          = [e.strip() for e in os.environ.get("EMAIL_CC", "").split(",") if e.strip()]   # 참조
 # 전체 발송 임계값 — 최종 기사 중 최고 리스크점수가 이 값 미만이면
 # 전체 수신자 대신 보낸사람(NO_RESULT_RECEIVER/SENDER)에게만 발송.
-# "실제 리스크 있는 메일만 전체 발송" 목적. 기본 5.0.
+# "실제 리스크 있는 메일만 전체 발송" 목적.
+# 2026-07-25: 5.0 → 5.5 상향. 최근 9회 발송 실적 재현 결과 전체발송이
+# 9/9(100%)로 과다했고, 임원 대상이므로 리스크가 더 높은 건만 보내도록 조정.
 try:
-    SELF_ONLY_MAX_SCORE = float(os.environ.get("SELF_ONLY_MAX_SCORE", "5.0"))
+    SELF_ONLY_MAX_SCORE = float(os.environ.get("SELF_ONLY_MAX_SCORE", "5.5"))
 except ValueError:
-    SELF_ONLY_MAX_SCORE = 5.0
+    SELF_ONLY_MAX_SCORE = 5.5
+
+# 고신뢰 주의(conf≥0.80) 우회 발송의 최소 익스포저 규모(억).
+# 점수가 임계 미만이어도 AI 확신도가 높으면 전체 발송하는 우회 경로가 있는데,
+# 기존엔 '익스포저 실재(>0)'만 봐서 2억짜리 종목도 전사 발송을 유발했음
+# (7/25 21시 예선테크 주식 2억·여신 없음 실사례).
+# 점수 5.5 이상은 이 값과 무관하게 전체 발송되므로, 소규모 종목의 진짜
+# 리스크(예: 엔비티 담보비율 하회 5.5점·19억)는 계속 커버된다.
+try:
+    STRONG_CAUTION_MIN_EXPOSURE = float(os.environ.get("STRONG_CAUTION_MIN_EXPOSURE", "50"))
+except ValueError:
+    STRONG_CAUTION_MIN_EXPOSURE = 50.0
 ANTHROPIC_KEY     = os.environ["ANTHROPIC_API_KEY"]
 GOOGLE_API_KEY    = os.environ.get("GOOGLE_API_KEY", "")       # Gemini 필터링용 (없으면 Claude fallback)
 NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
@@ -4987,12 +5000,19 @@ JSON만 출력:
     # 발송됐음(7/25 14시 최고 4.6점인데 전체 발송 — 주의 2건 모두 오탐:
     # 서천특화시장 시공사(익스포저 0 비상장), [제약공시 책갈피](코너물)).
     # → conf가 높아도 '당사 익스포저가 실재하는' 주의만 전체 발송을 유발한다.
-    _has_strong_caution = any(
-        a.get("grade") == "주의"
-        and (a.get("_conf_raw") or a.get("_ai_confidence") or 0) >= 0.80
-        and find_exposure((a.get("entity") or "").strip(), exposure_data)
-        for a in filtered
-    )
+    def _strong_caution_ok(a) -> bool:
+        """고신뢰 주의 우회 발송 자격 — conf와 '익스포저 규모'를 함께 본다."""
+        if a.get("grade") != "주의":
+            return False
+        if (a.get("_conf_raw") or a.get("_ai_confidence") or 0) < 0.80:
+            return False
+        _rows = find_exposure((a.get("entity") or "").strip(), exposure_data)
+        if not _rows:
+            return False
+        _bal = sum(_num(r.get("잔고(억)")) for r in _rows)
+        return _bal >= STRONG_CAUTION_MIN_EXPOSURE
+
+    _has_strong_caution = any(_strong_caution_ok(a) for a in filtered)
     # 시장 급락 안전장치: -3% 초과 하락 + 위험고객 보유 종목이 10개 이상이면,
     # 관련 리스크 뉴스가 하나도 안 잡혀 등급·점수가 낮더라도 전체 발송.
     # (build_price_alert_section이 이미 위에서 호출되어 last_alerted_count에
@@ -5011,7 +5031,7 @@ JSON만 출력:
     # 반올림돼 "5.0 < 5.0"처럼 모순되게 보이지 않도록 한다.
     _triggers = []
     if _has_urgent:         _triggers.append("긴급 기사 존재")
-    if _has_strong_caution: _triggers.append("고신뢰 주의(conf≥0.80·익스포저 실재)")
+    if _has_strong_caution: _triggers.append(f"고신뢰 주의(conf≥0.80·익스포저 {STRONG_CAUTION_MIN_EXPOSURE:,.0f}억↑)")
     if _market_crash:       _triggers.append(f"시장급락({_alerted_stock_count}종목)")
     _trg = " + ".join(_triggers) if _triggers else "없음"
     print(f"  [발송판정] 최고점수 {_max_score:.2f} / 임계 {SELF_ONLY_MAX_SCORE:.2f} / "
