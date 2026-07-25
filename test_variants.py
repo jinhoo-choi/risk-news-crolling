@@ -75,13 +75,33 @@ for kind,t,d in TP_VARIANTS:
     if g: fail_b.append((kind,t,r))
     print(f"  {'❌차단' if g else '✅통과'} | {kind:16} | {str(r)[:22]:22} | {t[:40]}")
 
+# ── 원본 회귀세트도 함께 검증 (변형만 보면 원본 회귀를 놓친다) ──
+D = json.load(open('regression_set.json', encoding='utf-8'))
+base_fn = [x['title'] for x in D['true_positive_history']
+           if check(x['title'], x.get('desc',''))[0]]
+base_bl = sum(1 for x in D['false_positive_history']
+              if check(x['title'], x.get('desc',''))[0])
+
 print("\n"+"="*80)
-print(f"결과: 오탐변형 {len(FP_VARIANTS)-len(fail_a)}/{len(FP_VARIANTS)} 차단  |  "
-      f"정탐변형 {len(TP_VARIANTS)-len(fail_b)}/{len(TP_VARIANTS)} 통과")
+# 분모는 항상 '입력 건수'로 고정. 오류·스킵 건을 분모에서 빼면 정확도가
+# 실제보다 높게 보인다(과거 오집계 사례 방지).
+assert len(fail_a) <= len(FP_VARIANTS) and len(fail_b) <= len(TP_VARIANTS)
+print(f"[변형]   오탐 {len(FP_VARIANTS)-len(fail_a)}/{len(FP_VARIANTS)} 차단  |  "
+      f"정탐 {len(TP_VARIANTS)-len(fail_b)}/{len(TP_VARIANTS)} 통과")
+print(f"[원본]   오탐 코드차단 {base_bl}/{len(D['false_positive_history'])}  |  "
+      f"★미탐 {len(base_fn)}/{len(D['true_positive_history'])} "
+      f"{'✅' if not base_fn else '❌ 즉시 확인 필요'}")
+for t in base_fn: print(f"           미탐: {t}")
 print("="*80)
+_all_ok = (not fail_a) and (not fail_b) and (not base_fn)
+print("판정:", "✅ 전체 통과" if _all_ok else "❌ 실패 — 아래 상세 확인")
 if fail_a:
     print("\n[과적합 — 변형 시 놓침]")
     for k,t in fail_a: print(f"  · {k}: {t}")
 if fail_b:
     print("\n[★미탐 — 변형 시 오차단]")
     for k,t,r in fail_b: print(f"  · {k}: {t}\n    사유: {r}")
+
+
+# CI/수동 실행 시 실패를 종료코드로 노출
+sys.exit(0 if _all_ok else 1)

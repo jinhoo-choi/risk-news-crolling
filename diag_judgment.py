@@ -110,8 +110,17 @@ def run(items, expect_risk, label):
         futs = {ex.submit(judge, x['title'], x.get('desc',''), x.get('entity','')): x for x in items}
         for fu in as_completed(futs):
             x = futs[fu]
-            results.append((x, fu.result()))
+            # fu.result()가 예외를 던지면 항목이 results에서 누락돼 분모가
+            # 조용히 줄고 정확도가 부풀려진다(과거 실제 오집계 원인).
+            # 반드시 예외도 결과로 기록해 분모를 보존한다.
+            try:
+                results.append((x, fu.result()))
+            except Exception as _e:
+                results.append((x, {"error": f"exec: {type(_e).__name__}: {_e}"[:80]}))
             time.sleep(0.3)
+    # 분모 무결성 검증 — 입력 건수와 결과 건수가 다르면 즉시 경고
+    if len(results) != len(items):
+        print(f"  ⚠️ 분모 불일치: 입력 {len(items)}건 vs 결과 {len(results)}건 — 집계 신뢰 불가")
     wrong = []
     errs = []
     for x, r in results:
@@ -129,7 +138,11 @@ def run(items, expect_risk, label):
         print(f"  {mark} risk={str(risk):5} | 사건:{str(j.get('핵심사건',''))[:16]:16} "
               f"손실:{str(j.get('손실주체','')):4} 당사연관:{str(j.get('당사연관','')):5} | {x['title'][:34]}")
     ok_n = len(results) - len(wrong) - len(errs)
-    print(f"\n  정확도: {ok_n}/{len(results)} (오판 {len(wrong)}건, 응답오류 {len(errs)}건)")
+    # 분모는 항상 '입력 건수'로 고정 — 오류·누락 건을 분모에서 빼면
+    # 정확도가 실제보다 높게 보인다(과거 '36/36, 20/20' 오보고 원인).
+    print(f"\n  정확도: {ok_n}/{len(items)} "
+          f"(정답 {ok_n} / 오판 {len(wrong)} / 응답오류 {len(errs)} = 입력 {len(items)})")
+    assert ok_n + len(wrong) + len(errs) == len(items), "집계 합이 입력 건수와 불일치"
     return wrong
 
 w1 = run(fp, False, "오탐 이력 — 걸러내야 함")
