@@ -413,9 +413,11 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         import yfinance as yf
     except ImportError:
         build_price_alert_section.last_alerted_count = 0
+        build_price_alert_section.last_alerted_rbal = 0
         return ''
 
     build_price_alert_section.last_alerted_count = 0
+    build_price_alert_section.last_alerted_rbal = 0
     THRESHOLD = -3.0  # 2026-07-15: -5% → -3% 환원 (탐지 범위 확대)
 
     # 잔고 기준일 파싱
@@ -603,6 +605,10 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     # 메일 자체가 안 나가던 문제 방지용 — 시장 급락 시 뉴스 매칭 여부와 무관하게
     # 강제 전체발송 트리거로 사용)
     build_price_alert_section.last_alerted_count = len(alerted_sorted)
+    # 위험고객 리스크잔고 합계도 기록 — 종목 수가 적어도 잔고가 크면
+    # 알릴 가치가 있으므로 발송 게이트에서 종목 수와 함께 판단한다.
+    build_price_alert_section.last_alerted_rbal = sum(
+        (a[4] or 0) for a in alerted_sorted)
     if not alerted_sorted:
         return ''
     MAX_DISPLAY = 3
@@ -4365,8 +4371,26 @@ def main():
         # 여기서는 메일 콘텐츠가 여신잔고 현황 그 자체라 1개라도 알릴 가치가 있고,
         # 뉴스가 있는 경우엔 저등급 뉴스+소수 종목 하락만으로 전사 발송을 막기 위함.
         _price_section = build_price_alert_section(exposure_data, "")
+        # 뉴스 0건 시 전체발송 기준 (2026-07-25 조정)
+        # 기존: 경보 종목이 1개라도 있으면 전체발송 → 위험고객 보유 종목이
+        # 303개라 그중 1개만 -3% 하락해도 발동, 평상시에도 거의 매일
+        # 전사 메일이 나가 임원 신뢰도를 떨어뜨릴 수 있었음.
+        # 변경: 5종목 이상 OR 리스크잔고 합계 50억 이상.
+        # 잔고 조건을 병행하는 이유 — 실측상 단일 종목 최대 95억,
+        # 상위 3종목이 전체의 45%를 차지해 '적은 종목 수 + 큰 잔고' 상황을
+        # 종목 수만으로는 놓치기 때문.
+        _NR_STOCK_TH = 5
+        _NR_RBAL_TH  = 50.0   # 억
+        _nr_cnt  = getattr(build_price_alert_section, "last_alerted_count", 0)
+        _nr_rbal = getattr(build_price_alert_section, "last_alerted_rbal", 0)
+        _nr_full = _price_section and (_nr_cnt >= _NR_STOCK_TH or _nr_rbal >= _NR_RBAL_TH)
         if _price_section:
-            print("AI 필터링 결과 없음 — 여신잔고 위험고객 있음, 전체 발송")
+            print(f"  [뉴스 0건 발송판정] 경보 {_nr_cnt}종목 / 리스크잔고 {_nr_rbal:,.0f}억 "
+                  f"/ 기준 {_NR_STOCK_TH}종목 또는 {_NR_RBAL_TH:,.0f}억 → "
+                  f"{'충족(전체발송)' if _nr_full else '미달(본인한정)'}")
+        if _price_section:
+            # 경보가 있으면 내용은 동일하게 만들고 '발송 범위'만 기준으로 가른다.
+            # 기준 미달이어도 본인에게는 보내 정보가 사라지지 않게 한다.
             subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 여신잔고 위험고객 탐지"
             _ref_date = next(iter(exposure_data.values()))[0].get("기준일", "") if exposure_data else ""
             _today_str = now.strftime("%m월 %d일")
@@ -4374,7 +4398,9 @@ def main():
             _html = build_email_html([], total_count=total_count, ai_summary=_ai_summary,
                                      exposure_data=exposure_data, ref_date=_ref_date,
                                      competitor_notices=None, today_str=_today_str)
-            send_email(subject, _html)
+            print(f"AI 필터링 결과 없음 — 여신잔고 위험고객 {_nr_cnt}종목·"
+                  f"{_nr_rbal:,.0f}억 → {'전체 발송' if _nr_full else '본인 한정'}")
+            send_email(subject, _html, self_only=not _nr_full)
         else:
             print("AI 필터링 결과 없음 — 결과 없음 메일 발송 (특정인만)")
             subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
