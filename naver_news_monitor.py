@@ -1090,7 +1090,7 @@ def load_competitor_notices() -> list:
                     company = row.get("company", "")
                     if date not in valid_dates:
                         continue
-                    if any(kw in title for kw in CREDIT_KEYWORDS):
+                    if _kw_hit(title, CREDIT_KEYWORDS):
                         result.append({
                             "company": company,
                             "title": title,
@@ -1717,6 +1717,50 @@ _TITLE_PATTERNS_NS = [(p, _NS_RE.sub("", p)) for p in TITLE_ONLY_PATTERNS]
 _TEXT_PATTERNS_NS  = [(p, _NS_RE.sub("", p)) for p in TEXT_PATTERNS]
 
 
+def _kw_hit(text: str, keywords) -> bool:
+    """키워드 포함 여부 — 공백 무시 비교.
+
+    한국어 기사 제목은 같은 표현도 띄어쓰기가 제각각이라("전산 장애" vs
+    "전산장애", "완전 자회사" vs "완전자회사") 원문 비교만으로는 같은 사건이
+    다르게 판정된다. 실측으로 다음 문제가 확인돼 전 매칭 지점을 이 헬퍼로
+    통일한다:
+      · 하드제외 패턴 426개 중 72개가 공백 변형에 취약
+      · calc_risk_score의 kw_weight가 갈려 같은 사건이 5.0점 vs 8.2점
+    """
+    if not text:
+        return False
+    t_ns = _NS_RE.sub("", text)
+    for k in keywords:
+        if k in text or _NS_RE.sub("", k) in t_ns:
+            return True
+    return False
+
+
+def _num(v, default: float = 0.0) -> float:
+    """'1,234'·''·None·'-' 등을 안전하게 float으로. 실패 시 default.
+
+    exposure_data는 대직자가 엑셀에서 변환해 올리는 외부 데이터라 빈 값·
+    하이픈·결측이 섞일 수 있다. 기존엔 float(str(v).replace(",","")) 를
+    그대로 써서 빈 문자열 하나만 들어와도 점수 계산과 이메일 생성이
+    ValueError로 죽었다(실측 확인).
+    """
+    if v is None:
+        return default
+    try:
+        s = str(v).replace(",", "").strip()
+        return float(s) if s and s not in ("-", "—", "N/A", "nan") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _kw_hits(text: str, keywords) -> list:
+    """_kw_hit의 목록 반환판 — 매칭된 키워드를 전부 돌려준다."""
+    if not text:
+        return []
+    t_ns = _NS_RE.sub("", text)
+    return [k for k in keywords if k in text or _NS_RE.sub("", k) in t_ns]
+
+
 # ── 기지 사건 동적 주입 — known_cases.json → 프롬프트 __KNOWN_CASES__ 치환 ──
 _KNOWN_CASES_FALLBACK = (
     "  · JTBC·중앙그룹(중앙홀딩스·콘텐트리중앙·메가박스중앙·에스엘엘중앙·중앙일보) 기업회생 신청 (2026-06 확정)\n"
@@ -1853,14 +1897,14 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     # 실질 리스크가 있으므로 게이트에서 제외한다.
     _HOSTILE_KW = ("적대적", "경영권 분쟁", "경영권분쟁", "방어", "무산",
                    "불발", "실패", "철회", "반발", "소송", "가처분", "저지")
-    if (any(d in title for d in _DELIST_CTX_KW)
-            and any(c in title for c in _SHAREHOLDER_COMPENSATION_KW)
-            and not any(h in title for h in _HOSTILE_KW)):
+    if (_kw_hit(title, _DELIST_CTX_KW)
+            and _kw_hit(title, _SHAREHOLDER_COMPENSATION_KW)
+            and not _kw_hit(title, _HOSTILE_KW)):
         return True, "호재성 상장폐지(공개매수·프리미엄 보상)"
 
     # 적대적 M&A·경영권 분쟁은 실질 리스크 — 기존 '매수'(응원매수용) 등
     # 일반 패턴에 걸려 조기 차단되지 않도록 AI 판단으로 우선 통과시킨다.
-    if any(h in title for h in ("적대적", "경영권 분쟁", "경영권분쟁")):
+    if _kw_hit(title, ("적대적", "경영권 분쟁", "경영권분쟁")):
         return False, None
 
     # ── 기술적 거래정지 원천 차단 (AND 게이트) ──
@@ -1891,13 +1935,13 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
         "자본잠식", "영업정지", "제재", "과징금", "실질심사",
         "미상환", "연체", "채권단", "법정관리",
     )
-    if (any(h in _halt_text for h in _HALT_CTX_KW)
-            and any(t in _halt_text for t in _TECHNICAL_REASON_KW)
+    if (_kw_hit(_halt_text, _HALT_CTX_KW)
+            and _kw_hit(_halt_text, _TECHNICAL_REASON_KW)
             # ★ 안전장치: 실질 리스크 사유가 함께 있으면 기술적 절차가 언급돼도
             #   차단하지 않는다. 예) "부도로 거래정지…채권 전자등록 변경 절차",
             #   "횡령 발생으로 매매거래정지"(본문에 주식분할이 무관하게 언급).
             #   미탐(진짜 리스크 차단)이 오탐보다 훨씬 치명적이므로 보수적으로 통과.
-            and not any(r in _halt_text for r in _SUBSTANTIVE_HALT_REASON_KW)):
+            and not _kw_hit(_halt_text, _SUBSTANTIVE_HALT_REASON_KW)):
         return True, "기술적 거래정지(주식분할·병합·전자등록 변경 등)"
 
     # ── 연예·인물 논란 파생기사 차단 (AND 게이트) ──
@@ -1923,19 +1967,18 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
                    "드라마", "예능 프로", "출연료", "소속사", "데뷔", "컴백",
                    "무대", "팬미팅", "콘서트", "앨범", "뮤직비디오",
                    "열애", "결혼설", "이혼", "폭로", "사생활")
-    _gossip_hit = any(g in title for g in _GOSSIP_KW)
-    _person_hit = any(p in _halt_text for p in _PERSON_CTX_KW)
+    _gossip_hit = _kw_hit(title, _GOSSIP_KW)
+    _person_hit = _kw_hit(_halt_text, _PERSON_CTX_KW)
     _showbiz_hits = [s for s in _SHOWBIZ_KW if s in title]
     _showbiz_hit = bool(_showbiz_hits)
-    if (_gossip_hit and (_person_hit or any(
-            g in title for g in ("브이로그", "뭇매", "누리꾼", "악플")))) \
+    if (_gossip_hit and (_person_hit or _kw_hit(title, ("브이로그", "뭇매", "누리꾼", "악플")))) \
             or (_showbiz_hit and _person_hit) \
             or (_showbiz_hit and _gossip_hit):
         return True, "연예·인물 논란 파생기사"
     # 연예 고유어휘가 2개 이상 동시 등장하면 연예매체가 아닌 일반 매체
     # 게재분이라도 연예 기사로 판단(도메인 차단 사각지대 보완).
     # 이 조건만 넓게 걸리므로, 금융 리스크 어휘가 함께 있으면 면제한다.
-    if len(_showbiz_hits) >= 2 and not any(k in title for k in (
+    if len(_showbiz_hits) >= 2 and not _kw_hit(title, (
             "주가", "급락", "반대매매", "상장", "공시", "유상증자",
             "회생", "파산", "부도", "감사의견", "횡령", "배임", "제재")):
         return True, "연예·인물 논란 파생기사"
@@ -1976,15 +2019,14 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     # CRITICAL_KW / CRITICAL_EXEMPT 판정도 공백 무시로 비교한다.
     # 면제어가 공백 변형("응원 매수")으로 쓰이면 면제가 적용되지 않아
     # CRITICAL_KW bypass를 타고 그대로 통과하던 문제(7/25 실측).
-    _t_ns = _NS_RE.sub("", title)
-    if any(kw in title or _NS_RE.sub("", kw) in _t_ns for kw in CRITICAL_KW):
-        if not any(ex in title or _NS_RE.sub("", ex) in _t_ns for ex in CRITICAL_EXEMPT):
+    if _kw_hit(title, CRITICAL_KW):
+        if not _kw_hit(title, CRITICAL_EXEMPT):
             return False, None  # 치명적 키워드 → AI 판단으로 넘김
     # 대형 익스포저 섹터 + 리스크 표현 조합 → 밸류에이션 패턴 있어도 통과
     SECTOR_KW  = ["반도체", "AI", "엔비디아", "테슬라", "배터리", "전기차",
                   "바이오", "금융주", "은행주", "삼성전자", "하이닉스"]
     RISK_EXPR  = ["급락", "쇼크", "위기", "리스크", "균열", "붕괴", "흔들", "패닉"]
-    if any(s in title for s in SECTOR_KW) and any(r in title for r in RISK_EXPR):
+    if _kw_hit(title, SECTOR_KW) and _kw_hit(title, RISK_EXPR):
         return False, None  # 섹터 리스크 기사 → AI 판단
 
     # 이벤트·할인 등 마케팅 키워드가 있어도 소비자 불만/지연 신호가 함께 있으면
@@ -1994,8 +2036,8 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     _EVENT_MARKETING_KW = ("할인", "이벤트", "프로모션")
     _EVENT_COMPLAINT_KW = ("불만", "지연", "미지급", "하세월", "늑장", "누락",
                            "먹튀", "기만", "논란")
-    if (any(m in title for m in _EVENT_MARKETING_KW)
-            and any(c in title for c in _EVENT_COMPLAINT_KW)):
+    if (_kw_hit(title, _EVENT_MARKETING_KW)
+            and _kw_hit(title, _EVENT_COMPLAINT_KW)):
         return False, None
 
 
@@ -2028,8 +2070,8 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     _CONTRAST_KW = ("하지만", "그러나", "그럼에도", "그런데도", "이면에", "반면")
     _COMMENTARY_KW = ("쟁점", "과제", "무게", "명암", "딜레마", "역설",
                       "그늘", "이면", "함정", "숙제", "고민", "물음표")
-    if (any(c in title for c in _CONTRAST_KW)
-            and any(m in title for m in _COMMENTARY_KW)):
+    if (_kw_hit(title, _CONTRAST_KW)
+            and _kw_hit(title, _COMMENTARY_KW)):
         return True, "역접 논평·칼럼 구조"
 
     _POSITIVE_PATS = {
@@ -2044,7 +2086,7 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
                     "결렬", "반려", "거부", "좌초", "백지화", "취하", "중단",
                     "급감", "축소", "미달", "하회", "하향", "반토막", "적자",
                     "위기", "부진", "차질")
-    _has_negation = any(n in title for n in _NEGATION_KW)
+    _has_negation = _kw_hit(title, _NEGATION_KW)
 
     for pat, pat_ns in _TITLE_PATTERNS_NS:
         if pat in title or pat_ns in _title_ns:
@@ -2085,7 +2127,7 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
             _CRITICAL_KW_LOCAL = ["상장폐지", "파산", "부도", "횡령", "배임",
                                   "거래정지", "기업회생", "회생절차", "회생계획", "회생신청",
                                   "MTS 장애", "MTS 접속 장애"]
-            if not any(kw in title for kw in _CRITICAL_KW_LOCAL):
+            if not _kw_hit(title, _CRITICAL_KW_LOCAL):
                 return True, f"브래킷 코너 추정: [{_bracket_content}]"
 
     return False, None
@@ -2364,9 +2406,9 @@ def dedup_deterministic(articles: list) -> list:
     _RESOLVE_KW_DET = ("기각","취하","철회","각하","거래재개","거래 재개",
                        "상장유지","재상장","정상화","해제","졸업")
     def _is_next_stage_det(title: str) -> bool:
-        if any(rk in title for rk in _RESOLVE_KW_DET):
+        if _kw_hit(title, _RESOLVE_KW_DET):
             return False  # 해소 국면은 새 단계 아님
-        return any(kw in title for kw in _NEXT_STAGE)
+        return _kw_hit(title, _NEXT_STAGE)
 
     seen_urls_local = set()
 
@@ -2485,7 +2527,7 @@ def calc_risk_score(article: dict, exposure_data: dict = None) -> float:
          if k in _title_only or _NS_RE.sub("", k) in _kw_title_ns],
         default=1.0
     )
-    is_direct_incident = any(kw in _title_only for kw in DIRECT_INCIDENT_KW)
+    is_direct_incident = _kw_hit(_title_only, DIRECT_INCIDENT_KW)
 
     # 익스포저 잔고 합산 → 구간별 boost
     exp_boost = 0.0
@@ -2495,7 +2537,7 @@ def calc_risk_score(article: dict, exposure_data: dict = None) -> float:
         if rows:
             article["_has_exposure"] = True
             total_bal = sum(
-                float(str(r.get("잔고(억)", "0")).replace(",", ""))
+                _num(r.get("잔고(억)"))
                 for r in rows
             )
             if total_bal >= 500:
@@ -2535,7 +2577,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
         _ent = (a.get("entity") or "")
         _title = a.get("title", "")
         if ("한국투자증권" in _ent or "한국금융지주" in _ent) and "한국투자증권" not in _title:
-            if any(b in _title for b in _OTHER_BROKERS):
+            if _kw_hit(_title, _OTHER_BROKERS):
                 print(f"  [당사 오추출 방어] entity 무효화·참고강등: {_title[:40]}")
                 a["entity"] = ""
                 a["entities"] = []
@@ -2562,7 +2604,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
         _title = a.get("title", "")
         if "한국투자증권" in _title:
             continue  # 당사가 제목에 있으면 당사 관련 사안이므로 제외
-        if _ent in _BROKER_ENTITIES and any(b in _title for b in _OTHER_BROKERS):
+        if _ent in _BROKER_ENTITIES and _kw_hit(_title, _OTHER_BROKERS):
             _has_exp = bool(find_exposure(_ent, exposure_data or {}))
             if not _has_exp:
                 print(f"  [경쟁사 리스크·익스포저없음 완전배제] {_ent}: {_title[:35]}")
@@ -2585,13 +2627,13 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     for a in articles:
         title = a.get("title", "")
         _has_company = DIRECT_COMPANY_KW in title
-        _has_other_broker = any(b in title for b in _OTHER_BROKERS)
+        _has_other_broker = _kw_hit(title, _OTHER_BROKERS)
         # 당사 직접 이슈: 제목에 한국투자증권이 있고, 그 맥락이 부정적(장애·제재 등)일 때만.
         # MTS/HTS/전산장애 키워드도 '한국투자증권'과 함께 있을 때만 인정.
         _is_direct = (
             _has_company
             and not _has_other_broker
-            and any(kw in title for kw in (DIRECT_NEGATIVE_KW | DIRECT_INCIDENT_KW))
+            and _kw_hit(title, (DIRECT_NEGATIVE_KW | DIRECT_INCIDENT_KW))
         )
         if _is_direct:
             if a.get("grade") != "긴급":
@@ -3053,8 +3095,8 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         merged = {}
         for r in rows:
             name = name_map[_canon_name(r.get("종목명",""))]
-            bal = float(str(r.get("잔고(억)","0")).replace(",",""))
-            cus = int(float(str(r.get("고객수","0")).replace(",","")))
+            bal = _num(r.get("잔고(억)"))
+            cus = int(_num(r.get("고객수")))
             if name not in merged:
                 merged[name] = {"잔고": 0, "고객수": 0, "뱅잔고": 0.0, "뱅고객수": 0, "영잔고": 0.0, "영고객수": 0, "_ch": False}
             merged[name]["잔고"] += bal
