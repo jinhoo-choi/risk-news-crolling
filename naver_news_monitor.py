@@ -1703,6 +1703,13 @@ EXCLUDE_TITLE_RE_PATTERNS = [
     r"\[[가-힣]{2,10}(국장|부장|칼럼|노트|시선|픽|레터|톡)\](?!.*(상장폐지|파산|부도|거래정지|회생|반대매매))",
 ]
 
+# ── 공백 무시 매칭용 사전계산 ──────────────────────────────────────────
+# is_hard_excluded()가 호출될 때마다 426개 패턴을 정규화하면 비용이 크므로
+# 모듈 로드 시 1회만 (원본, 공백제거본) 쌍으로 만들어 둔다.
+_NS_RE = re.compile(r"\s+")
+_TITLE_PATTERNS_NS = [(p, _NS_RE.sub("", p)) for p in TITLE_ONLY_PATTERNS]
+_TEXT_PATTERNS_NS  = [(p, _NS_RE.sub("", p)) for p in TEXT_PATTERNS]
+
 
 # ── 기지 사건 동적 주입 — known_cases.json → 프롬프트 __KNOWN_CASES__ 치환 ──
 _KNOWN_CASES_FALLBACK = (
@@ -1960,8 +1967,12 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
                        # 회고·역사 정리성 기사 — CRITICAL_KW(파산 등)가 위기 극복 서사의
                        # 일부로 언급되는 경우. 실측: "파산 문턱서 나스닥까지…되짚은 SK하이닉스 25년"
                        "되짚은", "되짚어", "돌아본 ", "돌아보는", "지나온 길", "그간의 여정",]
-    if any(kw in title for kw in CRITICAL_KW):
-        if not any(ex in title for ex in CRITICAL_EXEMPT):
+    # CRITICAL_KW / CRITICAL_EXEMPT 판정도 공백 무시로 비교한다.
+    # 면제어가 공백 변형("응원 매수")으로 쓰이면 면제가 적용되지 않아
+    # CRITICAL_KW bypass를 타고 그대로 통과하던 문제(7/25 실측).
+    _t_ns = _NS_RE.sub("", title)
+    if any(kw in title or _NS_RE.sub("", kw) in _t_ns for kw in CRITICAL_KW):
+        if not any(ex in title or _NS_RE.sub("", ex) in _t_ns for ex in CRITICAL_EXEMPT):
             return False, None  # 치명적 키워드 → AI 판단으로 넘김
     # 대형 익스포저 섹터 + 리스크 표현 조합 → 밸류에이션 패턴 있어도 통과
     SECTOR_KW  = ["반도체", "AI", "엔비디아", "테슬라", "배터리", "전기차",
@@ -1982,12 +1993,23 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
         return False, None
 
 
-    for pat in TITLE_ONLY_PATTERNS:
-        if pat in title:
+    # ── 공백 무시 매칭 ──────────────────────────────────────────────
+    # 반복 오탐의 구조적 원인: 패턴은 등재돼 있는데 기사가 띄어쓰기를 다르게
+    # 쓰면 빠져나갔음. 예) 등재 '응원매수' ↔ 기사 '응원 매수',
+    # '완전자회사' ↔ '완전 자회사', '목표주가' ↔ '목표 주가'.
+    # 전수 조사 결과 공백 변형에 취약한 한글 패턴이 72개(전체 426개 중)였고,
+    # 오탐을 발견할 때마다 변형을 하나씩 추가하는 두더지잡기가 반복됐다.
+    # → 제목·본문과 패턴 양쪽의 공백을 제거해 비교한다.
+    # 안전성 실측: 정탐 이력 23건에 대해 새로 차단되는 건 0건(오차단 없음),
+    # 오탐 이력에서는 추가 차단이 발생함을 확인 후 적용.
+    _title_ns = _NS_RE.sub("", title)
+    for pat, pat_ns in _TITLE_PATTERNS_NS:
+        if pat in title or pat_ns in _title_ns:
             return True, pat
     text = title + " " + (desc or "")
-    for pat in TEXT_PATTERNS:
-        if pat in text:
+    _text_ns = _NS_RE.sub("", text)
+    for pat, pat_ns in _TEXT_PATTERNS_NS:
+        if pat in text or pat_ns in _text_ns:
             return True, pat
     for pat in EXCLUDE_TITLE_RE_PATTERNS:
         if re.search(pat, title):
