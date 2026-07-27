@@ -3577,9 +3577,12 @@ def _price_badge(a: dict) -> str:
     return ""
 
 
-def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '', exposure_data: dict = None, ref_date: str = '', competitor_notices: list = None, today_str: str = ''):
+def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '', exposure_data: dict = None, ref_date: str = '', competitor_notices: list = None, today_str: str = '', now_override=None):
+    """now_override: 헤더의 '기준 시각'을 명시 지정(수동 보정 발송용).
+    자동 발송분과 동일한 기준시각으로 재발송할 때 사용하며,
+    미지정 시 기존대로 실행 시각을 쓴다."""
     exposure_data = exposure_data or {}
-    now = datetime.now(timezone(timedelta(hours=9)))
+    now = now_override or datetime.now(timezone(timedelta(hours=9)))
     sections = {"긴급": [], "주의": [], "참고": []}
     for a in articles:
         sections[a["grade"]].append(a)
