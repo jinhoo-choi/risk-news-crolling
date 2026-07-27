@@ -173,6 +173,18 @@ try:
     STRONG_CAUTION_MIN_EXPOSURE = float(os.environ.get("STRONG_CAUTION_MIN_EXPOSURE", "50"))
 except ValueError:
     STRONG_CAUTION_MIN_EXPOSURE = 50.0
+
+# 전체 발송 메일에 실을 '참고' 등급의 최소 익스포저 규모(억).
+# 최근 9회 발송 실측: 오탐 20건 중 18건(90%)이 참고 등급이었고, 참고 자체의
+# 오탐률은 78%(23건 중 18건). 오탐은 임원 신뢰도에 직결되므로 전체 발송 시
+# 참고는 '당사 익스포저가 매우 큰 종목'으로 한정한다.
+# 3,000억 기준 실측: 참고 정탐 3건(삼성전자·SK하이닉스·마이크론 급락) 전부
+# 보존하면서 오탐 노출 0건. 본인 한정 발송에는 참고를 전부 유지해
+# 담당자 모니터링에는 공백이 없다.
+try:
+    REF_FULLSEND_MIN_EXPOSURE = float(os.environ.get("REF_FULLSEND_MIN_EXPOSURE", "3000"))
+except ValueError:
+    REF_FULLSEND_MIN_EXPOSURE = 3000.0
 ANTHROPIC_KEY     = os.environ["ANTHROPIC_API_KEY"]
 GOOGLE_API_KEY    = os.environ.get("GOOGLE_API_KEY", "")       # Gemini 필터링용 (없으면 Claude fallback)
 NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
@@ -5147,8 +5159,6 @@ JSON만 출력:
     for a in filtered:
         a["_risk_score"] = calc_risk_score(a, exposure_data)
 
-    html = build_email_html(filtered, total_count=total_count, ai_summary=ai_summary, exposure_data=exposure_data, ref_date=ref_date, competitor_notices=competitor_notices, today_str=today_str)
-
     # ── 전체 발송 여부 결정 ──
     # 원칙: 긴급·주의 카드 중 최고 리스크점수가 임계값 이상이면 전체 발송.
     # 참고 등급은 '직접 손실 없는 동향'이므로 점수가 높아도(경쟁사 익스포저 등)
@@ -5209,6 +5219,32 @@ JSON만 출력:
               f"{_trg} → 전체 발송")
     else:
         print(f"  [전체 발송] 최고 리스크점수 {_max_score:.2f} ≥ {SELF_ONLY_MAX_SCORE:.2f}")
+    # ── 전체 발송 시 참고 등급 축소 ────────────────────────────────────
+    # 참고는 '직접 손실 없는 동향'이라 임원 판단에 필수가 아닌데, 실측상
+    # 오탐의 90%가 여기서 나온다. 전체 발송에서는 익스포저가 매우 큰 종목의
+    # 참고만 남기고(대형주 급락 등 실제로 알릴 가치가 있는 건), 나머지는
+    # 본인 한정 메일에서만 확인한다.
+    _mail_articles = filtered
+    if not _self_only:
+        def _ref_keep(a):
+            if a.get("grade") != "참고":
+                return True
+            _e = (a.get("entity") or "").strip()
+            if not _e:
+                return False
+            _bal = sum(_num(r.get("잔고(억)")) for r in find_exposure(_e, exposure_data))
+            return _bal >= REF_FULLSEND_MIN_EXPOSURE
+        _kept = [a for a in filtered if _ref_keep(a)]
+        _dropped = len(filtered) - len(_kept)
+        if _dropped:
+            print(f"  [전체발송 참고 축소] 참고 {_dropped}건 제외 "
+                  f"(익스포저 {REF_FULLSEND_MIN_EXPOSURE:,.0f}억 미만) — 본인 메일에는 포함")
+        _mail_articles = _kept
+
+    html = build_email_html(_mail_articles, total_count=total_count,
+                            ai_summary=ai_summary, exposure_data=exposure_data,
+                            ref_date=ref_date, competitor_notices=competitor_notices,
+                            today_str=today_str)
     send_email(subject, html, self_only=_self_only)
 
     for a in filtered:
