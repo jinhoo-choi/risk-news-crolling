@@ -185,6 +185,20 @@ try:
     REF_FULLSEND_MIN_EXPOSURE = float(os.environ.get("REF_FULLSEND_MIN_EXPOSURE", "3000"))
 except ValueError:
     REF_FULLSEND_MIN_EXPOSURE = 3000.0
+
+# 시장급락 강제발송 기준 — 종목 수와 '위험고객 리스크잔고 규모'를 함께 본다.
+# 기존엔 -3%↓ 종목 수(10개)만 봤는데, 위험고객 보유 종목이 305개나 되고
+# 리스크잔고 중앙값이 0억이라(상위 5종목이 전체 785억의 54% 차지) 평범한
+# 조정장에도 소액 종목 10개가 쉽게 넘어 뉴스 품질과 무관하게 매번 전사
+# 발송됐음(7/27 14시 10종목·21시 14종목 연속 발동).
+try:
+    MARKET_CRASH_STOCK_THRESHOLD = int(os.environ.get("MARKET_CRASH_STOCK_THRESHOLD", "15"))
+except ValueError:
+    MARKET_CRASH_STOCK_THRESHOLD = 15
+try:
+    MARKET_CRASH_RBAL_THRESHOLD = float(os.environ.get("MARKET_CRASH_RBAL_THRESHOLD", "150"))
+except ValueError:
+    MARKET_CRASH_RBAL_THRESHOLD = 150.0
 ANTHROPIC_KEY     = os.environ["ANTHROPIC_API_KEY"]
 GOOGLE_API_KEY    = os.environ.get("GOOGLE_API_KEY", "")       # Gemini 필터링용 (없으면 Claude fallback)
 NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
@@ -5192,11 +5206,19 @@ JSON만 출력:
     # 관련 리스크 뉴스가 하나도 안 잡혀 등급·점수가 낮더라도 전체 발송.
     # (build_price_alert_section이 이미 위에서 호출되어 last_alerted_count에
     # 최종 집계된 종목 수가 기록돼 있음 — 재계산 없이 재사용)
-    _MARKET_CRASH_STOCK_THRESHOLD = 10
     _alerted_stock_count = getattr(build_price_alert_section, "last_alerted_count", 0)
-    _market_crash = _alerted_stock_count >= _MARKET_CRASH_STOCK_THRESHOLD
+    _alerted_rbal = getattr(build_price_alert_section, "last_alerted_rbal", 0)
+    # 종목 수 AND 리스크잔고 규모를 함께 충족해야 '시장 급락'으로 본다.
+    # 소액 종목이 다수 하락한 평범한 조정장을 급락장으로 오인하지 않기 위함.
+    _market_crash = (_alerted_stock_count >= MARKET_CRASH_STOCK_THRESHOLD
+                     and _alerted_rbal >= MARKET_CRASH_RBAL_THRESHOLD)
+    if _alerted_stock_count:
+        _mc_ok = "충족" if _market_crash else "미달"
+        print(f"  [시장급락 판정] -3%↓ {_alerted_stock_count}종목 / 리스크잔고 "
+              f"{_alerted_rbal:,.0f}억 / 기준 {MARKET_CRASH_STOCK_THRESHOLD}종목 AND "
+              f"{MARKET_CRASH_RBAL_THRESHOLD:,.0f}억 → {_mc_ok}")
     if _market_crash:
-        print(f"  [시장급락 강제발송] 위험고객 보유 -3%↓ 종목 {_alerted_stock_count}개 — 뉴스 매칭과 무관하게 전체 발송")
+        print(f"  [시장급락 강제발송] 뉴스 매칭과 무관하게 전체 발송")
     _force_full = _has_urgent or _has_strong_caution or _market_crash
     _self_only = (_max_score < SELF_ONLY_MAX_SCORE) and not _force_full
 
@@ -5207,7 +5229,7 @@ JSON만 출력:
     _triggers = []
     if _has_urgent:         _triggers.append("긴급 기사 존재")
     if _has_strong_caution: _triggers.append(f"고신뢰 주의(conf≥0.80·익스포저 {STRONG_CAUTION_MIN_EXPOSURE:,.0f}억↑)")
-    if _market_crash:       _triggers.append(f"시장급락({_alerted_stock_count}종목)")
+    if _market_crash:       _triggers.append(f"시장급락({_alerted_stock_count}종목·{_alerted_rbal:,.0f}억)")
     _trg = " + ".join(_triggers) if _triggers else "없음"
     print(f"  [발송판정] 최고점수 {_max_score:.2f} / 임계 {SELF_ONLY_MAX_SCORE:.2f} / "
           f"강제발송 조건: {_trg} / 대상기사 {len(_actionable)}건(긴급·주의)")
