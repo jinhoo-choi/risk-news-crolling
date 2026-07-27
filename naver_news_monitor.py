@@ -664,12 +664,24 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         if not (rbal or cust or ratio):
             return ''
         dot = f'<span style="color:{dot_color};">●</span> ' if dot_color else ''
+        # 담보비율 이상치 방어 — 원본 엑셀에 0이 섞여 들어오는 사례 확인
+        # (2026-07-24 업로드분 HD건설기계 여신 뱅유지담보비율=0.0).
+        # 담보비율 0%는 실무상 성립하지 않는 값(계산 불가·데이터 누락 추정)이라
+        # 그대로 표시하면 '가장 위험한 고객의 담보비율이 0%'로 오독된다.
+        # 100 미만(비정상 대역)은 표시하지 않는다 — 정상 범위는 130~150대.
         _ratio_disp = ratio
+        _ratio_bad = False
         if ratio not in (None, ''):
             try:
-                _ratio_disp = f'{round(float(ratio)):,}'
+                _rv = float(ratio)
+                if _rv < 100:
+                    _ratio_bad = True
+                else:
+                    _ratio_disp = f'{round(_rv):,}'
             except (ValueError, TypeError):
                 _ratio_disp = ratio
+        if _ratio_bad:
+            ratio = ''  # 비정상 값 → 담보비율 부분만 생략(잔고·고객은 유지)
         ratio_html = f'<span style="color:#dc2626;font-weight:700;">{_ratio_disp}%</span> ' if ratio else ''
         detail = "·".join(str(x) for x in (f'{rbal}억' if rbal else '', cust or '') if x)
         detail_html = f'<span style="color:#64748b;font-weight:400;">({detail})</span>' if detail else ''
