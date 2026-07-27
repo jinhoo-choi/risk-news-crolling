@@ -1776,6 +1776,17 @@ _TITLE_PATTERNS_NS = [(p, _NS_RE.sub("", p)) for p in TITLE_ONLY_PATTERNS]
 _TEXT_PATTERNS_NS  = [(p, _NS_RE.sub("", p)) for p in TEXT_PATTERNS]
 
 
+# 공백 무시 매칭에서 제외할 짧은 패턴 —
+# 2~3글자 패턴은 공백을 제거하면 인접 단어와 붙어 우연히 매칭된다.
+# 실측: "OO사 자금난" → "OO사자금난"에 '사자'(개미·사자 매매 패턴)가 걸려
+# 진짜 리스크 기사가 차단되는 미탐 발생(2026-07-28).
+# 이런 패턴은 원문 그대로만 비교한다.
+_NS_EXEMPT = frozenset({
+    "사자", "팔자", "개미", "외인", "시총", "번 ", "만든 ", "모은 ", "불린 ",
+    "인사", "부고", "승진", "선임", "취임", "퇴임", "수주", "협약", "수상",
+})
+
+
 def _kw_hit(text: str, keywords) -> bool:
     """키워드 포함 여부 — 공백 무시 비교.
 
@@ -1790,7 +1801,9 @@ def _kw_hit(text: str, keywords) -> bool:
         return False
     t_ns = _NS_RE.sub("", text)
     for k in keywords:
-        if k in text or _NS_RE.sub("", k) in t_ns:
+        if k in text:
+            return True
+        if k not in _NS_EXEMPT and _NS_RE.sub("", k) in t_ns:
             return True
     return False
 
@@ -1817,7 +1830,8 @@ def _kw_hits(text: str, keywords) -> list:
     if not text:
         return []
     t_ns = _NS_RE.sub("", text)
-    return [k for k in keywords if k in text or _NS_RE.sub("", k) in t_ns]
+    return [k for k in keywords
+            if k in text or (k not in _NS_EXEMPT and _NS_RE.sub("", k) in t_ns)]
 
 
 # ── 기지 사건 동적 주입 — known_cases.json → 프롬프트 __KNOWN_CASES__ 치환 ──
@@ -1926,10 +1940,16 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
 
     # 연예 전문매체 도메인 차단 — 금융 리스크 기사 비중 사실상 0, 오탐 다발원
     # (한민용=topstarnews, 샘킴=osen 오탐 이력 기반. 2026.07)
-    _ENT_DOMAINS = ("osen.co.kr", "tenasia.hankyung.com", "topstarnews.net",
+    # ★도메인은 '호스트 전체'가 아니라 '핵심 도메인'으로 등재할 것.
+    #   tenasia.hankyung.com만 넣어뒀더니 같은 매체의 tenasia.co.kr이
+    #   그대로 통과했다(7/28 '박은영 JTBC 재정난 유튜브 중단' 참고 5.5 오탐).
+    _ENT_DOMAINS = ("osen.co.kr", "tenasia.", "topstarnews.net",
                     "newsen.com", "tvreport.co.kr", "mydaily.co.kr",
                     "xportsnews.com", "stardailynews.co.kr", "starnewskorea.com",
-                    "joynews24.com", "sportsw.kr", "enews24.tving.com")
+                    "joynews24.com", "sportsw.kr", "enews24.tving.com",
+                    "bntnews.co.kr", "sportstoday.co.kr", "isplus.com",
+                    "spotvnews.co.kr", "wikitree.co.kr", "insight.co.kr",
+                    "dispatch.co.kr", "sportskhan.news", "sportsseoul.com")
     if url:
         _u = url.lower()
         for _dom in _ENT_DOMAINS:
@@ -2089,6 +2109,14 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     #   - "샘킴, …정호영 배신하고 에스파 춤췄다..카리나 깜짝"(연예가십+키워드오염)
     #   - "김미경, 회사 부도 위기·빚 수십억"(비상장 개인사업자)
     #   초기 구현은 '브이로그/뭇매' 등 특정 어휘에만 반응해 위 2건을 놓쳤음.
+    # 인물 발언·심경 표현 — 직함 없이 이름만 나오는 연예 기사 대응
+    # (7/28 "박은영, 'JTBC 재정난'에 유튜브도 중단…\"제작비의 어려움, 슬퍼\"")
+    # 기업 리스크가 배경일 뿐 내용은 개인의 활동 중단·심경이다.
+    if _kw_hit(title, ("슬퍼", "속상", "눈물", "심경", "고백", "토로", "울먹",
+                       "안타깝", "먹먹", "착잡")) and _kw_hit(
+                title, ("유튜브", "채널", "방송", "출연", "활동", "인스타", "SNS")):
+        return True, "인물 심경·활동 기사"
+
     _GOSSIP_KW = ("브이로그", "유튜브", "인스타", "SNS", "뭇매", "구설",
                   "해명", "사과문", "논란 확산", "갑론을박", "누리꾼",
                   "네티즌", "악플", "댓글 반응", "팬들", "방송 출연",
@@ -2281,7 +2309,7 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
                                     "불완전판매", "횡령", "배임", "피해"))
 
     for pat, pat_ns in _TITLE_PATTERNS_NS:
-        if pat in title or pat_ns in _title_ns:
+        if pat in title or (pat not in _NS_EXEMPT and pat_ns in _title_ns):
             if _has_negation and pat in _POSITIVE_PATS:
                 continue  # 호재가 무산된 기사 → 실질 리스크이므로 AI 판단으로
             if _has_incident and pat in _SECTOR_PATS:
@@ -2290,7 +2318,7 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     text = title + " " + (desc or "")
     _text_ns = _NS_RE.sub("", text)
     for pat, pat_ns in _TEXT_PATTERNS_NS:
-        if pat in text or pat_ns in _text_ns:
+        if pat in text or (pat not in _NS_EXEMPT and pat_ns in _text_ns):
             return True, pat
     for pat in EXCLUDE_TITLE_RE_PATTERNS:
         if re.search(pat, title):
