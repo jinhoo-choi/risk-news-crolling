@@ -2948,6 +2948,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
         if conf < 0.60:
             a["grade"] = "참고"
             caution.remove(a)
+            a["_grade_locked"] = True   # AI 재검증이 되돌리지 못하게 잠금
             ref.append(a)
             print(f"  [confidence 강등] 주의→참고 (conf={conf:.2f}): {a['title'][:30]}")
 
@@ -2958,6 +2959,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
         else:
             a["grade"] = "주의"
             a["customer_notice"] = None
+            a["_grade_locked"] = True   # AI 재검증이 되돌리지 못하게 잠금
             caution.append(a)
             print(f"  [강등] 긴급→주의: {a['title'][:35]}")
 
@@ -2967,6 +2969,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
             result.append(a)
         else:
             a["grade"] = "참고"
+            a["_grade_locked"] = True   # AI 재검증이 되돌리지 못하게 잠금
             ref.append(a)
             print(f"  [강등] 주의→참고: {a['title'][:35]}")
 
@@ -3014,6 +3017,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
             prev_grade = a["grade"]
             a["grade"] = "참고"
             a["customer_notice"] = None
+            a["_grade_locked"] = True   # AI 재검증이 되돌리지 못하게 잠금
             print(f"  [익스포저없음 강등] {prev_grade}→참고: {a['title'][:40]}")
     # ─────────────────────────────────────────────────────────────────
 

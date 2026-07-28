@@ -96,6 +96,33 @@ LOCK_CASES = [
 ]
 
 
+# GRADE_LIMITS 상한 준수 + 강등 잠금 (2026-07-28 21시 긴급 4건 사고)
+def run_limit():
+    """긴급 4건 투입 시 상한(2건, force_urgent 면제 1건 추가)을 지키고
+    강등된 건이 잠기는지 확인."""
+    arts = [
+        {"title": "한국투자증권의 황당한 오류…연도 하나 틀려 복지 재심사",
+         "entity": "한국투자증권", "entities": ["한국투자증권"], "grade": "긴급",
+         "_ai_confidence": 0.9, "_risk_score": 7.8},
+        {"title": "해성에어로보틱스, 인천지법 접수 파산신청 공시",
+         "entity": "해성에어로보틱스", "entities": ["해성에어로보틱스"], "grade": "긴급",
+         "_ai_confidence": 0.9, "_risk_score": 7.1},
+        {"title": "'거래정지' 진원생명과학 주요 사업 중단 아냐",
+         "entity": "진원생명과학", "entities": ["진원생명과학"], "grade": "긴급",
+         "_ai_confidence": 0.85, "_risk_score": 5.8},
+        {"title": "미중 반도체 쇼크…코스피 장중 6,000 붕괴",
+         "entity": "삼성전자", "entities": ["삼성전자"], "grade": "긴급",
+         "_ai_confidence": 0.85, "_risk_score": 5.0},
+    ]
+    for a in arts:
+        a.update({"url": "http://x", "keyword": "", "desc": ""})
+    with contextlib.redirect_stdout(io.StringIO()):
+        out = nm.regrade_by_score(arts, exposure_data=EXPO)
+    urgent = sum(1 for a in out if a.get("grade") == "긴급")
+    locked = sum(1 for a in out if a.get("_grade_locked"))
+    return urgent, locked
+
+
 def run_lock(title, entity, grade):
     art = {"title": title, "entity": entity, "entities": [entity],
            "grade": grade, "_ai_confidence": 0.85, "_risk_score": 5.0,
@@ -147,7 +174,21 @@ def main():
             fails.append((name, got, expect))
         print(f"  {'OK  ' if ok else 'FAIL'} {name:46} → 잠금={got}")
 
-    total = len(CASES) + len(EXPO_CASES) + len(LOCK_CASES)
+    print("\n" + "=" * 76)
+    print("[GRADE_LIMITS 상한 준수 + 강등 잠금]")
+    print("=" * 76)
+    _u, _l = run_limit()
+    _max_urgent = nm.GRADE_LIMITS["긴급"] + 1   # force_urgent 1건 면제
+    ok1 = _u <= _max_urgent
+    ok2 = _l >= 1
+    if not ok1:
+        fails.append(("긴급 상한 준수", _u, f"≤{_max_urgent}"))
+    if not ok2:
+        fails.append(("강등 시 잠금 설정", _l, "≥1"))
+    print(f"  {'OK  ' if ok1 else 'FAIL'} 긴급 4건 투입 → {_u}건 유지 (상한 {_max_urgent})")
+    print(f"  {'OK  ' if ok2 else 'FAIL'} 강등된 건 잠금 → {_l}건")
+
+    total = len(CASES) + len(EXPO_CASES) + len(LOCK_CASES) + 2
     print("\n" + "=" * 76)
     print(f"결과: {total - len(fails)}/{total} 통과")
     print("=" * 76)
