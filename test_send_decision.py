@@ -122,6 +122,27 @@ REF_CASES = [
 ]
 
 
+# 2차 검증 모델 승급 (2026-07-29 도입)
+MODEL_CASES = [
+    ("긴급 존재 → Opus 승급", [A("긴급", 8.0)], False, True),
+    ("주의 5.5 → Opus 승급", [A("주의", 5.5)], False, True),
+    ("주의 4.0 → Sonnet 유지", [A("주의", 4.0)], False, False),
+    ("참고만 고점수 → Sonnet 유지", [A("참고", 9.0, 0.9)], False, False),
+    ("급락장 → Opus 승급", [], True, True),
+]
+
+
+def pick_model(articles, crash=False):
+    """운영과 동일한 판정으로 2차 검증 모델을 고른다."""
+    _CRASH["on"] = crash
+    if not crash:
+        nm.build_price_alert_section.last_alerted_count = 0
+        nm.build_price_alert_section.last_alerted_rbal = 0
+    with contextlib.redirect_stdout(io.StringIO()):
+        sc = nm.decide_send_scope(articles, EXPO, "2026-07-27")
+    return nm.CLAUDE_MODEL if sc["self_only"] else nm.CLAUDE_VERIFY_HIGH_MODEL
+
+
 def main():
     print("=" * 74)
     print("[발송판정 검증]")
@@ -155,7 +176,27 @@ def main():
             fails.append((name, "범위 이탈", "상식 범위"))
         print(f"  {'OK  ' if ok else 'FAIL'} {name}")
 
-    total = len(CASES) + len(REF_CASES) + len(THRESHOLD_CASES)
+    print("\n" + "=" * 74)
+    print("[2차 검증 모델 승급]")
+    print("=" * 74)
+    for name, arts, crash, expect_high in MODEL_CASES:
+        m = pick_model(arts, crash)
+        is_high = (m == nm.CLAUDE_VERIFY_HIGH_MODEL)
+        ok = is_high == expect_high
+        if not ok:
+            fails.append((name, m, "Opus" if expect_high else "Sonnet"))
+        print(f"  {'OK  ' if ok else 'FAIL'} {name:34} → {m}")
+    # 헤더 라벨이 실제 사용 모델을 따라가는지
+    nm._LAST_VERIFY_MODEL = nm.CLAUDE_VERIFY_HIGH_MODEL
+    lbl_high = nm._model_label()
+    nm._LAST_VERIFY_MODEL = nm.CLAUDE_MODEL
+    lbl_low = nm._model_label()
+    ok_lbl = ("Opus" in lbl_high) and ("Sonnet" in lbl_low)
+    if not ok_lbl:
+        fails.append(("헤더 라벨 반영", f"{lbl_high} / {lbl_low}", "Opus / Sonnet"))
+    print(f"  {'OK  ' if ok_lbl else 'FAIL'} 메일 헤더 라벨 — 승급 시 '{lbl_high}'")
+
+    total = len(CASES) + len(REF_CASES) + len(THRESHOLD_CASES) + len(MODEL_CASES) + 1
     print("\n" + "=" * 74)
     print(f"결과: {total - len(fails)}/{total} 통과")
     print("=" * 74)

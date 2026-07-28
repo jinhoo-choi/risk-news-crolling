@@ -241,6 +241,14 @@ PRICE_RESEND_THRESHOLD = -8.0
 EXPOSURE_FILE = "exposure_data.csv"
 CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL",        "claude-sonnet-4-6")  # Gemini fallback·재검증용
 CLAUDE_ACTION_MODEL = os.environ.get("CLAUDE_ACTION_MODEL", "claude-sonnet-4-6")  # action 생성 전용
+# 전체 발송이 예상될 때 2차 본문검증에 쓰는 상위 모델.
+# 임원 전사 발송은 오탐 비용이 가장 크므로 마지막 관문만 승급한다.
+# ★단계를 늘리지 않고 '모델만 교체'하는 이유: 검증 단계를 추가하면 단계 간
+#   순서·덮어쓰기 문제가 생긴다(2026-07-28 급락장 미발송·KB증권 등급 복원·
+#   긴급 4건 초과 사고가 모두 그 유형이었다).
+CLAUDE_VERIFY_HIGH_MODEL = os.environ.get("CLAUDE_VERIFY_HIGH_MODEL", "claude-opus-4-6")
+# 실제로 이번 회차 2차 검증에 사용된 모델 — 메일 헤더 표기에 사용
+_LAST_VERIFY_MODEL = CLAUDE_MODEL
 GEMINI_MODEL        = os.environ.get("GEMINI_MODEL",        "gemini-2.5-flash-lite")  # 무료 15 RPM (2.0-flash는 5 RPM으로 축소됨)
 
 # 중복 제거 유사도 임계값 — 운영 중 조정 가능
@@ -3631,6 +3639,21 @@ def _price_badge(a: dict) -> str:
     return ""
 
 
+def _model_label() -> str:
+    """메일 헤더에 표기할 AI 모델 라벨.
+
+    2차 본문검증에 실제 사용된 모델을 반영한다. 전체 발송이 예상되는 회차는
+    상위 모델(Opus)로 검증하므로, 수신자가 '이 메일이 어느 수준의 검증을
+    거쳤는지' 알 수 있어야 한다.
+    """
+    _m = globals().get("_LAST_VERIFY_MODEL") or CLAUDE_MODEL
+    try:
+        _tier = _m.split("-")[1].capitalize()      # claude-opus-4-6 → Opus
+    except (IndexError, AttributeError):
+        _tier = "Sonnet"
+    return f"Claude {_tier} / Gemini {GEMINI_MODEL.replace('gemini-', '')}"
+
+
 def decide_send_scope(filtered: list, exposure_data: dict, ref_date: str = "") -> dict:
     """발송 범위(전체/본인한정)를 판정한다.
 
@@ -3963,7 +3986,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         <tr>
           <td valign="middle">
             <p style="margin:0 0 4px 0;font-size:19px;font-weight:bold;color:#ffffff;">🤖 개인고객그룹 리스크 탐지봇</p>
-            <p style="margin:0 0 3px 0;font-size:10px;color:#c8d8f0;text-align:right;">Claude {CLAUDE_MODEL.split("-")[1].capitalize()} / Gemini {GEMINI_MODEL.replace("gemini-","")}</p>
+            <p style="margin:0 0 3px 0;font-size:10px;color:#c8d8f0;text-align:right;">{_model_label()}</p>
             <p style="margin:0;font-size:13px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (KST)</p>
           </td>
         </tr>
@@ -4055,7 +4078,7 @@ def build_empty_html(now) -> str:
   <tr>
     <td class="header-td" style="background:#3b5491;padding:22px 26px;">
       <p style="margin:0 0 6px 0;font-size:20px;font-weight:bold;color:#ffffff;">🤖 개인고객그룹 리스크 탐지봇
-        <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">Claude {CLAUDE_MODEL.split("-")[1].capitalize()} / Gemini {GEMINI_MODEL.replace("gemini-","")}</span>
+        <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">{_model_label()}</span>
       </p>
       <p style="margin:0;font-size:14px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</p>
     </td>
@@ -4899,8 +4922,13 @@ def main():
     # 1차(Gemini) 통과 기사 중 본문이 있는 것만 재검증 — 오탐 최종 차단
     print("  [2차 검증] 본문 기반 Claude 리스크 재검증 중...")
 
-    def claude_body_verify(article) -> bool:
-        """본문을 읽고 진짜 리스크 기사인지 재판단. True = 유지, False = 제외"""
+    def claude_body_verify(article, model: str = None) -> bool:
+        """본문을 읽고 진짜 리스크 기사인지 재판단. True = 유지, False = 제외
+
+        model: 사용할 Claude 모델. 미지정 시 CLAUDE_MODEL(Sonnet).
+               전체 발송이 예상되는 회차에는 상위 모델이 주입된다.
+        """
+        _model = model or CLAUDE_MODEL
         body = article.get("body", "") or ""
         title = article.get("title", "")
 
@@ -5042,7 +5070,7 @@ JSON만 출력:
                     "content-type": "application/json",
                 },
                 json={
-                    "model": CLAUDE_MODEL,
+                    "model": _model,
                     # judgment(핵심사건·손실주체·확정여부) 필드 추가로 응답이
                     # 길어짐. 80이면 JSON이 중간에 잘려 파싱 실패 → 안전하게
                     # 유지(return True)로 빠져 오탐이 그대로 통과하므로 상향.
@@ -5075,10 +5103,25 @@ JSON만 출력:
         except Exception:
             return True  # 파싱 실패 → 안전하게 유지
 
+    # ── 2차 검증 모델 선택 (예비 발송범위 판정) ────────────────────────
+    # 전체 발송이 예상되면 상위 모델로 검증한다. 임원에게 나가는 회차는
+    # 오탐 비용이 가장 크므로 마지막 관문만 승급하는 것.
+    # 여기서의 판정은 '예비'이며, 2차 검증 결과를 반영해 뒤에서 최종 판정한다.
+    # (그래서 Opus가 기사를 대량 제외해도 빈 메일이 전사로 나가지 않는다)
+    _pre = decide_send_scope(filtered, exposure_data, ref_date)
+    _verify_model = CLAUDE_MODEL
+    if not _pre["self_only"]:
+        _verify_model = CLAUDE_VERIFY_HIGH_MODEL
+        _rsn = " + ".join(_pre["triggers"]) if _pre["triggers"] else f"점수 {_pre['max_score']:.1f}"
+        print(f"  [2차 검증 모델 승급] 전체발송 예상({_rsn}) → {_verify_model}")
+    else:
+        print(f"  [2차 검증 모델] 본인한정 예상 → {_verify_model}")
+    globals()["_LAST_VERIFY_MODEL"] = _verify_model
+
     # 병렬 검증
     _verify_results = {}
     with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {executor.submit(claude_body_verify, a): a for a in filtered}
+        futures = {executor.submit(claude_body_verify, a, _verify_model): a for a in filtered}
         for future in as_completed(futures):
             a = futures[future]
             try:
