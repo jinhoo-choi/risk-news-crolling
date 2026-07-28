@@ -297,6 +297,12 @@
       "entity": "온타이드",
       "category": "이중 브래킷 연재물 — 규칙은 있었으나 CRITICAL_KW(상장폐지) bypass로 무력화",
       "source": "2026-07-28 14시 참고 5.8"
+    },
+    {
+      "title": "이번엔 기관주의…KB증권, 가중 제제 리스크 노출",
+      "entity": "KB증권",
+      "category": "경쟁사 자체 제재 — regrade가 참고 강등했으나 AI 재검증이 주의로 되돌림(순서 결함)",
+      "source": "2026-07-29 07시 주의 3.8"
     }
   ],
   "true_positive_history": [
