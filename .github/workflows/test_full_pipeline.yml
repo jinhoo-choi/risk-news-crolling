@@ -1,0 +1,49 @@
+name: 실환경 파이프라인 테스트 (본인 한정)
+
+# 전체 파이프라인(크롤링 → AI 필터 → 등급조정 → 2차 검증 → HTML → 발송)을
+# 실제와 동일하게 실행하되, FORCE_SELF_ONLY=1로 '발송만' 본인 한정 강제.
+# 예비 발송범위 판정은 정상 동작하므로 Opus 승급·가격경보 캐싱·운영지표
+# 기록까지 실환경에서 검증된다. 그룹메일로는 절대 나가지 않는다.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-full-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 라이브러리 설치
+        run: pip install -r requirements.txt
+
+      - name: 전체 파이프라인 실행 (발송은 본인 한정)
+        env:
+          FORCE_SELF_ONLY:      '1'
+          EMAIL_SENDER:         ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:       ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVER:       ${{ secrets.EMAIL_RECEIVER }}
+          NO_RESULT_RECEIVER:   ${{ secrets.NO_RESULT_RECEIVER }}
+          EMAIL_CC:             ${{ secrets.EMAIL_CC }}
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          NAVER_CLIENT_ID:      ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET:  ${{ secrets.NAVER_CLIENT_SECRET }}
+          GOOGLE_API_KEY:       ${{ secrets.GOOGLE_API_KEY }}
+        run: python3 naver_news_monitor.py
+
+      - name: 운영지표 확인
+        if: always()
+        run: |
+          echo "── run_stats.jsonl 마지막 줄 ──"
+          tail -1 run_stats.jsonl || echo "(기록 없음)"
+
+      # ※ seen_news.json은 커밋하지 않는다 — 테스트 실행이 정규 회차의
+      #   dedup 상태를 오염시키지 않도록.

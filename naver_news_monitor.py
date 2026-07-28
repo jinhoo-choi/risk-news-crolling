@@ -247,6 +247,12 @@ CLAUDE_ACTION_MODEL = os.environ.get("CLAUDE_ACTION_MODEL", "claude-sonnet-4-6")
 #   순서·덮어쓰기 문제가 생긴다(2026-07-28 급락장 미발송·KB증권 등급 복원·
 #   긴급 4건 초과 사고가 모두 그 유형이었다).
 CLAUDE_VERIFY_HIGH_MODEL = os.environ.get("CLAUDE_VERIFY_HIGH_MODEL", "claude-opus-4-6")
+
+# 실환경 테스트용 안전 스위치 — 전체 파이프라인은 그대로 돌리되 '발송만'
+# 본인 한정으로 강제한다. 예비 발송범위 판정은 정상 수행되므로 2차 검증
+# 모델 승급(Opus)·가격경보 캐싱·운영지표 기록까지 실제와 동일하게 검증된다.
+# 기본값 꺼짐. 워크플로우에서 명시적으로 켤 때만 동작한다.
+FORCE_SELF_ONLY = os.environ.get("FORCE_SELF_ONLY", "").strip() == "1"
 # 실제로 이번 회차 2차 검증에 사용된 모델 — 메일 헤더 표기에 사용
 _LAST_VERIFY_MODEL = CLAUDE_MODEL
 GEMINI_MODEL        = os.environ.get("GEMINI_MODEL",        "gemini-2.5-flash-lite")  # 무료 15 RPM (2.0-flash는 5 RPM으로 축소됨)
@@ -4940,7 +4946,8 @@ def main():
                                      competitor_notices=None, today_str=_today_str)
             print(f"AI 필터링 결과 없음 — 여신잔고 위험고객 {_nr_cnt}종목·"
                   f"{_nr_rbal:,.0f}억 → {'전체 발송' if _nr_full else '본인 한정'}")
-            send_email(subject, _html, self_only=not _nr_full)
+            send_email(subject, _html,
+                       self_only=(not _nr_full) or FORCE_SELF_ONLY)
         else:
             print("AI 필터링 결과 없음 — 결과 없음 메일 발송 (특정인만)")
             subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
@@ -5514,6 +5521,9 @@ JSON만 출력:
                             ai_summary=ai_summary, exposure_data=exposure_data,
                             ref_date=ref_date, competitor_notices=competitor_notices,
                             today_str=today_str)
+    if FORCE_SELF_ONLY and not _self_only:
+        print("  [FORCE_SELF_ONLY] 전체발송 판정이나 테스트 모드 — 본인 한정으로만 발송")
+        _self_only = True
     send_email(subject, html, self_only=_self_only)
     save_run_stats(total_count, len(_mail_articles),
                    globals().get("_LAST_VERIFY_MODEL") or CLAUDE_MODEL, _self_only)
