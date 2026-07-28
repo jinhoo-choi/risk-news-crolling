@@ -1,12 +1,13 @@
 """수동 발송 스크립트 — 자동 발송분에서 오탐만 제외해 전체 대상 재발송.
 
-배경: 2026-07-28 07시 자동 발송(6건)은 최고점수 4.0으로 임계(5.5) 미달이라
-본인 한정으로 나갔다. 검토 결과 오탐 1건('박은영, JTBC 재정난에 유튜브도
-중단' — 연예매체 인물 심경 기사)을 제외한 5건은 전사 공유 가치가 있다고
-판단해, 담당자 확인을 거쳐 전체 대상으로 재발송한다.
+배경: 2026-07-28 14시는 코스피 서킷브레이커가 발동한 급락장(삼성전자 -11.7%,
+SK하이닉스 -13.1%, 경보 60개 종목)이었으나, 시장급락 안전장치가 무력화된
+버그(집계값을 판정 시점에 읽지 못함, 커밋 69ac0d6에서 수정)로 본인 한정
+발송에 그쳤다. 오탐 1건('[더벨][상장폐지 카운트다운] 온타이드' — 이중
+브래킷 연재물)을 제외한 3건으로 전체 대상 재발송한다.
 
-제목·기준시각은 자동 발송분과 동일 형식을 유지한다(내용이 07시 수집분
-그대로이므로 표기가 사실과 일치).
+제목·기준시각·수집건수는 자동 발송분과 동일 형식을 유지한다
+(내용이 14시 수집분 그대로이므로 표기가 사실과 일치).
 """
 import os
 import sys
@@ -40,44 +41,25 @@ if os.environ.get("CONFIRM_SEND", "").upper() != "YES":
 
 articles = [
     {
-        "id": 1, "grade": "주의",
-        "title": "\u201c인터록 논란에 초기대응 부실\u201d…HL만도, 중처법 적용되나",
-        "url": "https://www.sentv.co.kr/article/view/sentv202607270100",
-        "entity": "HL만도", "entities": ["HL만도"],
-        "keyword": "부실 리스크", "event_type": "기타리스크",
-        "pub_str": "07/27 18:10", "_risk_score": 4.0,
-        "action": ("HL만도 보유 고객 중 여신(담보대출) 보유 계좌 담보비율 현황 점검 → "
-                   "중대재해처벌법 적용 여부 및 수사 진행 상황 실시간 추적, 기소·처벌 확정 시 "
-                   "주가 추가 하락 가능성 대비 담보부족 계좌 수 및 강제 매도 예정 규모 즉시 "
-                   "재산출 → 여신 보유잔고 3억원 이상 고객 즉시 인계, OB 최우선 진행, 고객 안내 준비"),
+        "id": 1, "grade": "참고",
+        "title": "삼전·닉스 '장중 급락' 속...반도체 HBM·CXL·소부장주 '장중 뚝'",
+        "url": "http://www.choicenews.co.kr/news/articleView.html?idxno=168864",
+        "entity": "삼성전자", "entities": ["삼성전자"],
+        "keyword": "", "pub_str": "07/28 10:26", "_risk_score": 5.0,
     },
     {
         "id": 2, "grade": "참고",
-        "title": "ASML·베시 8%대 급락…자동 거래정지됐다",
-        "url": "https://www.tokenpost.kr/news/breaking/381827",
-        "entity": "ASML", "entities": ["ASML"],
-        "keyword": "", "pub_str": "07/28 00:02", "_risk_score": 8.1,
+        "title": "삼성전자 11%·SK하이닉스 13% 급락…코스피 6200선도 붕괴",
+        "url": "http://www.newsian.co.kr/news/articleView.html?idxno=92871",
+        "entity": "삼성전자", "entities": ["삼성전자"],
+        "keyword": "", "pub_str": "07/28 13:58", "_risk_score": 4.0,
     },
     {
         "id": 3, "grade": "참고",
-        "title": "엘앤에프 테슬라 계약 정정 공시 논란, 금융당국 압수수색 착수",
-        "url": "https://www.tokenpost.kr/news/market/381751",
-        "entity": "엘앤에프", "entities": ["엘앤에프"],
-        "keyword": "", "pub_str": "07/27 21:38", "_risk_score": 5.0,
-    },
-    {
-        "id": 4, "grade": "참고",
-        "title": "카카오페이 사태 후폭풍…금감원, 대형 전자금융업자 개인정보 점검 확대",
-        "url": "https://www.greened.kr/news/articleView.html?idxno=346062",
-        "entity": "카카오페이", "entities": ["카카오페이"],
-        "keyword": "", "pub_str": "07/27 20:48", "_risk_score": 4.5,
-    },
-    {
-        "id": 5, "grade": "참고",
-        "title": "엔비디아 주가 5% 급락…AI 투자 우려 커져",
-        "url": "https://www.bntnews.co.kr/article/view/bnt202607280017",
-        "entity": "엔비디아", "entities": ["엔비디아"],
-        "keyword": "", "pub_str": "07/28 06:58", "_risk_score": 4.0,
+        "title": "NAVER(네이버) 주가 21만원대로 '털썩'…코스피·코스닥 서킷브레이커 발동",
+        "url": "https://www.cbci.co.kr/news/articleView.html?idxno=592504",
+        "entity": "NAVER", "entities": ["NAVER"],
+        "keyword": "", "pub_str": "07/28 12:52", "_risk_score": 4.0,
     },
 ]
 
@@ -90,19 +72,19 @@ for rows in exposure_data.values():
 
 # 자동 발송분(07:04, 수집 594건)과 동일한 헤더로 맞춘다.
 # 내용이 그 회차 수집분 그대로이므로 표기가 사실과 일치한다.
-_BASE_TIME = datetime(2026, 7, 28, 7, 4, tzinfo=KST)
-_COLLECTED = 594
+_BASE_TIME = datetime(2026, 7, 28, 14, 10, tzinfo=KST)
+_COLLECTED = 1410
 
 html = build_email_html(
     articles,
     total_count=_COLLECTED,
-    ai_summary="ASML·엔비디아 급락 및 HL만도 중처법 적용 가능성 주시",
+    ai_summary="코스피 급락·서킷브레이커 발동 — 여신잔고 위험고객 60개 종목 하락",
     exposure_data=exposure_data,
     ref_date=ref_date,
     today_str="2026-07-28",
     now_override=_BASE_TIME,
 )
 
-subject = "[리스크 탐지] 07월 28일 07시 기준"
+subject = "[리스크 탐지] 07월 28일 14시 기준"
 send_email(subject, html, self_only=False)
 print("발송 완료:", subject)
