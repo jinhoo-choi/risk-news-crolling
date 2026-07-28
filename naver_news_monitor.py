@@ -5233,10 +5233,16 @@ JSON만 출력:
         return _bal >= STRONG_CAUTION_MIN_EXPOSURE
 
     _has_strong_caution = any(_strong_caution_ok(a) for a in filtered)
-    # 시장 급락 안전장치: -3% 초과 하락 + 위험고객 보유 종목이 10개 이상이면,
-    # 관련 리스크 뉴스가 하나도 안 잡혀 등급·점수가 낮더라도 전체 발송.
-    # (build_price_alert_section이 이미 위에서 호출되어 last_alerted_count에
-    # 최종 집계된 종목 수가 기록돼 있음 — 재계산 없이 재사용)
+    # 시장 급락 안전장치 — -3%↓ 종목 수와 위험고객 리스크잔고를 함께 본다.
+    # ★2026-07-28 버그 수정: 이 집계값은 build_price_alert_section()이 채우는데,
+    #   그 함수는 build_email_html() 내부에서 호출된다. 참고 등급 축소 기능을
+    #   넣으면서 build_email_html()을 발송판정 '뒤로' 옮긴 결과, 판정 시점에는
+    #   아직 0이라 시장급락 안전장치가 완전히 무력화됐다.
+    #   (7/28 14시 실사례: 삼성전자 -11.7%·SK하이닉스 -13.1%·60개 종목·
+    #    코스피 서킷브레이커 발동인데 본인 한정으로만 발송)
+    #   → 판정 직전에 명시적으로 1회 호출해 집계값을 확보한다.
+    #     build_email_html이 나중에 다시 호출해도 같은 값으로 덮어쓰므로 무해.
+    build_price_alert_section(exposure_data, ref_date)
     _alerted_stock_count = getattr(build_price_alert_section, "last_alerted_count", 0)
     _alerted_rbal = getattr(build_price_alert_section, "last_alerted_rbal", 0)
     # 종목 수 AND 리스크잔고 규모를 함께 충족해야 '시장 급락'으로 본다.
