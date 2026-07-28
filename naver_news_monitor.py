@@ -455,23 +455,32 @@ def get_entity_price_drop(entity: str, exposure_data: dict) -> float | None:
         return None
 
 
-def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
+def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '') -> str:
     """여신잔고 리스크 현황 섹션 HTML
     - 리스크종목 = Y + 종목유형 = 신용 행 추출 → 신용잔고 합산
     - yfinance 당일 등락률 조회 → -3% 이하 종목만 표시
     - 위험고객(리스크고객수 > 0) 컬럼 별도 표시
     - 탐지 종목 없으면 빈 문자열 반환
     - 모바일: 6컬럼 → font-size 10px + padding 축소로 대응
+
+    ★결과 캐싱(2026-07-29): 이 함수는 한 회차에 3번 호출된다.
+      ① 예비 발송범위 판정(2차 검증 모델 선택)
+      ② 최종 발송범위 판정
+      ③ 메일 HTML 생성
+      매번 위험고객 보유 303종목의 시세를 조회하면 회차당 900회가 넘고
+      실행시간이 약 3분 늘어난다(실측). 같은 회차 안에서는 시세가 바뀌어도
+      판정이 흔들리면 안 되므로, 첫 호출 결과를 재사용한다.
+      집계값(last_alerted_*)도 함께 보존해 판정 일관성을 보장한다.
     """
     try:
         import yfinance as yf
     except ImportError:
-        build_price_alert_section.last_alerted_count = 0
-        build_price_alert_section.last_alerted_rbal = 0
+        _build_price_alert_section_uncached.last_alerted_count = 0
+        _build_price_alert_section_uncached.last_alerted_rbal = 0
         return ''
 
-    build_price_alert_section.last_alerted_count = 0
-    build_price_alert_section.last_alerted_rbal = 0
+    _build_price_alert_section_uncached.last_alerted_count = 0
+    _build_price_alert_section_uncached.last_alerted_rbal = 0
     THRESHOLD = -3.0  # 2026-07-15: -5% → -3% 환원 (탐지 범위 확대)
 
     # 잔고 기준일 파싱
@@ -658,10 +667,10 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     # (-3% 초과 하락 + 위험고객 보유 종목이 다수여도 관련 뉴스가 하나도 안 잡히면
     # 메일 자체가 안 나가던 문제 방지용 — 시장 급락 시 뉴스 매칭 여부와 무관하게
     # 강제 전체발송 트리거로 사용)
-    build_price_alert_section.last_alerted_count = len(alerted_sorted)
+    _build_price_alert_section_uncached.last_alerted_count = len(alerted_sorted)
     # 위험고객 리스크잔고 합계도 기록 — 종목 수가 적어도 잔고가 크면
     # 알릴 가치가 있으므로 발송 게이트에서 종목 수와 함께 판단한다.
-    build_price_alert_section.last_alerted_rbal = sum(
+    _build_price_alert_section_uncached.last_alerted_rbal = sum(
         (a[4] or 0) for a in alerted_sorted)
     if not alerted_sorted:
         return ''
@@ -805,6 +814,49 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         </table>
       </td></tr>
     </table>'''
+
+
+
+def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
+    """여신잔고 리스크 현황 섹션 — 회차 내 결과 캐싱 래퍼.
+
+    ★이 함수는 한 회차에 3번 호출된다(2026-07-29 실측):
+      ① 예비 발송범위 판정(2차 검증 모델 선택)
+      ② 최종 발송범위 판정
+      ③ 메일 HTML 생성
+    매번 위험고객 보유 303종목의 시세를 조회하면 회차당 900회를 넘고
+    실행시간이 약 3분 늘어난다. 또한 호출 시점마다 시세가 달라지면
+    '판정에 쓴 값'과 '메일에 표시된 값'이 어긋날 수 있다.
+    → 같은 입력(익스포저·기준일)이면 첫 결과를 재사용해 성능과 일관성을
+      동시에 확보한다. 집계값(last_alerted_*)도 함께 복원한다.
+    """
+    _ck = (id(exposure_data), ref_date)
+    _c = getattr(build_price_alert_section, "_cache", None)
+    if _c and _c.get("key") == _ck:
+        build_price_alert_section.last_alerted_count = _c["count"]
+        build_price_alert_section.last_alerted_rbal = _c["rbal"]
+        return _c["html"]
+
+    html = _build_price_alert_section_uncached(exposure_data, ref_date)
+    cnt = getattr(_build_price_alert_section_uncached, "last_alerted_count", 0)
+    rbal = getattr(_build_price_alert_section_uncached, "last_alerted_rbal", 0)
+    build_price_alert_section.last_alerted_count = cnt
+    build_price_alert_section.last_alerted_rbal = rbal
+    build_price_alert_section._cache = {"key": _ck, "html": html,
+                                        "count": cnt, "rbal": rbal}
+    return html
+
+
+def clear_price_alert_cache():
+    """가격 경보 캐시 무효화.
+
+    운영에서는 회차마다 프로세스가 새로 뜨므로 불필요하지만, 테스트가
+    시세 조건(급락/평상)을 바꿔가며 검증할 때는 명시적으로 비워야 한다.
+    """
+    build_price_alert_section._cache = None
+    for _f in (build_price_alert_section, _build_price_alert_section_uncached):
+        _f.last_alerted_count = 0
+        _f.last_alerted_rbal = 0
 
 
 def normalize_ticker(name: str) -> str:

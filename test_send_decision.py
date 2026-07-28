@@ -65,10 +65,8 @@ def decide(articles, crash=False):
     → decide_send_scope() / filter_articles_for_scope()를 직접 호출한다.
     """
     _CRASH["on"] = crash
-    if not crash:
-        # 급락 아님 = 가격 조회가 아무것도 반환하지 않는 상태
-        nm.build_price_alert_section.last_alerted_count = 0
-        nm.build_price_alert_section.last_alerted_rbal = 0
+    # 시세 조건을 바꿔가며 검증하므로 회차 캐시를 매번 비운다
+    nm.clear_price_alert_cache()
 
     with contextlib.redirect_stdout(io.StringIO()):
         sc = nm.decide_send_scope(articles, EXPO, "2026-07-27")
@@ -135,9 +133,7 @@ MODEL_CASES = [
 def pick_model(articles, crash=False):
     """운영과 동일한 판정으로 2차 검증 모델을 고른다."""
     _CRASH["on"] = crash
-    if not crash:
-        nm.build_price_alert_section.last_alerted_count = 0
-        nm.build_price_alert_section.last_alerted_rbal = 0
+    nm.clear_price_alert_cache()
     with contextlib.redirect_stdout(io.StringIO()):
         sc = nm.decide_send_scope(articles, EXPO, "2026-07-27")
     return nm.CLAUDE_MODEL if sc["self_only"] else nm.CLAUDE_VERIFY_HIGH_MODEL
@@ -152,7 +148,7 @@ def main():
         r = decide(arts, crash)
         ok = r["full"] == expect
         if not ok:
-            fails.append((name, r["full"], expect, r))
+            fails.append((name, f'{r["full"]} (상세 {r})', expect))
         mark = "OK  " if ok else "FAIL"
         extra = f" (급락 {r['cnt']}종목·{r['rbal']:,.0f}억)" if crash else ""
         print(f"  {mark} {name:44} → {'전체' if r['full'] else '본인'}{extra}")
@@ -164,7 +160,7 @@ def main():
         r = decide(arts, crash)
         ok = len(r["mail"]) == expect_n
         if not ok:
-            fails.append((name, len(r["mail"]), expect_n, r))
+            fails.append((name, len(r["mail"]), expect_n))
         print(f"  {'OK  ' if ok else 'FAIL'} {name:44} → 메일 {len(r['mail'])}건 (기대 {expect_n})")
 
     print("\n" + "=" * 74)
@@ -202,8 +198,8 @@ def main():
     print("=" * 74)
     if fails:
         print("\n[실패 상세]")
-        for n, got, exp, r in fails:
-            print(f"  · {n}\n    실제={got} 기대={exp} / 상세={r}")
+        for n, got, exp in fails:
+            print(f"  · {n}\n    실제={got} 기대={exp}")
     return 0 if not fails else 1
 
 
