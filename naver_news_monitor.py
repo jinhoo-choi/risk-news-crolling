@@ -4842,8 +4842,10 @@ def main():
                     _exp_lines.append(
                         f"  - {_r.get('종목명','')} ({_r.get('종목유형','')}): "
                         f"{_b:,.0f}억, {_c:,.0f}명")
-        except Exception:
-            pass
+        except Exception as _e:
+            # 실패해도 판정은 계속되지만, 익스포저 없이 판정한 사실은 남겨야
+            # 2차 검증 오판을 사후에 설명할 수 있다.
+            print(f"  [2차검증] 익스포저 요약 실패({_ent}): {type(_e).__name__}")
         if _exp_lines:
             _exposure_txt = ("당사 보유 현황(뱅키스+영업점 합산):\n"
                              + "\n".join(_exp_lines))
