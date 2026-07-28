@@ -737,8 +737,8 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
                 <div style="font-size:14px;font-weight:600;color:#1e293b;">{name}</div>
                 <div style="font-size:10px;font-weight:700;color:#2563eb;margin-top:2px;">▼{abs(chg):.1f}%</div>
               </td>
-              {_risk_cell(rcust, rbal, ch)}
               {_cust_bal_cell(cust, bal, ch)}
+              {_risk_cell(rcust, rbal, ch)}
               {_top_risk_cell(top_rbal, top_cust, top_ratio, ch)}
             </tr>'''
 
@@ -774,8 +774,8 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
           <thead>
             <tr bgcolor="#f8fafc" style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
               <th style="padding:7px 6px;font-size:12px;color:#64748b;font-weight:500;text-align:center;">종목명</th>
-              <th style="padding:7px 6px;font-size:12px;color:#d97706;font-weight:600;text-align:center;">⚠ 위험고객</th>
               <th style="padding:7px 6px;font-size:12px;color:#64748b;font-weight:500;text-align:center;">전체 여신</th>
+              <th style="padding:7px 6px;font-size:12px;color:#d97706;font-weight:600;text-align:center;">⚠ 위험고객</th>
               <th style="padding:7px 6px;font-size:12px;color:#dc2626;font-weight:600;text-align:center;">최고 리스크</th>
             </tr>
           </thead>

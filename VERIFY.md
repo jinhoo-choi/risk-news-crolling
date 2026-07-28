@@ -575,18 +575,29 @@ grep -n 'float(str(' naver_news_monitor.py
 | `is_hard_excluded` | `test_variants.py` | 변형 79 + 원본 88 |
 | **발송판정·참고축소·시장급락** | **`test_send_decision.py`** | **13** |
 | 2차 검증 AI 판정 | `diag_judgment.py` | 회귀세트 88 (API 호출) |
-| `regrade_by_score` | — | ⚠️ 미검증 |
-| `calc_risk_score` | — | ⚠️ 미검증 |
+| **`regrade_by_score`** | **`test_regrade.py`** | **9** |
+| `calc_risk_score` | — | ⚠️ 미검증(단, 범위 클램프는 적용됨) |
 | HTML 생성 | — | ⚠️ 수동 검수만 |
 
-> 다음 우선순위는 `regrade_by_score`(경쟁사 배제·당사 오추출 방어)다.
-> 실제로 이 로직이 오탐의 상당수를 걸러내고 있는데 자동 검증이 없다.
+`test_regrade.py`가 고정하는 것: 경쟁사 자체 리스크 강등/배제(공백 변형 포함),
+당사 이슈 유지, 당사 오추출 시 entity 무효화, 피해종목 별도인 경우 유지,
+익스포저 없는 종목의 긴급 등급 상한.
 
 ## 수정 전 필수 실행 (2개로 확대)
 
 ```bash
-python3 test_variants.py        # 탐지 규칙
-python3 test_send_decision.py   # 발송 판정
+python3 test_variants.py        # 탐지 규칙 (변형 79 + 원본 88)
+python3 test_send_decision.py   # 발송 판정 (13)
+python3 test_regrade.py         # 등급 조정 (9)
 ```
 
-둘 다 종료코드 0이어야 커밋한다.
+**셋 다 종료코드 0이어야 커밋한다.**
+
+## 여신잔고 리스크 현황 표 열 순서 (2026-07-28 변경)
+
+```
+종목명 → 전체 여신 → ⚠ 위험고객 → 최고 리스크
+```
+
+모수(전체 여신)를 먼저 보여주고 그 부분집합(위험고객)을 이어서 배치한다.
+기존에는 위험고객이 앞에 있어 규모 대비 감을 잡기 어려웠다.
