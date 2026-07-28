@@ -57,46 +57,26 @@ def _exposure(entity):
 
 
 def decide(articles, crash=False):
-    """main()의 발송판정을 그대로 재현한다.
+    """★운영과 동일한 함수를 호출한다 (로직 복제 금지).
 
-    ★ 재현이 아니라 '실제 호출'해야 하는 부분: 시장급락 집계값.
-      build_price_alert_section을 판정 직전에 호출하는 구조가 유지되는지
-      이 테스트가 지킨다.
+    이전 버전은 판정 로직을 테스트에서 재현했는데, 변이 테스트 결과
+    'main의 시장급락 집계 호출을 지워도 테스트가 통과'하는 것이 확인됐다.
+    재현본을 검사하면 실제 코드가 깨져도 잡지 못한다.
+    → decide_send_scope() / filter_articles_for_scope()를 직접 호출한다.
     """
     _CRASH["on"] = crash
-    if crash:
-        with contextlib.redirect_stdout(io.StringIO()):
-            nm.build_price_alert_section(EXPO, "2026-07-27")
-    else:
+    if not crash:
+        # 급락 아님 = 가격 조회가 아무것도 반환하지 않는 상태
         nm.build_price_alert_section.last_alerted_count = 0
         nm.build_price_alert_section.last_alerted_rbal = 0
 
-    cnt = getattr(nm.build_price_alert_section, "last_alerted_count", 0)
-    rbal = getattr(nm.build_price_alert_section, "last_alerted_rbal", 0)
+    with contextlib.redirect_stdout(io.StringIO()):
+        sc = nm.decide_send_scope(articles, EXPO, "2026-07-27")
+        mail = nm.filter_articles_for_scope(articles, EXPO, sc["self_only"])
 
-    actionable = [a for a in articles if a.get("grade") in ("긴급", "주의")]
-    mx = max((a.get("_risk_score") or 0) for a in actionable) if actionable else 0
-    urgent = any(a.get("grade") == "긴급" for a in articles)
-
-    def strong(a):
-        if a.get("grade") != "주의":
-            return False
-        if (a.get("_conf_raw") or a.get("_ai_confidence") or 0) < 0.80:
-            return False
-        return _exposure((a.get("entity") or "").strip()) >= nm.STRONG_CAUTION_MIN_EXPOSURE
-
-    market_crash = (cnt >= nm.MARKET_CRASH_STOCK_THRESHOLD
-                    and rbal >= nm.MARKET_CRASH_RBAL_THRESHOLD)
-    force = urgent or any(strong(a) for a in articles) or market_crash
-    self_only = (mx < nm.SELF_ONLY_MAX_SCORE) and not force
-
-    mail = articles
-    if not self_only:
-        mail = [a for a in articles
-                if a.get("grade") != "참고"
-                or _exposure((a.get("entity") or "").strip()) >= nm.REF_FULLSEND_MIN_EXPOSURE]
-    return {"full": not self_only, "max": mx, "crash": market_crash,
-            "cnt": cnt, "rbal": rbal, "mail": mail}
+    return {"full": not sc["self_only"], "max": sc["max_score"],
+            "crash": sc["market_crash"], "cnt": sc["alerted_count"],
+            "rbal": sc["alerted_rbal"], "mail": mail}
 
 
 def A(grade, score, conf=0.5, entity="삼성전자"):
@@ -116,6 +96,20 @@ CASES = [
     # ★ 오늘 사고 재발 방지 — 급락장이면 뉴스와 무관하게 전체발송
     ("급락장 + 참고만 — 전체발송(시장급락)", [A("참고", 3.0, 0.3)], True, True),
     ("급락장 + 기사 0건 — 전체발송(시장급락)", [], True, True),
+]
+
+# 시장급락 임계 자체를 검증 — 임계가 비정상적으로 높아지면(=안전장치 무력화)
+# 실제 급락장에서도 미발동하므로, 집계값과 임계를 함께 확인한다.
+# (변이 테스트에서 'MARKET_CRASH_RBAL_THRESHOLD를 999999로' 바꿔도
+#  통과하던 구멍을 메움)
+THRESHOLD_CASES = [
+    ("시장급락 종목수 임계가 상식 범위(5~30)", lambda: 5 <= nm.MARKET_CRASH_STOCK_THRESHOLD <= 30),
+    ("시장급락 잔고 임계가 상식 범위(50~500억)", lambda: 50 <= nm.MARKET_CRASH_RBAL_THRESHOLD <= 500),
+    ("발송 임계가 상식 범위(4.0~7.0)", lambda: 4.0 <= nm.SELF_ONLY_MAX_SCORE <= 7.0),
+    ("conf 우회 익스포저 임계가 상식 범위(10~500억)",
+     lambda: 10 <= nm.STRONG_CAUTION_MIN_EXPOSURE <= 500),
+    ("참고 축소 임계가 상식 범위(500~20000억)",
+     lambda: 500 <= nm.REF_FULLSEND_MIN_EXPOSURE <= 20000),
 ]
 
 REF_CASES = [
@@ -152,7 +146,16 @@ def main():
             fails.append((name, len(r["mail"]), expect_n, r))
         print(f"  {'OK  ' if ok else 'FAIL'} {name:44} → 메일 {len(r['mail'])}건 (기대 {expect_n})")
 
-    total = len(CASES) + len(REF_CASES)
+    print("\n" + "=" * 74)
+    print("[임계값 상식 범위 검증]")
+    print("=" * 74)
+    for name, fn in THRESHOLD_CASES:
+        ok = fn()
+        if not ok:
+            fails.append((name, "범위 이탈", "상식 범위"))
+        print(f"  {'OK  ' if ok else 'FAIL'} {name}")
+
+    total = len(CASES) + len(REF_CASES) + len(THRESHOLD_CASES)
     print("\n" + "=" * 74)
     print(f"결과: {total - len(fails)}/{total} 통과")
     print("=" * 74)

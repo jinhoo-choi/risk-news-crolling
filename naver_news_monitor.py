@@ -3615,6 +3615,85 @@ def _price_badge(a: dict) -> str:
     return ""
 
 
+def decide_send_scope(filtered: list, exposure_data: dict, ref_date: str = "") -> dict:
+    """발송 범위(전체/본인한정)를 판정한다.
+
+    main()에서 인라인으로 처리하던 로직을 함수로 분리한 것.
+    사유: 테스트가 이 로직을 '복제'하면 실제 코드가 깨져도 잡지 못한다.
+    (2026-07-28 변이 테스트에서 확인 — 시장급락 집계 호출을 지워도
+     test_send_decision이 통과했다. 테스트가 자체 재현본을 검사했기 때문)
+    → 테스트와 운영이 같은 함수를 호출하도록 추출한다.
+
+    반환: {self_only, force_full, max_score, has_urgent, has_strong_caution,
+           market_crash, alerted_count, alerted_rbal, triggers}
+    """
+    _actionable = [a for a in filtered if a.get("grade") in ("긴급", "주의")]
+    _max_score = max((a.get("_risk_score") or 0) for a in _actionable) if _actionable else 0
+    _has_urgent = any(a.get("grade") == "긴급" for a in filtered)
+
+    def _strong_caution_ok(a) -> bool:
+        """고신뢰 주의 우회 발송 자격 — conf와 '익스포저 규모'를 함께 본다."""
+        if a.get("grade") != "주의":
+            return False
+        if (a.get("_conf_raw") or a.get("_ai_confidence") or 0) < 0.80:
+            return False
+        _rows = find_exposure((a.get("entity") or "").strip(), exposure_data)
+        if not _rows:
+            return False
+        return sum(_num(r.get("잔고(억)")) for r in _rows) >= STRONG_CAUTION_MIN_EXPOSURE
+
+    _has_strong_caution = any(_strong_caution_ok(a) for a in filtered)
+
+    # ★집계값은 build_price_alert_section()이 함수 속성에 채운다. 이 함수는
+    #   build_email_html() 내부에서도 호출되는데, HTML 생성이 판정보다 뒤로
+    #   가면 판정 시점엔 0이 읽힌다(7/28 급락장 미발송 사고의 원인).
+    #   → 여기서 명시적으로 1회 호출해 확보한다.
+    build_price_alert_section(exposure_data, ref_date)
+    _alerted_count = getattr(build_price_alert_section, "last_alerted_count", 0)
+    _alerted_rbal = getattr(build_price_alert_section, "last_alerted_rbal", 0)
+    _market_crash = (_alerted_count >= MARKET_CRASH_STOCK_THRESHOLD
+                     and _alerted_rbal >= MARKET_CRASH_RBAL_THRESHOLD)
+
+    _force_full = _has_urgent or _has_strong_caution or _market_crash
+    _self_only = (_max_score < SELF_ONLY_MAX_SCORE) and not _force_full
+
+    _triggers = []
+    if _has_urgent:
+        _triggers.append("긴급 기사 존재")
+    if _has_strong_caution:
+        _triggers.append(f"고신뢰 주의(conf≥0.80·익스포저 {STRONG_CAUTION_MIN_EXPOSURE:,.0f}억↑)")
+    if _market_crash:
+        _triggers.append(f"시장급락({_alerted_count}종목·{_alerted_rbal:,.0f}억)")
+
+    return {"self_only": _self_only, "force_full": _force_full,
+            "max_score": _max_score, "has_urgent": _has_urgent,
+            "has_strong_caution": _has_strong_caution, "market_crash": _market_crash,
+            "alerted_count": _alerted_count, "alerted_rbal": _alerted_rbal,
+            "triggers": _triggers}
+
+
+def filter_articles_for_scope(filtered: list, exposure_data: dict, self_only: bool) -> list:
+    """발송 범위에 맞춰 메일에 실을 기사를 추린다.
+
+    전체 발송 시 '참고' 등급은 익스포저가 매우 큰 종목만 남긴다.
+    (실측: 오탐의 90%가 참고 등급이었고, 참고 자체 오탐률 78%)
+    본인 한정 발송에는 전부 유지해 담당자 모니터링 공백을 없앤다.
+    """
+    if self_only:
+        return filtered
+
+    def _keep(a):
+        if a.get("grade") != "참고":
+            return True
+        _e = (a.get("entity") or "").strip()
+        if not _e:
+            return False
+        _bal = sum(_num(r.get("잔고(억)")) for r in find_exposure(_e, exposure_data))
+        return _bal >= REF_FULLSEND_MIN_EXPOSURE
+
+    return [a for a in filtered if _keep(a)]
+
+
 def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '', exposure_data: dict = None, ref_date: str = '', competitor_notices: list = None, today_str: str = '', now_override=None):
     """now_override: 헤더의 '기준 시각'을 명시 지정(수동 보정 발송용).
     자동 발송분과 동일한 기준시각으로 재발송할 때 사용하며,
@@ -5247,69 +5326,25 @@ JSON만 출력:
     # ── 전체 발송 여부 결정 ──
     # 원칙: 긴급·주의 카드 중 최고 리스크점수가 임계값 이상이면 전체 발송.
     # 참고 등급은 '직접 손실 없는 동향'이므로 점수가 높아도(경쟁사 익스포저 등)
-    # 전체 발송 트리거가 되지 않는다. 경쟁사 자체 리스크가 참고로 강등된 경우
-    # 익스포저 때문에 점수가 높아도 전사 발송되지 않도록 하는 안전장치.
-    # 단, 긴급/고신뢰 주의는 점수와 무관하게 전체 발송(FN 방지).
-    _actionable = [a for a in filtered if a.get("grade") in ("긴급", "주의")]
-    _max_score = max((a.get("_risk_score") or 0) for a in _actionable) if _actionable else 0
-    _has_urgent = any(a.get("grade") == "긴급" for a in filtered)
-    # 고신뢰 주의: confidence 원값(_conf_raw 우선, 없으면 현재값) 0.80 이상
-    # 고신뢰 주의 — conf만 높고 점수가 낮은 건은 전체 발송 트리거에서 제외한다.
-    # 사유: conf는 'AI가 이 기사를 리스크로 확신하는 정도'일 뿐 손실 규모와
-    # 무관해, 익스포저 0인 오탐이 conf 0.80을 받으면 5점 미만인데도 전체
-    # 발송됐음(7/25 14시 최고 4.6점인데 전체 발송 — 주의 2건 모두 오탐:
-    # 서천특화시장 시공사(익스포저 0 비상장), [제약공시 책갈피](코너물)).
-    # → conf가 높아도 '당사 익스포저가 실재하는' 주의만 전체 발송을 유발한다.
-    def _strong_caution_ok(a) -> bool:
-        """고신뢰 주의 우회 발송 자격 — conf와 '익스포저 규모'를 함께 본다."""
-        if a.get("grade") != "주의":
-            return False
-        if (a.get("_conf_raw") or a.get("_ai_confidence") or 0) < 0.80:
-            return False
-        _rows = find_exposure((a.get("entity") or "").strip(), exposure_data)
-        if not _rows:
-            return False
-        _bal = sum(_num(r.get("잔고(억)")) for r in _rows)
-        return _bal >= STRONG_CAUTION_MIN_EXPOSURE
+    # 전체 발송 트리거가 되지 않는다. 단, 긴급/고신뢰 주의/시장급락은 점수와
+    # 무관하게 전체 발송(FN 방지).
+    # ★판정 로직 전체는 decide_send_scope()에 있다 — main에 인라인으로 두면
+    #   테스트가 그 로직을 복제하게 되고, 실제 코드가 깨져도 잡지 못한다.
+    #   (2026-07-28 변이 테스트에서 확인)
+    # 발송 범위 판정 — 로직은 decide_send_scope()에 있다.
+    # (테스트가 재현본이 아니라 실제 함수를 호출하도록 분리했음)
+    _scope = decide_send_scope(filtered, exposure_data, ref_date)
+    _self_only = _scope["self_only"]
+    _max_score = _scope["max_score"]
+    _trg = " + ".join(_scope["triggers"]) if _scope["triggers"] else "없음"
 
-    _has_strong_caution = any(_strong_caution_ok(a) for a in filtered)
-    # 시장 급락 안전장치 — -3%↓ 종목 수와 위험고객 리스크잔고를 함께 본다.
-    # ★2026-07-28 버그 수정: 이 집계값은 build_price_alert_section()이 채우는데,
-    #   그 함수는 build_email_html() 내부에서 호출된다. 참고 등급 축소 기능을
-    #   넣으면서 build_email_html()을 발송판정 '뒤로' 옮긴 결과, 판정 시점에는
-    #   아직 0이라 시장급락 안전장치가 완전히 무력화됐다.
-    #   (7/28 14시 실사례: 삼성전자 -11.7%·SK하이닉스 -13.1%·60개 종목·
-    #    코스피 서킷브레이커 발동인데 본인 한정으로만 발송)
-    #   → 판정 직전에 명시적으로 1회 호출해 집계값을 확보한다.
-    #     build_email_html이 나중에 다시 호출해도 같은 값으로 덮어쓰므로 무해.
-    build_price_alert_section(exposure_data, ref_date)
-    _alerted_stock_count = getattr(build_price_alert_section, "last_alerted_count", 0)
-    _alerted_rbal = getattr(build_price_alert_section, "last_alerted_rbal", 0)
-    # 종목 수 AND 리스크잔고 규모를 함께 충족해야 '시장 급락'으로 본다.
-    # 소액 종목이 다수 하락한 평범한 조정장을 급락장으로 오인하지 않기 위함.
-    _market_crash = (_alerted_stock_count >= MARKET_CRASH_STOCK_THRESHOLD
-                     and _alerted_rbal >= MARKET_CRASH_RBAL_THRESHOLD)
-    if _alerted_stock_count:
-        _mc_ok = "충족" if _market_crash else "미달"
-        print(f"  [시장급락 판정] -3%↓ {_alerted_stock_count}종목 / 리스크잔고 "
-              f"{_alerted_rbal:,.0f}억 / 기준 {MARKET_CRASH_STOCK_THRESHOLD}종목 AND "
-              f"{MARKET_CRASH_RBAL_THRESHOLD:,.0f}억 → {_mc_ok}")
-    if _market_crash:
-        print(f"  [시장급락 강제발송] 뉴스 매칭과 무관하게 전체 발송")
-    _force_full = _has_urgent or _has_strong_caution or _market_crash
-    _self_only = (_max_score < SELF_ONLY_MAX_SCORE) and not _force_full
-
-    # ── 판정 근거 로깅 ──────────────────────────────────────────────
-    # 발송 범위는 임원 신뢰도에 직결되므로, 왜 그렇게 판정했는지 로그만 보고
-    # 사후 재구성할 수 있어야 한다. 소수 2자리로 출력해 경계값(4.99 vs 5.00)이
-    # 반올림돼 "5.0 < 5.0"처럼 모순되게 보이지 않도록 한다.
-    _triggers = []
-    if _has_urgent:         _triggers.append("긴급 기사 존재")
-    if _has_strong_caution: _triggers.append(f"고신뢰 주의(conf≥0.80·익스포저 {STRONG_CAUTION_MIN_EXPOSURE:,.0f}억↑)")
-    if _market_crash:       _triggers.append(f"시장급락({_alerted_stock_count}종목·{_alerted_rbal:,.0f}억)")
-    _trg = " + ".join(_triggers) if _triggers else "없음"
+    if _scope["alerted_count"]:
+        print(f"  [시장급락 판정] -3%↓ {_scope['alerted_count']}종목 / 리스크잔고 "
+              f"{_scope['alerted_rbal']:,.0f}억 / 기준 {MARKET_CRASH_STOCK_THRESHOLD}종목 AND "
+              f"{MARKET_CRASH_RBAL_THRESHOLD:,.0f}억 → "
+              f"{'충족' if _scope['market_crash'] else '미달'}")
     print(f"  [발송판정] 최고점수 {_max_score:.2f} / 임계 {SELF_ONLY_MAX_SCORE:.2f} / "
-          f"강제발송 조건: {_trg} / 대상기사 {len(_actionable)}건(긴급·주의)")
+          f"강제발송 조건: {_trg}")
     if _self_only:
         print(f"  [본인 한정 발송] 점수 {_max_score:.2f} < {SELF_ONLY_MAX_SCORE:.2f} "
               f"이고 강제발송 조건 없음 — 전체 발송 보류")
@@ -5318,27 +5353,12 @@ JSON만 출력:
               f"{_trg} → 전체 발송")
     else:
         print(f"  [전체 발송] 최고 리스크점수 {_max_score:.2f} ≥ {SELF_ONLY_MAX_SCORE:.2f}")
-    # ── 전체 발송 시 참고 등급 축소 ────────────────────────────────────
-    # 참고는 '직접 손실 없는 동향'이라 임원 판단에 필수가 아닌데, 실측상
-    # 오탐의 90%가 여기서 나온다. 전체 발송에서는 익스포저가 매우 큰 종목의
-    # 참고만 남기고(대형주 급락 등 실제로 알릴 가치가 있는 건), 나머지는
-    # 본인 한정 메일에서만 확인한다.
-    _mail_articles = filtered
-    if not _self_only:
-        def _ref_keep(a):
-            if a.get("grade") != "참고":
-                return True
-            _e = (a.get("entity") or "").strip()
-            if not _e:
-                return False
-            _bal = sum(_num(r.get("잔고(억)")) for r in find_exposure(_e, exposure_data))
-            return _bal >= REF_FULLSEND_MIN_EXPOSURE
-        _kept = [a for a in filtered if _ref_keep(a)]
-        _dropped = len(filtered) - len(_kept)
-        if _dropped:
-            print(f"  [전체발송 참고 축소] 참고 {_dropped}건 제외 "
-                  f"(익스포저 {REF_FULLSEND_MIN_EXPOSURE:,.0f}억 미만) — 본인 메일에는 포함")
-        _mail_articles = _kept
+
+    # 전체 발송 시 참고 등급 축소 — 로직은 filter_articles_for_scope()에 있다.
+    _mail_articles = filter_articles_for_scope(filtered, exposure_data, _self_only)
+    if len(_mail_articles) != len(filtered):
+        print(f"  [전체발송 참고 축소] 참고 {len(filtered)-len(_mail_articles)}건 제외 "
+              f"(익스포저 {REF_FULLSEND_MIN_EXPOSURE:,.0f}억 미만) — 본인 메일에는 포함")
 
     html = build_email_html(_mail_articles, total_count=total_count,
                             ai_summary=ai_summary, exposure_data=exposure_data,
