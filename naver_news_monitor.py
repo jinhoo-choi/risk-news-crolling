@@ -3190,9 +3190,11 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
             batch_result = ai_filter_batch_gemini(batch, offset=i)
             if batch_result is None:
                 print(f"  [Gemini 실패] Claude fallback (배치 {i//batch_size+1})")
+                _RUN_STATS["gemini_fail"] += 1
                 batch_result = ai_filter_batch(batch, offset=i)
             else:
                 _used_gemini = True
+                _RUN_STATS["gemini_ok"] += 1
         else:
             batch_result = ai_filter_batch(batch, offset=i)
         # ─────────────────────────────────────────────────────────────
@@ -3637,6 +3639,43 @@ def _price_badge(a: dict) -> str:
     if chg >= 3:
         return f'<div style="font-size:10px;color:#16a34a;font-weight:700;margin-top:2px;">▲{pct}%</div>'
     return ""
+
+
+# ── 회차 운영 지표 ──────────────────────────────────────────────────────
+# Actions 로그는 외부망에서 내려받기 어렵고 90일 뒤 삭제된다. 튜닝 판단에
+# 필요한 최소 지표만 레포에 누적해 언제든 조회할 수 있게 한다.
+# (Gemini 무료 티어 RPM 초과로 Claude fallback이 얼마나 나는지가 핵심)
+_RUN_STATS = {"gemini_ok": 0, "gemini_fail": 0}
+
+
+def save_run_stats(collected: int, selected: int, verify_model: str,
+                   self_only: bool, path: str = "run_stats.jsonl"):
+    """회차별 운영 지표를 1줄 JSON으로 누적 기록."""
+    from datetime import datetime, timezone, timedelta
+    _kst = timezone(timedelta(hours=9))
+    rec = {
+        "ts": datetime.now(_kst).strftime("%Y-%m-%d %H:%M"),
+        "collected": collected,
+        "selected": selected,
+        "gemini_ok": _RUN_STATS["gemini_ok"],
+        "gemini_fail": _RUN_STATS["gemini_fail"],
+        "gemini_model": GEMINI_MODEL,
+        "verify_model": verify_model,
+        "scope": "self" if self_only else "full",
+    }
+    try:
+        # 최근 200줄만 유지 — 무한 증식 방지
+        lines = []
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                lines = f.read().splitlines()[-199:]
+        lines.append(json.dumps(rec, ensure_ascii=False))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        print(f"  [운영지표] Gemini 성공 {rec['gemini_ok']} / fallback "
+              f"{rec['gemini_fail']} — {path} 기록")
+    except Exception as e:
+        print(f"  [운영지표] 기록 실패(무시): {type(e).__name__}")
 
 
 def _model_label() -> str:
@@ -5424,6 +5463,8 @@ JSON만 출력:
                             ref_date=ref_date, competitor_notices=competitor_notices,
                             today_str=today_str)
     send_email(subject, html, self_only=_self_only)
+    save_run_stats(total_count, len(_mail_articles),
+                   globals().get("_LAST_VERIFY_MODEL") or CLAUDE_MODEL, _self_only)
 
     for a in filtered:
         sent_urls.add(a.get("url", ""))

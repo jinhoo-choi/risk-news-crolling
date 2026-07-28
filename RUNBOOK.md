@@ -92,6 +92,31 @@
 
 ---
 
+## 3-E. 운영 지표 확인 (`run_stats.jsonl`)
+
+Actions 로그는 외부망에서 내려받기 어렵고 90일 뒤 삭제되므로, 튜닝 판단에
+필요한 최소 지표를 레포에 누적한다.
+
+```bash
+git pull && tail -20 run_stats.jsonl | python3 -c "
+import sys,json
+for l in sys.stdin:
+    d=json.loads(l); t=d['gemini_ok']+d['gemini_fail']
+    print(f\"{d['ts']} 수집{d['collected']:>5} 선별{d['selected']:>2} \"
+          f\"Gemini {d['gemini_ok']}/{t} (fallback {d['gemini_fail']/max(t,1)*100:.0f}%) \"
+          f\"{d['scope']} {d['verify_model']}\")"
+```
+
+| 필드 | 의미 |
+|---|---|
+| `gemini_ok` / `gemini_fail` | 1차 필터 성공/Claude fallback 횟수 |
+| `gemini_model` | 그 회차에 쓴 Gemini 모델 |
+| `verify_model` | 2차 검증에 쓴 Claude 모델(전체발송 시 Opus) |
+| `scope` | `full`(전체발송) / `self`(본인한정) |
+
+**fallback 비율이 높으면** Gemini 무료 티어 RPM 초과를 의심한다.
+대응: 배치 크기 확대(요청 수 감소) 또는 배치 간격 확대.
+
 ## 4. GitHub Secrets 목록 (초기 셋업/재구성용)
 
 | 시크릿 | 용도 | 없으면 |
