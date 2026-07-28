@@ -576,8 +576,11 @@ grep -n 'float(str(' naver_news_monitor.py
 | **발송판정·참고축소·시장급락** | **`test_send_decision.py`** | **13** |
 | 2차 검증 AI 판정 | `diag_judgment.py` | 회귀세트 88 (API 호출) |
 | **`regrade_by_score`** | **`test_regrade.py`** | **9** |
-| `calc_risk_score` | — | ⚠️ 미검증(단, 범위 클램프는 적용됨) |
-| HTML 생성 | — | ⚠️ 수동 검수만 |
+| **`calc_risk_score`** | **`test_scoring.py`** | **21** |
+| **HTML 생성** | **`test_html.py`** | **24** |
+
+> 2026-07-28 기준 주요 경로는 모두 자동 검증 대상이 되었다.
+> 남은 수동 영역은 실제 메일 수신 확인(Gmail)과 Actions 로그 점검뿐이다.
 
 `test_regrade.py`가 고정하는 것: 경쟁사 자체 리스크 강등/배제(공백 변형 포함),
 당사 이슈 유지, 당사 오추출 시 entity 무효화, 피해종목 별도인 경우 유지,
@@ -586,12 +589,18 @@ grep -n 'float(str(' naver_news_monitor.py
 ## 수정 전 필수 실행 (2개로 확대)
 
 ```bash
-python3 test_variants.py        # 탐지 규칙 (변형 79 + 원본 88)
-python3 test_send_decision.py   # 발송 판정 (13)
-python3 test_regrade.py         # 등급 조정 (9)
+bash run_tests.sh
 ```
 
-**셋 다 종료코드 0이어야 커밋한다.**
+한 번에 5개 테스트 + 컴파일을 돌린다. **'전체 통과'가 아니면 커밋하지 않는다.**
+
+| 테스트 | 대상 | 케이스 |
+|---|---|---|
+| `test_variants.py` | 탐지 규칙(하드제외) | 변형 79 + 원본 88 |
+| `test_send_decision.py` | 발송 범위 판정·참고 축소·시장급락 | 13 |
+| `test_regrade.py` | 등급 조정(경쟁사·당사오추출·익스포저 상한) | 9 |
+| `test_scoring.py` | 점수 계산(범위·공백변형·익스포저·오염데이터) | 21 |
+| `test_html.py` | 메일 생성(안정성·필수요소·열순서·이상치) | 24 |
 
 ## 여신잔고 리스크 현황 표 열 순서 (2026-07-28 변경)
 
