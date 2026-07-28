@@ -85,6 +85,26 @@ CASES = [
      "XX리츠 감사의견 거절…상장폐지 사유 발생", "존재하지않는종목XYZ", "긴급", None, None),
 ]
 
+# ★결정론적 강등이 AI 재검증에 덮어써지지 않는지 (2026-07-29 사고)
+LOCK_CASES = [
+    ("경쟁사 강등 시 _grade_locked 설정",
+     "이번엔 기관주의…KB증권, 가중 제제 리스크 노출", "KB증권", "주의", True),
+    ("이미 참고여도 잠금 설정",
+     "이번엔 기관주의…KB증권, 가중 제제 리스크 노출", "KB증권", "참고", True),
+    ("당사 이슈는 잠기지 않음(재검증 정상 동작)",
+     "한국투자증권 MTS 접속 장애, 매매 1시간 중단", "한국투자증권", "긴급", False),
+]
+
+
+def run_lock(title, entity, grade):
+    art = {"title": title, "entity": entity, "entities": [entity],
+           "grade": grade, "_ai_confidence": 0.85, "_risk_score": 5.0,
+           "url": "http://x", "keyword": "", "desc": ""}
+    with contextlib.redirect_stdout(io.StringIO()):
+        out = nm.regrade_by_score([art], exposure_data=EXPO)
+    return bool(out[0].get("_grade_locked")) if out else False
+
+
 # 익스포저 있는 종목의 긴급은 유지되는지 별도 확인
 EXPO_CASES = [
     ("익스포저 대형 종목 긴급 유지",
@@ -117,7 +137,17 @@ def main():
             fails.append((name, g, gexp))
         print(f"  {'OK  ' if ok else 'FAIL'} {name:44} → {g}")
 
-    total = len(CASES) + len(EXPO_CASES)
+    print("\n" + "=" * 76)
+    print("[결정론적 강등 잠금 — AI 재검증 덮어쓰기 방지]")
+    print("=" * 76)
+    for name, title, ent, gin, expect in LOCK_CASES:
+        got = run_lock(title, ent, gin)
+        ok = got == expect
+        if not ok:
+            fails.append((name, got, expect))
+        print(f"  {'OK  ' if ok else 'FAIL'} {name:46} → 잠금={got}")
+
+    total = len(CASES) + len(EXPO_CASES) + len(LOCK_CASES)
     print("\n" + "=" * 76)
     print(f"결과: {total - len(fails)}/{total} 통과")
     print("=" * 76)

@@ -2890,6 +2890,11 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
             if a.get("grade") != "참고":
                 print(f"  [경쟁사 자체리스크 참고강등] {_ent}: {_title[:35]}")
             a["grade"] = "참고"
+            # ★결정론적 강등은 이후 AI 재검증이 되돌리지 못하도록 잠근다.
+            #   (7/29 07시 KB증권 사례: regrade가 참고로 강등했는데
+            #    Sonnet 재검증이 주의로 되올려 경쟁사 기사가 주의로 발송됨.
+            #    등급이 이미 참고여도 잠가야 하므로 조건문 밖에 둔다.)
+            a["_grade_locked"] = True
             a["_force_urgent"] = False
             a["customer_notice"] = None
     articles = [a for a in articles if not a.get("_excluded")]
