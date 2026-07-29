@@ -1,3 +1,4 @@
 {"ts": "2026-07-29 14:09", "collected": 1409, "selected": 0, "gemini_ok": 0, "gemini_fail": 14, "gemini_model": "gemini-2.5-flash", "verify_model": "claude-opus-4-6", "scope": "full"}
 {"ts": "2026-07-29 18:31", "collected": 1752, "selected": 3, "gemini_ok": 19, "gemini_fail": 0, "gemini_err": "", "gemini_model": "gemini-3.5-flash-lite", "verify_model": "claude-opus-4-6", "scope": "self"}
 {"ts": "2026-07-29 21:11", "collected": 1922, "selected": 0, "gemini_ok": 21, "gemini_fail": 0, "gemini_err": "", "gemini_model": "gemini-3.5-flash-lite", "verify_model": "claude-opus-4-6", "scope": "full"}
+{"ts": "2026-07-30 07:04", "collected": 858, "selected": 2, "gemini_ok": 8, "gemini_fail": 0, "gemini_err": "", "gemini_model": "gemini-3.5-flash-lite", "verify_model": "claude-opus-4-6", "scope": "full"}
