@@ -2958,16 +2958,51 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     #   (2026-07-16: 신한투자증권 익스포저 0건 기사가 참고 등급으로 발송된 사례
     #   확인 후 추가 — filter_prompt.txt엔 이미 relevant:false 규칙이 있었으나
     #   AI가 놓친 경우를 코드 레벨에서 한 번 더 차단)
+    def _is_same_group(_e: str, _t: str) -> bool:
+        """entity가 제목 속 경쟁 증권사와 '같은 그룹'인지.
+
+        '삼성증권 봐주기' 기사에서 entity가 삼성생명/삼성카드로 추출되는 등
+        그룹 계열사로 흔들리는 경우를 흡수한다. 단순 접두 2글자 비교로,
+        전혀 다른 종목(DI동일 등)에는 적용되지 않는다.
+        """
+        if len(_e) < 2:
+            return False
+        _pre = _e[:2]
+        return any(_b.startswith(_pre) for _b in _kw_hits(_t, _BROKER_ENTITIES))
+
     _BROKER_ENTITIES = ("키움증권", "미래에셋증권", "삼성증권", "NH투자증권",
                         "신한투자증권", "KB증권", "하나증권", "대신증권", "메리츠증권",
                         "토스증권", "카카오페이증권", "유안타증권", "교보증권",
                         "현대차증권", "이베스트투자증권", "다올투자증권")
     for a in articles:
-        _ent = (a.get("entity") or "")
+        # ★entity 표기 변형 방어(2026-07-29 실측):
+        #   정확 일치만 보면 앞뒤 공백·빈값·그룹 계열사명에서 판정이 뚫린다.
+        #   실사례: '금융위의 삼성증권 봐주기?…중징계 감경될 듯'이 주의로 발송.
+        #   → strip 후 entity/entities를 함께 보고, 그래도 못 찾으면 '제목에
+        #     경쟁사명이 있고 당사·타 종목이 주체가 아닌' 경우로 판정한다.
+        _ent = (a.get("entity") or "").strip()
+        _ents = [(_e or "").strip() for _e in (a.get("entities") or [])]
         _title = a.get("title", "")
         if "한국투자증권" in _title:
             continue  # 당사가 제목에 있으면 당사 관련 사안이므로 제외
-        if _ent in _BROKER_ENTITIES and _kw_hit(_title, _OTHER_BROKERS):
+        _is_broker_entity = (
+            _ent in _BROKER_ENTITIES
+            or any(_e in _BROKER_ENTITIES for _e in _ents)
+            # entity가 비었거나 같은 그룹 계열사명일 때만 제목으로 보완한다.
+            # ★entity가 '경쟁사와 무관한 별개 종목'이면 적용하면 안 된다 —
+            #   'NH투자증권 직원이 DI동일 주가조작 가담'처럼 경쟁사가 가해자이고
+            #   피해종목(DI동일)이 따로 있는 기사가 강등되면 미탐이 된다
+            #   (검증에서 확인).
+            or (_kw_hit(_title, _BROKER_ENTITIES)
+                and (not _ent or _is_same_group(_ent, _title)))
+        )
+        if _is_broker_entity and _kw_hit(_title, _OTHER_BROKERS):
+            # 익스포저 조회는 '제목에서 찾은 경쟁사'를 우선 사용 — entity가
+            # 비어 있으면 조회 자체가 안 돼 잘못 배제될 수 있다.
+            if _ent not in _BROKER_ENTITIES:
+                _hit = _kw_hits(_title, _BROKER_ENTITIES)
+                if _hit:
+                    _ent = _hit[0]
             _has_exp = bool(find_exposure(_ent, exposure_data or {}))
             if not _has_exp:
                 print(f"  [경쟁사 리스크·익스포저없음 완전배제] {_ent}: {_title[:35]}")

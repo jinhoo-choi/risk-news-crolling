@@ -85,6 +85,25 @@ CASES = [
      "XX리츠 감사의견 거절…상장폐지 사유 발생", "존재하지않는종목XYZ", "긴급", None, None),
 ]
 
+# entity 표기가 흔들려도 경쟁사 판정이 유지되는지 (2026-07-29 삼성증권 사고)
+# 실사례: '금융위의 삼성증권 봐주기?…중징계 감경될 듯'이 주의로 발송됨.
+# 원인은 _ent in _BROKER_ENTITIES 정확 일치 — 공백·빈값·그룹 계열사명에서 뚫림.
+ENTITY_VARIANT_CASES = [
+    ("정확 일치", "삼성증권"),
+    ("앞뒤 공백", " 삼성증권 "),
+    ("그룹 계열사(생명)", "삼성생명"),
+    ("그룹 계열사(카드)", "삼성카드"),
+    ("빈값", ""),
+]
+_BROKER_TITLE = "금융위의 삼성증권 봐주기?...중징계 감경될 듯"
+
+# ★반대로, 경쟁사가 '가해자'이고 피해종목이 따로 있으면 강등하면 안 된다
+VICTIM_CASES = [
+    ("NH투자증권 직원이 DI동일 주가조작 가담 적발", "DI동일"),
+    ("키움증권 직원 연루 코오롱티슈진 시세조종", "코오롱티슈진"),
+]
+
+
 # ★결정론적 강등이 AI 재검증에 덮어써지지 않는지 (2026-07-29 사고)
 LOCK_CASES = [
     ("경쟁사 강등 시 _grade_locked 설정",
@@ -175,6 +194,26 @@ def main():
         print(f"  {'OK  ' if ok else 'FAIL'} {name:46} → 잠금={got}")
 
     print("\n" + "=" * 76)
+    print("[경쟁사 판정 — entity 표기 변형 내성]")
+    print("=" * 76)
+    for name, ent in ENTITY_VARIANT_CASES:
+        g, _ = run(_BROKER_TITLE, ent, "주의")
+        ok = g in ("참고", "배제")
+        if not ok:
+            fails.append((f"경쟁사 변형: {name}", g, "참고 또는 배제"))
+        print(f"  {'OK  ' if ok else 'FAIL'} {name:20} entity={ent!r:14} → {g}")
+
+    print("\n" + "=" * 76)
+    print("[★미탐 방지 — 경쟁사가 가해자·피해종목 별도면 유지]")
+    print("=" * 76)
+    for title, ent in VICTIM_CASES:
+        g, _ = run(title, ent, "긴급")
+        ok = g == "긴급"
+        if not ok:
+            fails.append((f"피해종목 유지: {ent}", g, "긴급"))
+        print(f"  {'OK  ' if ok else 'FAIL'} {title[:36]:38} → {g}")
+
+    print("\n" + "=" * 76)
     print("[GRADE_LIMITS 상한 준수 + 강등 잠금]")
     print("=" * 76)
     _u, _l = run_limit()
@@ -188,7 +227,8 @@ def main():
     print(f"  {'OK  ' if ok1 else 'FAIL'} 긴급 4건 투입 → {_u}건 유지 (상한 {_max_urgent})")
     print(f"  {'OK  ' if ok2 else 'FAIL'} 강등된 건 잠금 → {_l}건")
 
-    total = len(CASES) + len(EXPO_CASES) + len(LOCK_CASES) + 2
+    total = (len(CASES) + len(EXPO_CASES) + len(LOCK_CASES) + 2
+             + len(ENTITY_VARIANT_CASES) + len(VICTIM_CASES))
     print("\n" + "=" * 76)
     print(f"결과: {total - len(fails)}/{total} 통과")
     print("=" * 76)
