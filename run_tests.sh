@@ -12,7 +12,7 @@ echo "════════════════════════�
 python3 -m py_compile naver_news_monitor.py manual_send.py convert_exposure.py 2>/dev/null \
   && echo "  OK   컴파일" || { echo "  FAIL 컴파일"; FAILED=1; }
 
-for t in test_variants test_send_decision test_regrade test_scoring test_html; do
+for t in test_variants test_send_decision test_regrade test_scoring test_html test_smoke; do
   if python3 "$t.py" >/tmp/_t.log 2>&1; then
     echo "  OK   $t"
   else

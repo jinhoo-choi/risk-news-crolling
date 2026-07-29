@@ -5206,7 +5206,17 @@ JSON만 출력:
     # 오탐 비용이 가장 크므로 마지막 관문만 승급하는 것.
     # 여기서의 판정은 '예비'이며, 2차 검증 결과를 반영해 뒤에서 최종 판정한다.
     # (그래서 Opus가 기사를 대량 제외해도 빈 메일이 전사로 나가지 않는다)
-    _pre = decide_send_scope(filtered, exposure_data, ref_date)
+    # ref_date는 이 지점보다 뒤(메일 생성 직전)에서 정의되므로 여기서 계산한다.
+    # ★2026-07-29 실환경 테스트에서 NameError로 파이프라인이 중단됐던 지점 —
+    #   로컬 단위테스트는 decide_send_scope를 직접 호출해 main의 변수 순서를
+    #   타지 않아 잡히지 않았다.
+    _pre_ref_date = ""
+    if exposure_data:
+        try:
+            _pre_ref_date = next(iter(exposure_data.values()))[0].get("기준일", "")
+        except (StopIteration, IndexError, AttributeError):
+            _pre_ref_date = ""
+    _pre = decide_send_scope(filtered, exposure_data, _pre_ref_date)
     _verify_model = CLAUDE_MODEL
     if not _pre["self_only"]:
         _verify_model = CLAUDE_VERIFY_HIGH_MODEL
