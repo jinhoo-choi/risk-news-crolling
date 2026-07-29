@@ -255,7 +255,13 @@ CLAUDE_VERIFY_HIGH_MODEL = os.environ.get("CLAUDE_VERIFY_HIGH_MODEL", "claude-op
 FORCE_SELF_ONLY = os.environ.get("FORCE_SELF_ONLY", "").strip() == "1"
 # 실제로 이번 회차 2차 검증에 사용된 모델 — 메일 헤더 표기에 사용
 _LAST_VERIFY_MODEL = CLAUDE_MODEL
-GEMINI_MODEL        = os.environ.get("GEMINI_MODEL",        "gemini-2.5-flash-lite")  # 무료 15 RPM (2.0-flash는 5 RPM으로 축소됨)
+# 2026-07-29 승급: flash-lite → flash (유료 전환 후).
+# 사유: 무료 티어에서 429 RESOURCE_EXHAUSTED로 8배치 중 6배치가 Claude
+# fallback을 타고 있었음(실측). fallback 비용이 월 $40 수준이라, flash로
+# 올려도(월 $7) 순 $33 절감이면서 1차 필터 추론 품질은 향상된다.
+# Pro는 쓰지 않는다 — 1차는 'recall 우선 광역 스크리닝'이 역할이고,
+# 정밀 판단은 2차 Sonnet/Opus가 담당한다(비용 4배 대비 실익 적음).
+GEMINI_MODEL        = os.environ.get("GEMINI_MODEL",        "gemini-2.5-flash")
 
 # 중복 제거 유사도 임계값 — 운영 중 조정 가능
 TITLE_SIM_THRESHOLD = 0.92  # 제목 유사도 (연합뉴스 재인용 대응)
@@ -2580,9 +2586,23 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
 
         except Exception as e:
             _es = str(e)
-            # 429·503·quota → 즉시 None (Claude fallback)
-            if any(x in _es for x in ["404", "429", "503", "quota", "RESOURCE_EXHAUSTED", "NOT_FOUND"]):
-                print(f"  [Gemini] 할당량/서버 오류 → Claude fallback: {_es[:60]}")
+            # 모델명 오류(404/NOT_FOUND)는 재시도해도 소용없다 → 즉시 fallback
+            if any(x in _es for x in ["404", "NOT_FOUND"]):
+                print(f"  [Gemini] 모델 오류 → Claude fallback: {_es[:60]}")
+                return None
+            # 429·503·quota는 '일시적 제한'이므로 백오프 후 재시도한다.
+            # 기존엔 즉시 Claude fallback으로 빠져 1차 필터가 유료 Claude로
+            # 대체되고 있었음(2026-07-29 실측: 8배치 중 6배치). 유료 전환 후에도
+            # 순간 버스트로 걸릴 수 있어 재시도를 둔다.
+            if any(x in _es for x in ["429", "503", "quota", "RESOURCE_EXHAUSTED",
+                                       "UNAVAILABLE"]):
+                if attempt < 2:
+                    _wait = (2 ** attempt) * 8 + random.uniform(0, 4)   # 8~12s, 16~20s
+                    print(f"  [Gemini] 일시적 제한({_es[:40]}) — {_wait:.0f}초 후 재시도 "
+                          f"({attempt+2}/3)")
+                    time.sleep(_wait)
+                    continue
+                print(f"  [Gemini] 재시도 3회 소진 → Claude fallback: {_es[:50]}")
                 return None
             print(f"  [Gemini] 오류 시도 {attempt+1}/3: {_es[:80]}")
             if attempt < 2:
