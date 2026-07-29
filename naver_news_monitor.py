@@ -255,13 +255,25 @@ CLAUDE_VERIFY_HIGH_MODEL = os.environ.get("CLAUDE_VERIFY_HIGH_MODEL", "claude-op
 FORCE_SELF_ONLY = os.environ.get("FORCE_SELF_ONLY", "").strip() == "1"
 # 실제로 이번 회차 2차 검증에 사용된 모델 — 메일 헤더 표기에 사용
 _LAST_VERIFY_MODEL = CLAUDE_MODEL
-# 2026-07-29 승급: flash-lite → flash (유료 전환 후).
-# 사유: 무료 티어에서 429 RESOURCE_EXHAUSTED로 8배치 중 6배치가 Claude
-# fallback을 타고 있었음(실측). fallback 비용이 월 $40 수준이라, flash로
-# 올려도(월 $7) 순 $33 절감이면서 1차 필터 추론 품질은 향상된다.
-# Pro는 쓰지 않는다 — 1차는 'recall 우선 광역 스크리닝'이 역할이고,
-# 정밀 판단은 2차 Sonnet/Opus가 담당한다(비용 4배 대비 실익 적음).
-GEMINI_MODEL        = os.environ.get("GEMINI_MODEL",        "gemini-2.5-flash")
+# ── Gemini 모델 설정 ────────────────────────────────────────────────────
+# ★2026-07-29 사고: gemini-2.5-flash로 승급했더니 fallback 100%.
+#   원인은 해당 모델이 공지된 종료일(10/16)보다 일찍 내려간 것.
+#   Google은 모델 은퇴 주기가 짧아, 단일 모델명을 하드코딩하면 조용히
+#   전량 실패하고 유료 Claude가 1차 필터를 대신하게 된다(비용 급증).
+# → 후보 목록을 두고 실패 시 다음 모델로 자동 전환한다.
+#   GEMINI_MODEL을 지정하면 그 모델을 최우선으로 시도한다.
+_GEMINI_CANDIDATES = [
+    m.strip() for m in os.environ.get(
+        "GEMINI_MODEL_CANDIDATES",
+        "gemini-3.5-flash-lite,gemini-3.6-flash,gemini-flash-latest,gemini-2.5-flash-lite"
+    ).split(",") if m.strip()
+]
+_env_model = os.environ.get("GEMINI_MODEL", "").strip()
+if _env_model and _env_model in _GEMINI_CANDIDATES:
+    _GEMINI_CANDIDATES.remove(_env_model)
+if _env_model:
+    _GEMINI_CANDIDATES.insert(0, _env_model)
+GEMINI_MODEL = _GEMINI_CANDIDATES[0]
 
 # 중복 제거 유사도 임계값 — 운영 중 조정 가능
 TITLE_SIM_THRESHOLD = 0.92  # 제목 유사도 (연합뉴스 재인용 대응)
@@ -2482,6 +2494,7 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
     반환: list(성공) | None(실패 → Claude fallback 트리거)
     인터페이스: ai_filter_batch와 완전 동일
     """
+    global GEMINI_MODEL   # 모델 은퇴 시 후보로 전환하기 위해
     if not batch or not GOOGLE_API_KEY:
         return None
 
@@ -2587,8 +2600,23 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
         except Exception as e:
             _es = str(e)
             # 모델명 오류(404/NOT_FOUND)는 재시도해도 소용없다 → 즉시 fallback
-            if any(x in _es for x in ["404", "NOT_FOUND"]):
+            if any(x in _es for x in ["404", "NOT_FOUND", "no longer available",
+                                       "is not found", "not supported"]):
+                # ★모델이 은퇴했을 수 있다. 다음 후보로 전환해 재시도한다.
+                #   (2026-07-29: gemini-2.5-flash가 공지일보다 일찍 내려가
+                #    fallback 100% 발생 — 단일 모델 하드코딩의 위험)
+                _cur = GEMINI_MODEL
+                _rest = [m for m in _GEMINI_CANDIDATES if m != _cur]
+                if _rest and not _RUN_STATS.get("gemini_model_switched"):
+                    GEMINI_MODEL = _rest[0]
+                    _RUN_STATS["gemini_model_switched"] = True
+                    if not _RUN_STATS.get("gemini_err"):
+                        _RUN_STATS["gemini_err"] = f"MODEL_SWITCH:{_cur}→{GEMINI_MODEL}"
+                    print(f"  [Gemini] 모델 '{_cur}' 사용 불가 → '{GEMINI_MODEL}'로 전환 후 재시도")
+                    continue
                 print(f"  [Gemini] 모델 오류 → Claude fallback: {_es[:60]}")
+                if not _RUN_STATS.get("gemini_err"):
+                    _RUN_STATS["gemini_err"] = f"MODEL:{_es[:100]}"
                 return None
             # 429·503·quota는 '일시적 제한'이므로 백오프 후 재시도한다.
             # 기존엔 즉시 Claude fallback으로 빠져 1차 필터가 유료 Claude로
@@ -2603,6 +2631,8 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
                     time.sleep(_wait)
                     continue
                 print(f"  [Gemini] 재시도 3회 소진 → Claude fallback: {_es[:50]}")
+                if not _RUN_STATS.get("gemini_err"):
+                    _RUN_STATS["gemini_err"] = f"QUOTA:{_es[:100]}"
                 return None
             print(f"  [Gemini] 오류 시도 {attempt+1}/3: {_es[:80]}")
             if attempt < 2:
@@ -3758,7 +3788,8 @@ def _price_badge(a: dict) -> str:
 # Actions 로그는 외부망에서 내려받기 어렵고 90일 뒤 삭제된다. 튜닝 판단에
 # 필요한 최소 지표만 레포에 누적해 언제든 조회할 수 있게 한다.
 # (Gemini 무료 티어 RPM 초과로 Claude fallback이 얼마나 나는지가 핵심)
-_RUN_STATS = {"gemini_ok": 0, "gemini_fail": 0}
+_RUN_STATS = {"gemini_ok": 0, "gemini_fail": 0, "gemini_err": "",
+              "gemini_model_switched": False}
 
 
 def save_run_stats(collected: int, selected: int, verify_model: str,
@@ -3772,7 +3803,10 @@ def save_run_stats(collected: int, selected: int, verify_model: str,
         "selected": selected,
         "gemini_ok": _RUN_STATS["gemini_ok"],
         "gemini_fail": _RUN_STATS["gemini_fail"],
-        "gemini_model": GEMINI_MODEL,
+        # 실패 사유를 남겨야 '모델명 오류인지 할당량 초과인지'를 사후에 가린다.
+        # (2026-07-29: fallback 100%인데 사유가 없어 진단 불가했음)
+        "gemini_err": _RUN_STATS.get("gemini_err", "")[:120],
+        "gemini_model": GEMINI_MODEL,   # 전환됐다면 최종 사용 모델
         "verify_model": verify_model,
         "scope": "self" if self_only else "full",
     }
