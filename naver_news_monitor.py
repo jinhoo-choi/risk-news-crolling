@@ -5024,14 +5024,21 @@ def main():
         # 잔고 조건을 병행하는 이유 — 실측상 단일 종목 최대 95억,
         # 상위 3종목이 전체의 45%를 차지해 '적은 종목 수 + 큰 잔고' 상황을
         # 종목 수만으로는 놓치기 때문.
-        _NR_STOCK_TH = 5
-        _NR_RBAL_TH  = 50.0   # 억
+        # ★2026-07-29 룰 통일: 뉴스 0건 경로도 '뉴스 있을 때'와 동일 기준을 쓴다.
+        #   기존엔 5종목 OR 50억(느슨)이라, 뉴스가 '없을수록' 더 쉽게 전사
+        #   발송되는 모순이 있었다(5개 시나리오 중 4개 불일치 실측).
+        #   하락장마다 '리스크에 해당하는 뉴스가 없습니다' 메일이 전사로
+        #   나가 임원 피로를 유발했다(7/29 21시: 뉴스 0건인데 58종목 하락으로 발송).
+        #   뉴스가 없으면 정보량이 오히려 적으므로 더 엄격해야 한다는 판단.
+        _NR_STOCK_TH = MARKET_CRASH_STOCK_THRESHOLD
+        _NR_RBAL_TH  = MARKET_CRASH_RBAL_THRESHOLD
         _nr_cnt  = getattr(build_price_alert_section, "last_alerted_count", 0)
         _nr_rbal = getattr(build_price_alert_section, "last_alerted_rbal", 0)
-        _nr_full = _price_section and (_nr_cnt >= _NR_STOCK_TH or _nr_rbal >= _NR_RBAL_TH)
+        _nr_full = bool(_price_section) and (_nr_cnt >= _NR_STOCK_TH
+                                             and _nr_rbal >= _NR_RBAL_TH)
         if _price_section:
             print(f"  [뉴스 0건 발송판정] 경보 {_nr_cnt}종목 / 리스크잔고 {_nr_rbal:,.0f}억 "
-                  f"/ 기준 {_NR_STOCK_TH}종목 또는 {_NR_RBAL_TH:,.0f}억 → "
+                  f"/ 기준 {_NR_STOCK_TH}종목 AND {_NR_RBAL_TH:,.0f}억 → "
                   f"{'충족(전체발송)' if _nr_full else '미달(본인한정)'}")
         if _price_section:
             # 경보가 있으면 내용은 동일하게 만들고 '발송 범위'만 기준으로 가른다.
@@ -5340,6 +5347,13 @@ JSON만 출력:
     before_verify = len(filtered)
     _removed_verify = [a for a in filtered if not _verify_results.get(id(a), True)]
     filtered = [a for a in filtered if _verify_results.get(id(a), True)]
+    # ★2026-07-29: 2차 검증에서 '전량' 제거되면 뉴스 0건인데도 일반 경로로
+    #   흘러가 '[리스크 탐지] …기준' 제목에 본문은 '해당 뉴스가 없습니다'인
+    #   메일이 전사로 나갔다(7/29 21시 실사례 — 요약에는 필터 전 종목명이
+    #   남아 내용과 어긋나기까지 했다).
+    #   뉴스 0건 분기는 L5010에서 이미 지나쳤으므로, 여기서 다시 판정한다.
+    if before_verify > 0 and not filtered:
+        print(f"  [2차 검증] {before_verify}건 전량 제거 — 뉴스 0건 상태로 발송 판정 진행")
 
     # 2차 검증 제거 기사 → seen_news에 등록 (다음 실행 재탐지 방지)
     for a in _removed_verify:
@@ -5626,6 +5640,12 @@ JSON만 출력:
     if len(_mail_articles) != len(filtered):
         print(f"  [전체발송 참고 축소] 참고 {len(filtered)-len(_mail_articles)}건 제외 "
               f"(익스포저 {REF_FULLSEND_MIN_EXPOSURE:,.0f}억 미만) — 본인 메일에는 포함")
+
+    # 뉴스가 0건이면 제목·요약을 상황에 맞게 바꾼다 — '리스크 탐지'라는
+    # 제목에 본문이 비어 있으면 수신자가 발송 의도를 오해한다.
+    if not _mail_articles:
+        subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 여신잔고 위험고객 현황"
+        ai_summary = "금일 리스크 뉴스 없음 — 여신잔고 위험고객 하락 현황 확인 필요"
 
     html = build_email_html(_mail_articles, total_count=total_count,
                             ai_summary=ai_summary, exposure_data=exposure_data,

@@ -68,16 +68,29 @@ class _Resp:
 
 # 실제 필터를 통과하도록 구성한 모의 기사.
 # 하드제외·dedup·AI 필터를 모두 지나 발송판정까지 도달해야 테스트가 의미 있다.
+def _recent(minutes_ago: int) -> str:
+    """수집 윈도우(14시간) 안에 들어오는 pubDate 생성.
+
+    ★고정 날짜를 쓰면 시간이 지나면서 윈도우를 벗어나 뉴스가 0건이 되고,
+      테스트가 조용히 무의미해진다(2026-07-29 실측 — 전 키워드 0건).
+      항상 '지금 기준'으로 만든다.
+    """
+    from datetime import datetime, timezone, timedelta
+    kst = timezone(timedelta(hours=9))
+    t = datetime.now(kst) - timedelta(minutes=minutes_ago)
+    return t.strftime("%a, %d %b %Y %H:%M:%S +0900")
+
+
 _NEWS = {
     "items": [
         {"title": "A사 <b>부도</b> 발생…법정관리 신청",
          "originallink": "http://news.test/1", "link": "http://news.test/1",
          "description": "A사가 부도 처리됐다.",
-         "pubDate": "Wed, 29 Jul 2026 08:00:00 +0900"},
+         "pubDate": _recent(30)},
         {"title": "삼성전자 급락…코스피 흔들",
          "originallink": "http://news.test/2", "link": "http://news.test/2",
          "description": "반도체주 약세.",
-         "pubDate": "Wed, 29 Jul 2026 08:10:00 +0900"},
+         "pubDate": _recent(60)},
     ]
 }
 
@@ -165,10 +178,15 @@ def main():
     #   그 결과가 run_stats.jsonl에 섞이면 '실제 fallback률'을 왜곡한다.
     #   테스트 중에는 임시 경로로 기록하도록 우회한다.
     import tempfile, shutil
+    global _BACKUP_DIR
     _tmp = tempfile.mkdtemp()
+    _BACKUP_DIR = _tmp
     _orig_save = None
 
-    # dedup 상태가 모의 기사를 걸러내지 않도록 임시 파일로 격리
+    # dedup 상태가 모의 기사를 걸러내지 않도록 임시 파일로 격리.
+    # ★백업만 하고 복원하지 않으면 다음 실행이 빈 seen_news로 시작해
+    #   테스트 결과가 달라진다(2026-07-29 실측 — 스모크가 dedup에 막혀
+    #   뉴스 0건이 되면서 도달 검증이 실패했다). _restore에서 반드시 되돌린다.
     for _f in ["seen_news.json"]:
         if os.path.exists(_f):
             shutil.copy(_f, os.path.join(_tmp, _f))
@@ -239,9 +257,19 @@ def main():
     return 0
 
 
+_BACKUP_DIR = None
+
+
 def _restore():
     """테스트가 건드린 상태 파일 원복 — 정규 회차 dedup 오염 방지."""
     import glob
+    import shutil as _sh
+    # ① seen_news.json 원복 (백업이 있으면)
+    if _BACKUP_DIR:
+        _b = os.path.join(_BACKUP_DIR, "seen_news.json")
+        if os.path.exists(_b):
+            _sh.copy(_b, "seen_news.json")
+    # ② 테스트가 만든 로그 정리
     for f in glob.glob("filter_log_*.json"):
         try:
             os.remove(f)
