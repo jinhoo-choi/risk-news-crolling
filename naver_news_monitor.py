@@ -2593,7 +2593,9 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
                     article["related_stocks"] = [s.strip() for s in _rs_raw if s and s.strip()]
                     _evt = article["event_type"]
                     article["event_key"]  = f"{_ent}_{_evt}" if _ent and _evt else ""
-                    article["_gemini_filtered"] = True  # Claude 재검증 트리거용
+                    # ※ 과거 _gemini_filtered 플래그로 재검증을 트리거했으나,
+                    #    현재 재검증은 Gemini 사용 시 전건 대상이라 불필요.
+                    #    설정만 하고 읽지 않는 죽은 플래그였으므로 제거(2026-07-29).
                     result.append(article)
             return result
 
@@ -4873,7 +4875,8 @@ def main():
                 if _drop is not None and _drop <= PRICE_RESEND_THRESHOLD:
                     matched = False
                     reason = ""
-                    a["_price_resend"] = _drop
+                    # 재발송 사유는 바로 아래 로그로 남긴다. 플래그를 두었으나
+                    # 읽는 곳이 없어 죽은 코드였음(2026-07-29 정리).
                     print(f"  [dedup 해제] {entity} 당일 {_drop}% 하락 → 재발송 허용")
 
         # 당일 동일 entity 1건 제한 — event_type 달라도 같은 사건으로 판단
@@ -5093,7 +5096,8 @@ def main():
                 if alt_body:
                     article["body"] = alt_body
                     article["_body_failed"] = False
-                    article["_alt_url"] = alt_url
+                    # 대체 URL은 로그로만 남긴다(이전엔 _alt_url 플래그를
+                    # 설정만 하고 읽는 곳이 없어 죽은 코드였음 — 2026-07-29 정리)
                     print(f"  본문 대체 URL 성공: {article.get('title','')[:30]}")
                     return article
             # 2) 대체도 실패 → desc fallback, 참고 강등
