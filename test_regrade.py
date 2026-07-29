@@ -142,6 +142,41 @@ def run_limit():
     return urgent, locked
 
 
+def run_verify_lock():
+    """★_verify_high_risk_by_claude가 실제로 잠금을 존중하는지 검증.
+
+    기존 테스트는 '_grade_locked가 설정되는가'만 봤다. 그 결과 잠금을
+    '확인하는' 코드가 유실됐는데도 통과했고, 경쟁사 전산사고가 긴급 6.2로
+    발송됐다(2026-07-29 18:31 키움증권). 소비자 쪽을 직접 호출해 검증한다.
+    """
+    import json as _json
+
+    locked = {"title": "키움증권 전산사고", "grade": "참고", "_grade_locked": True}
+    unlocked = {"title": "A사 부도", "grade": "주의"}
+    arts = [locked, unlocked]
+
+    # AI가 둘 다 '긴급'으로 올리려는 상황을 모의
+    class _R:
+        status_code = 200
+
+        def json(self):
+            return {"content": [{"type": "text", "text": _json.dumps(
+                [{"id": 1, "grade": "긴급"}, {"id": 2, "grade": "긴급"}])}]}
+
+        def raise_for_status(self):
+            pass
+
+    import requests
+    _orig = requests.post
+    requests.post = lambda *a, **k: _R()
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            nm._verify_high_risk_by_claude(arts)
+    finally:
+        requests.post = _orig
+    return locked["grade"], unlocked["grade"]
+
+
 def run_lock(title, entity, grade):
     art = {"title": title, "entity": entity, "entities": [entity],
            "grade": grade, "_ai_confidence": 0.85, "_risk_score": 5.0,
@@ -214,6 +249,19 @@ def main():
         print(f"  {'OK  ' if ok else 'FAIL'} {title[:36]:38} → {g}")
 
     print("\n" + "=" * 76)
+    print("[★재검증이 잠금을 실제로 존중하는지 (소비자 쪽 검증)]")
+    print("=" * 76)
+    _lg, _ug = run_verify_lock()
+    ok_lock = (_lg == "참고")
+    ok_norm = (_ug == "긴급")
+    if not ok_lock:
+        fails.append(("잠금 건 등급 고정", _lg, "참고"))
+    if not ok_norm:
+        fails.append(("미잠금 건 재검증 반영", _ug, "긴급"))
+    print(f"  {'OK  ' if ok_lock else 'FAIL'} 잠금 건: AI가 긴급으로 올려도 → {_lg}")
+    print(f"  {'OK  ' if ok_norm else 'FAIL'} 미잠금 건: AI 판단 반영 → {_ug}")
+
+    print("\n" + "=" * 76)
     print("[GRADE_LIMITS 상한 준수 + 강등 잠금]")
     print("=" * 76)
     _u, _l = run_limit()
@@ -228,7 +276,7 @@ def main():
     print(f"  {'OK  ' if ok2 else 'FAIL'} 강등된 건 잠금 → {_l}건")
 
     total = (len(CASES) + len(EXPO_CASES) + len(LOCK_CASES) + 2
-             + len(ENTITY_VARIANT_CASES) + len(VICTIM_CASES))
+             + len(ENTITY_VARIANT_CASES) + len(VICTIM_CASES) + 2)
     print("\n" + "=" * 76)
     print(f"결과: {total - len(fails)}/{total} 통과")
     print("=" * 76)

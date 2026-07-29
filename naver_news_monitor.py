@@ -3302,6 +3302,13 @@ def _verify_high_risk_by_claude(articles: list):
         for i, a in enumerate(articles):
             _vg = _vmap.get(i + 1)
             _og = a.get("grade", "")
+            # ★결정론적 규칙(경쟁사 자체리스크·GRADE_LIMITS 상한·confidence·
+            #   익스포저없음)으로 강등된 건은 AI 판단이 달라도 되돌리지 않는다.
+            #   규칙이 확률적 판단에 밀리면 경쟁사 기사가 긴급으로 나간다
+            #   (7/29 18:31 키움증권 전산사고 긴급 6.2 실사례).
+            if a.get("_grade_locked"):
+                print(f"  [Sonnet 재검증] {_og} 고정(규칙 강등): {a['title'][:40]}")
+                continue
             if _vg in _valid_grades and _vg != _og:
                 a["grade"] = _vg
                 if _vg != "긴급":
