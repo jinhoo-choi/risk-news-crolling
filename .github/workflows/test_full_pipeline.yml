@@ -39,11 +39,20 @@ jobs:
           GOOGLE_API_KEY:       ${{ secrets.GOOGLE_API_KEY }}
         run: python3 naver_news_monitor.py
 
-      - name: 운영지표 확인
+      - name: 운영지표 확인 & 커밋
         if: always()
         run: |
           echo "── run_stats.jsonl 마지막 줄 ──"
           tail -1 run_stats.jsonl || echo "(기록 없음)"
+          # Actions 로그는 외부망에서 못 읽으므로 레포에 남겨 조회 가능하게 한다.
+          # seen_news.json은 커밋하지 않는다(정규 회차 dedup 오염 방지).
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git checkout -- seen_news.json || true
+          git add run_stats.jsonl || true
+          git diff --cached --quiet || git commit -m "test: run_stats 기록 [skip ci]"
+          git pull --rebase origin main || true
+          git push || true
 
       # ※ seen_news.json은 커밋하지 않는다 — 테스트 실행이 정규 회차의
       #   dedup 상태를 오염시키지 않도록.

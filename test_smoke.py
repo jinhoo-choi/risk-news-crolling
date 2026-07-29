@@ -160,9 +160,15 @@ smtplib.SMTP_SSL = _FakeSMTP
 
 
 def main():
-    # dedup 상태가 모의 기사를 걸러내지 않도록 임시 파일로 격리
+    # ★운영 지표 파일 오염 방지(2026-07-29 발견):
+    #   스모크 테스트는 더미 API 키로 돌기 때문에 Gemini가 항상 실패한다.
+    #   그 결과가 run_stats.jsonl에 섞이면 '실제 fallback률'을 왜곡한다.
+    #   테스트 중에는 임시 경로로 기록하도록 우회한다.
     import tempfile, shutil
     _tmp = tempfile.mkdtemp()
+    _orig_save = None
+
+    # dedup 상태가 모의 기사를 걸러내지 않도록 임시 파일로 격리
     for _f in ["seen_news.json"]:
         if os.path.exists(_f):
             shutil.copy(_f, os.path.join(_tmp, _f))
@@ -179,6 +185,11 @@ def main():
         spec.loader.exec_module(nm)
     except SystemExit:
         pass
+
+    # 지표 기록을 임시 경로로 우회 — 운영 파일(run_stats.jsonl) 보호
+    _orig_save = nm.save_run_stats
+    _tmp_stats = os.path.join(_tmp, "run_stats.jsonl")
+    nm.save_run_stats = lambda *a, **k: _orig_save(*a, **{**k, "path": _tmp_stats})
 
     buf = io.StringIO()
     try:
