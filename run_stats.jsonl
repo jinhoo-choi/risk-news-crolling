@@ -4,3 +4,4 @@
 {"ts": "2026-07-30 07:04", "collected": 858, "selected": 2, "gemini_ok": 8, "gemini_fail": 0, "gemini_err": "", "gemini_model": "gemini-3.5-flash-lite", "verify_model": "claude-opus-4-6", "scope": "full"}
 {"ts": "2026-07-30 14:05", "collected": 1277, "selected": 1, "gemini_ok": 12, "gemini_fail": 0, "gemini_err": "", "gemini_model": "gemini-3.5-flash-lite", "verify_model": "claude-opus-4-6", "scope": "full"}
 {"ts": "2026-07-30 21:08", "collected": 1823, "selected": 3, "gemini_ok": 19, "gemini_fail": 0, "gemini_err": "", "gemini_model": "gemini-3.5-flash-lite", "verify_model": "claude-opus-4-6", "scope": "full"}
+{"ts": "2026-07-31 07:10", "collected": 738, "selected": 3, "gemini_ok": 6, "gemini_fail": 0, "gemini_err": "", "gemini_model": "gemini-3.5-flash-lite", "verify_model": "claude-opus-4-6", "scope": "full"}
