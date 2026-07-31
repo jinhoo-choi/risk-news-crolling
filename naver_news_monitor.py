@@ -1035,11 +1035,16 @@ def get_overseas_keywords(exposure_data: dict = None, top_n: int = 30) -> list:
     """
     return list(OVERSEAS_KEYWORDS)
 
-def sanitize_action_numbers(action: str, exp_rows: list) -> tuple:
+def sanitize_action_numbers(action: str, exp_rows: list, src_text: str = "") -> tuple:
     """
     대응방안(action) 텍스트에서 익스포저 관련 수치(N명·N억원)를 추출해,
     실제 제공된 익스포저(exp_rows)의 값 또는 그 부분집합 합산으로 설명되지 않는
     '창작된 수치'가 있으면 True(오염)로 판정한다. 할루시네이션 원천 차단용 검증 계층.
+
+    src_text: 기사 제목+본문. 여기에 실재하는 수치는 '기사 인용'이므로 창작이 아니다.
+      (2026-07-31 추가) 기존엔 익스포저 값이 아니면 무조건 창작으로 봐서, 기사의
+      '사건 규모' 수치까지 오염 처리됐다. 실사례(7/30 14시 HUG): 기사 원문의
+      "3,820억 사업장"이 오염 판정 → 문장이 "규모 부실 사업장"으로 파손됐다.
 
     반환: (오염여부: bool, 오염수치목록: list)
     - exp_rows가 비어 있으면(익스포저 없음) 검증 스킵 → (False, [])
@@ -1047,6 +1052,20 @@ def sanitize_action_numbers(action: str, exp_rows: list) -> tuple:
     """
     if not exp_rows:
         return (False, [])
+
+    # 기사 원문에 실재하는 수치 수집 — 창작 판정에서 면제
+    src_bal, src_cust = set(), set()
+    if src_text:
+        for m in re.finditer(r'([\d,]+)\s*억', src_text):
+            try:
+                src_bal.add(int(m.group(1).replace(',', '')))
+            except ValueError:
+                pass
+        for m in re.finditer(r'([\d,]+)\s*(?:명|가구|세대)', src_text):
+            try:
+                src_cust.add(int(m.group(1).replace(',', '')))
+            except ValueError:
+                pass
 
     # 실제 익스포저에서 정당한 잔고·고객수 값 수집
     # 20컬럼 스키마면 채널별(뱅/영) 값도 허용 — AI가 채널 수치를 인용해도 오염 아님
@@ -1081,8 +1100,8 @@ def sanitize_action_numbers(action: str, exp_rows: list) -> tuple:
             allowed.add(sum(vals))
         return allowed
 
-    allowed_bal = _allowed_sums(bal_vals)
-    allowed_cust = _allowed_sums(cust_vals)
+    allowed_bal = _allowed_sums(bal_vals) | src_bal
+    allowed_cust = _allowed_sums(cust_vals) | src_cust
 
     tainted = []
 
@@ -1115,6 +1134,111 @@ def sanitize_action_numbers(action: str, exp_rows: list) -> tuple:
             tainted.append(f"{v}명")
 
     return (len(tainted) > 0, tainted)
+
+# ── 오염 수치 '타깃' 제거 (2026-07-31 신설) ──
+# 기존 구현은 오염이 1건이라도 잡히면 문장 내 모든 '억/명' 수치를 일괄 삭제해,
+# 익스포저와 무관한 '사건 규모' 수치까지 소실시켰다.
+#   실사례(7/30 14시 HUG): "3,820억 규모 부실 사업장" → "규모 부실 사업장"
+# → sanitize_action_numbers()가 오염으로 지목한 값만 제거하고 나머지는 보존한다.
+_THRESHOLD_RE_STR = r'\d[\d,]*\s*억원?\s*(?:이상|이하|초과|미만)'
+
+def _strip_tainted_numbers(text: str, bad: list) -> str:
+    """bad(예: ["1062명", "106억"])에 해당하는 수치만 제거. 정상 수치는 유지."""
+    if not text or not bad:
+        return text
+    bad_bal  = {int(b[:-1]) for b in bad if b.endswith('억')}
+    bad_cust = {int(b[:-1]) for b in bad if b.endswith('명')}
+
+    # 임계 기준 표현("여신 1억원 이상")은 정책 문구이므로 보호 후 복원
+    _protected = []
+    def _prot(m):
+        _protected.append(m.group(0))
+        return f"\x00{len(_protected)-1}\x00"
+    text = re.sub(_THRESHOLD_RE_STR, _prot, text)
+
+    def _repl(m, pool):
+        try:
+            v = int(m.group(1).replace(',', ''))
+        except ValueError:
+            return m.group(0)
+        return '' if v in pool else m.group(0)
+
+    # 괄호 수치구는 내부 수치가 '전부' 오염일 때만 괄호째 제거
+    def _paren(m):
+        inner = m.group(0)
+        vals = []
+        for x in re.findall(r'([\d,]+)\s*(?:억|명)', inner):
+            try:
+                vals.append(int(x.replace(',', '')))
+            except ValueError:
+                pass
+        if vals and all((v in bad_bal or v in bad_cust) for v in vals):
+            return ''
+        return inner
+    text = re.sub(r'[\(（][^()（）]*(?:억|명)[^()（）]*[\)）]', _paren, text)
+
+    text = re.sub(r'([\d,]+)\s*억원?', lambda m: _repl(m, bad_bal), text)
+    text = re.sub(r'([\d,]+)\s*명',    lambda m: _repl(m, bad_cust), text)
+
+    for _i, _p in enumerate(_protected):
+        text = text.replace(f"\x00{_i}\x00", _p)
+    return re.sub(r'\s{2,}', ' ', text).replace(' ,', ',').replace(' .', '.').strip()
+
+# ── 고객케어 안내 문구 검증 계층 (2026-07-31 신설) ──
+# 지금까지 할루시네이션 방어는 action(대응방안)에만 걸려 있었고 customer_notice는
+# 무검증으로 발송됐다. 고객 안내 문구는 그대로 고객에게 전달될 수 있어 action보다
+# 위험도가 높다. 실사례(7/30 21시 '더 테크놀로지' 긴급메일):
+#   - "2025년 8월 10일 상장 폐지" → 실제 2026년, 연도 환각
+#   - "더 테크놀로지(종목코드 확인 요망)" → AI 플레이스홀더가 그대로 발송
+_NOTICE_PLACEHOLDER_RE = re.compile(
+    r'[\(（][^()（）]{0,40}?'
+    r'(?:확인\s*요망|확인\s*바람|확인\s*필요|기입|삽입|입력\s*요망|추후\s*확인|미확인|TBD)'
+    r'[^()（）]{0,40}?[\)）]'
+)
+_NOTICE_BARE_PLACEHOLDER = ("종목코드 확인 요망", "종목코드 확인요망",
+                            "○○○", "○○", "XXX", "OOO", "[내용 확인]", "[확인]")
+
+def sanitize_customer_notice(notice: str, exp_rows: list, src_text: str = "") -> tuple:
+    """고객 안내 문구에서 플레이스홀더·연도 환각·창작 수치를 제거.
+
+    반환: (정제된 문구, 수정내역 목록)
+    """
+    if not notice:
+        return (notice, [])
+    fixed, out = [], notice
+
+    # 1) 플레이스홀더 제거
+    _new = _NOTICE_PLACEHOLDER_RE.sub('', out)
+    if _new != out:
+        fixed.append("플레이스홀더(괄호구)")
+        out = _new
+    for _ph in _NOTICE_BARE_PLACEHOLDER:
+        if _ph in out:
+            out = out.replace(_ph, '')
+            fixed.append(f"플레이스홀더({_ph})")
+
+    # 2) 연도 환각 제거 — 과거 연도 또는 내년 초과 연도는 삭제("2025년 8월 10일"→"8월 10일")
+    _cur_year = datetime.now(timezone(timedelta(hours=9))).year
+    def _fix_year(m):
+        try:
+            y = int(m.group(1))
+        except ValueError:
+            return m.group(0)
+        if y < _cur_year or y > _cur_year + 1:
+            fixed.append(f"연도({y}년)")
+            return ''
+        return m.group(0)
+    out = re.sub(r'(\d{4})\s*년\s*', _fix_year, out)
+
+    # 3) 창작 수치 제거 — action과 동일 기준, 오염 값만 타깃 제거
+    _t, _bad = sanitize_action_numbers(out, exp_rows, src_text)
+    if _t:
+        out = _strip_tainted_numbers(out, _bad)
+        fixed.append(f"창작수치{_bad}")
+
+    out = re.sub(r'[ \t]{2,}', ' ', out)
+    out = re.sub(r'\(\s*\)|（\s*）', '', out)
+    return (out.strip(), fixed)
 
 def find_exposure(entity: str, exposure_data: dict) -> list:
     """entity와 종목명 딕셔너리 매칭 — O(1) 정확 매칭 우선, fallback prefix 6자
@@ -2025,6 +2149,36 @@ def canonicalize_entity(entity: str, canon_map: dict) -> str:
     """dedup combo 키 생성 전 entity를 대표명으로 정규화."""
     return canon_map.get(entity, entity)
 
+
+# ── 리스크 '해소' 국면 판정 (2026-07-31 신설) ──
+# 기존 해소 가드(_RESOLVE_KW)는 dedup 경로(is_next_stage)에만 있어, 등급 판정에는
+# 적용되지 않았다. 실사례(7/30 21시): "[속보] 대진첨단소재, 상장폐지 절차 일시
+# 보류…법원 가처분 결정까지"가 주의 7.3점으로 발송됐다 — 상폐가 '중단'된,
+# 리스크 완화 방향 기사다.
+#
+# ※ 하드 제외가 아니라 '참고 강등'으로 처리한다. 상폐 절차가 보류됐어도 해당
+#   종목은 여전히 상폐 위기 국면이고 당사 익스포저도 있어, 완전 배제하면 미탐이
+#   된다. 긴급·주의 발송만 막고 노출은 유지하는 것이 맞다.
+#   (경쟁사 리스크 처리와 동일 원칙 — 익스포저 있으면 참고로 남긴다)
+_RISK_NOUN_RE = r'(?:상장\s*폐지|상폐|거래\s*정지|매매거래\s*정지|회생\s*절차|파산\s*절차|청산\s*절차|워크아웃)'
+_RESOLVE_VERB_RE = r'(?:보류|중단|유예|연기|철회|취소|해제|면제|모면|종결|졸업|백지화|무산)'
+# "유예기간 종료"처럼 해소어 뒤에 종료·만료가 붙으면 오히려 악화 — 제외
+_RESOLVED_RE = re.compile(
+    _RISK_NOUN_RE + r'[^,\.·…]{0,12}?' + _RESOLVE_VERB_RE +
+    r'(?!\s*(?:기간)?\s*(?:종료|만료|끝|해제되|이후))'
+)
+# 해소 기사처럼 보여도 아래가 함께 있으면 실질 리스크 진행 중 — 강등 면제
+_STILL_ADVERSE_KW = ("정리매매", "상폐 확정", "상장폐지 확정", "파산 선고", "회생 개시",
+                     "회생절차 개시", "부도", "디폴트", "채무불이행", "감사의견 거절",
+                     "상장폐지 결정", "퇴출 확정")
+
+def is_risk_resolved(title: str) -> bool:
+    """제목이 '리스크 절차의 중단·철회·해제' 국면인지. 참고 강등 판정용."""
+    if not title:
+        return False
+    if _kw_hit(title, _STILL_ADVERSE_KW):
+        return False
+    return bool(_RESOLVED_RE.search(title.replace(" ", " ")))
 
 def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     """하드 제외 패턴 매칭 — (excluded: bool, reason: str) 반환
@@ -3075,6 +3229,16 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
                 print(f"  [직접이슈 강제긴급] {title[:40]}")
             a["grade"] = "긴급"
             a["_force_urgent"] = True
+
+    # ── 리스크 해소 국면 참고 강등 ──
+    # 당사 직접이슈(_force_urgent)는 예외 — 강제긴급 판정을 뒤집지 않는다.
+    for a in articles:
+        if a.get("_force_urgent"):
+            continue
+        if a.get("grade") in ("긴급", "주의") and is_risk_resolved(a.get("title", "")):
+            print(f"  [리스크 해소 참고강등] {a.get('title','')[:40]}")
+            a["grade"] = "참고"
+            a["customer_notice"] = None
     # ─────────────────────────────────────────────────────────────────────
 
     urgent  = sorted([a for a in articles if a.get("grade") == "긴급"],
@@ -3780,6 +3944,35 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
       </td></tr>
     </table>'''
 
+# ── 사건유형 배지 (2026-07-31 신설) ──
+# 기존 배지는 a["keyword"](= 크롤링 검색어)를 그대로 노출해, 검색어와 실제 사건이
+# 다르면 임원에게 잘못된 라벨이 전달됐다. 실사례(7/30~7/31 발송분 4건):
+#   · 차바이오텍 '소액주주 12억 배상 확정' → 배지 "상장폐지"
+#   · 더 테크놀로지 '정리매매·상폐 확정'   → 배지 "거래정지"
+#   · SK하이닉스(국내주) 파생 청산        → 배지 "해외주식 급락"
+# → AI가 판정한 event_type(사건과 일치하도록 프롬프트로 강제됨)을 라벨 원천으로 삼는다.
+#   event_type이 없거나 "기타리스크"면 배지를 생략한다 — 틀린 라벨보다 무라벨이 안전.
+_EVENT_LABEL = {
+    "상장폐지": "상장폐지",       "거래정지": "거래정지",
+    "기업회생": "기업회생",       "파산부도": "파산·부도",
+    "PF부실": "PF 부실",          "신용등급강등": "신용등급 강등",
+    "반대매매": "반대매매",       "금감원제재": "금감원 제재",
+    "시스템장애": "시스템 장애",  "발행어음부실": "발행어음 부실",
+    "유동성위기": "유동성 위기",  "대규모환매": "대규모 환매",
+    "감사의견거절": "감사의견 거절", "횡령배임": "횡령·배임",
+    "차환실패": "차환 실패",
+}
+
+def _event_badge_label(a: dict) -> str:
+    """배지에 표시할 사건유형 라벨. 미확정·기타면 빈 문자열(배지 생략)."""
+    ev = (a.get("event_type") or "").strip()
+    if not ev or ev == "기타리스크":
+        return ""
+    if ev in _EVENT_LABEL:
+        return _EVENT_LABEL[ev]
+    # 프롬프트 어휘 밖의 값 — HTML 안전을 위해 한글·영숫자·공백만 통과
+    return re.sub(r'[^0-9A-Za-z가-힣·\s]', '', ev)[:20].strip()
+
 def _price_badge(a: dict) -> str:
     """해외주식 등락률 뱃지 HTML 반환"""
     chg = a.get("_price_change")
@@ -3997,9 +4190,10 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         </table>'''
             else:
                 badges = ""
-                if a.get("keyword"):
-                    badges += f'<span style="display:inline-block;font-size:10px;color:#3b5491;background:#e8f0fe;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;white-space:nowrap;">{a["keyword"]}</span>'
-                if a.get("entity") and a.get("entity") != a.get("keyword"):
+                _evl = _event_badge_label(a)
+                if _evl:
+                    badges += f'<span style="display:inline-block;font-size:10px;color:#3b5491;background:#e8f0fe;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;white-space:nowrap;">{_evl}</span>'
+                if a.get("entity") and a.get("entity") != _evl:
                     badges += f'<span style="display:inline-block;font-size:10px;color:#7a9abf;background:#f1f5f9;padding:2px 7px;margin-right:4px;margin-bottom:6px;border-radius:3px;white-space:nowrap;">{a["entity"]}</span>'
                 badges += _price_badge(a)  # 등락률 뱃지 — 키워드 옆
 
@@ -4060,9 +4254,10 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     else:
                         risk_score_html = ""
                     urgent_badges = ""
-                    if a.get("keyword"):
-                        urgent_badges += f'<span style="font-size:10px;background:#e8f0fe;color:#3b5491;padding:2px 7px;border-radius:3px;margin-right:4px;margin-bottom:4px;font-weight:600;white-space:nowrap;display:inline-block;">{a["keyword"]}</span>'
-                    if a.get("entity") and a.get("entity") != a.get("keyword"):
+                    _evl = _event_badge_label(a)
+                    if _evl:
+                        urgent_badges += f'<span style="font-size:10px;background:#e8f0fe;color:#3b5491;padding:2px 7px;border-radius:3px;margin-right:4px;margin-bottom:4px;font-weight:600;white-space:nowrap;display:inline-block;">{_evl}</span>'
+                    if a.get("entity") and a.get("entity") != _evl:
                         urgent_badges += f'<span style="font-size:10px;background:#f1f5f9;color:#4a6099;padding:2px 7px;border-radius:3px;font-weight:600;white-space:nowrap;display:inline-block;">{a["entity"]}</span>'
                     urgent_badges += _price_badge(a)  # 등락률 뱃지 — 키워드 옆
                     action_row = f'<tr><td class="action-td" bgcolor="#ffffff" style="padding:10px 16px;border-bottom:1px solid {gs["card_border"]};background:#ffffff;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#dc2626;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">⚡ 대응방안</span></p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
@@ -4231,26 +4426,26 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
       </p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
         <tr>
-          <td style="font-size:12px;font-weight:700;color:#4a6099;padding-bottom:6px;" colspan="2">리스크 점수 참고 기준 (점수≠등급, AI 확신도·익스포저 복합 산정)</td>
+          <td style="font-size:12px;font-weight:700;color:#4a6099;padding-bottom:6px;" colspan="2">리스크 점수 참고 기준 — 대응 우선순위는 <b>등급</b>, 점수는 보조 지표</td>
         </tr>
         <tr>
           <td style="font-size:11px;padding:2px 0;color:#c0392b;font-weight:600;width:80px;">8.0 ~ 10.0</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">당사 직접 언급 · MTS 장애 · 부도·파산 확정</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">최고 심각도 — 당사 직접 연관 또는 확정 손실 + 대규모 익스포저</td>
         </tr>
         <tr>
           <td style="font-size:11px;padding:2px 0;color:#c0392b;font-weight:600;">6.5 ~ 8.0</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">상장폐지 · 파산 · 부도 확정</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">고위험 — 중대 사건 키워드 + 유의미한 익스포저</td>
         </tr>
         <tr>
           <td style="font-size:11px;padding:2px 0;color:#b7791f;font-weight:600;">5.0 ~ 6.5</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">기업회생 · 반대매매 실제 발생</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">중위험 — 손실 가능성 단계</td>
         </tr>
         <tr>
           <td style="font-size:11px;padding:2px 0;color:#7a9abf;">~ 5.0</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">워크아웃 · 참고 동향</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">저위험 — 참고·모니터링 수준</td>
         </tr>
         <tr>
-          <td style="font-size:11px;padding:6px 0 0 0;color:#94a3b8;" colspan="2">점수 = AI 확신도 × 리스크 유형 가중치 + 당사 익스포저 보정 (×5 환산)</td>
+          <td style="font-size:11px;padding:6px 0 0 0;color:#94a3b8;" colspan="2">점수 = AI 확신도 × 사건유형 가중치 + 익스포저 보정 (×5 환산). 점수는 <b>같은 등급 안에서의 정렬용</b>이며 등급을 대체하지 않습니다 — 사건이 미확정이면 점수가 높아도 '주의'로 분류됩니다.</td>
         </tr>
       </table>
     </td>
@@ -4291,26 +4486,26 @@ def build_empty_html(now) -> str:
       </p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
         <tr>
-          <td style="font-size:12px;font-weight:700;color:#4a6099;padding-bottom:6px;" colspan="2">리스크 점수 참고 기준 (점수≠등급, AI 확신도·익스포저 복합 산정)</td>
+          <td style="font-size:12px;font-weight:700;color:#4a6099;padding-bottom:6px;" colspan="2">리스크 점수 참고 기준 — 대응 우선순위는 <b>등급</b>, 점수는 보조 지표</td>
         </tr>
         <tr>
           <td style="font-size:11px;padding:2px 0;color:#c0392b;font-weight:600;width:80px;">8.0 ~ 10.0</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">당사 직접 언급 · MTS 장애 · 부도·파산 확정</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">최고 심각도 — 당사 직접 연관 또는 확정 손실 + 대규모 익스포저</td>
         </tr>
         <tr>
           <td style="font-size:11px;padding:2px 0;color:#c0392b;font-weight:600;">6.5 ~ 8.0</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">상장폐지 · 파산 · 부도 확정</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">고위험 — 중대 사건 키워드 + 유의미한 익스포저</td>
         </tr>
         <tr>
           <td style="font-size:11px;padding:2px 0;color:#b7791f;font-weight:600;">5.0 ~ 6.5</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">기업회생 · 반대매매 실제 발생</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">중위험 — 손실 가능성 단계</td>
         </tr>
         <tr>
           <td style="font-size:11px;padding:2px 0;color:#7a9abf;">~ 5.0</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">워크아웃 · 참고 동향</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">저위험 — 참고·모니터링 수준</td>
         </tr>
         <tr>
-          <td style="font-size:11px;padding:6px 0 0 0;color:#94a3b8;" colspan="2">점수 = AI 확신도 × 리스크 유형 가중치 + 당사 익스포저 보정 (×5 환산)</td>
+          <td style="font-size:11px;padding:6px 0 0 0;color:#94a3b8;" colspan="2">점수 = AI 확신도 × 사건유형 가중치 + 익스포저 보정 (×5 환산). 점수는 <b>같은 등급 안에서의 정렬용</b>이며 등급을 대체하지 않습니다 — 사건이 미확정이면 점수가 높아도 '주의'로 분류됩니다.</td>
         </tr>
       </table>
     </td>
@@ -5507,34 +5702,24 @@ JSON만 출력:
                 # ── 할루시네이션 수치 검증 (원천 차단 계층) ──
                 # AI가 생성한 대응방안에 실제 익스포저로 설명 안 되는 창작 수치가
                 # 있으면, 오염 수치를 제거하고 코드가 계산한 정확한 값으로 대체한다.
-                _tainted, _bad = sanitize_action_numbers(action_text, exp_rows)
+                _src = f"{article.get('title','')} {body_text}"
+                _tainted, _bad = sanitize_action_numbers(action_text, exp_rows, _src)
                 if _tainted:
                     print(f"  [수치 할루시네이션 차단] {article.get('title','')[:30]} — 창작수치 {_bad}")
-                    _cleaned = action_text
-                    # 임계 기준 표현("N억원 이상" 등)은 정책 기준이므로 보호
-                    _thr_re = r'\d[\d,]*\s*억원?\s*(?:이상|이하|초과|미만)'
-                    _protected = []
-                    def _prot(m):
-                        _protected.append(m.group(0))
-                        return f"\x00{len(_protected)-1}\x00"
-                    _cleaned = re.sub(_thr_re, _prot, _cleaned)
-                    # "(총 1,062명, 여신 106억원)" 같은 괄호 수치구 우선 제거
-                    _cleaned = re.sub(r'[\(（][^()（）]*(?:억|명)[^()（）]*[\)）]', '', _cleaned)
-                    # 남은 단독 "N명"·"N억(원)" 수치 제거
-                    _cleaned = re.sub(r'[\d,]+\s*억원?', '', _cleaned)
-                    _cleaned = re.sub(r'[\d,]+\s*명', '', _cleaned)
-                    # 보호한 임계 기준 복원
-                    for _i, _p in enumerate(_protected):
-                        _cleaned = _cleaned.replace(f"\x00{_i}\x00", _p)
-                    _cleaned = re.sub(r'\s{2,}', ' ', _cleaned).replace(' ,', ',').replace(' .', '.').strip()
+                    # 오염으로 지목된 값만 제거 — 기사 사건 규모 등 정상 수치는 보존.
                     # 정확한 익스포저는 카드 하단 섹션에 이미 표시되므로 대응방안에는
-                    # 부기하지 않는다 — 중복 노출로 인한 피로도 방지. 정제된 문장만 사용.
-                    action_text = _cleaned
+                    # 부기하지 않는다 — 중복 노출로 인한 피로도 방지.
+                    action_text = _strip_tainted_numbers(action_text, _bad)
                 if _body_failed:
                     action_text += " *(본문 크롤링 실패, 제목 기반 생성)"
                 article["action"] = action_text
             if result.get("customer_notice") and grade == "긴급":
                 notice_text = result["customer_notice"]
+                # ── 고객 안내 문구 검증 (플레이스홀더·연도 환각·창작 수치) ──
+                notice_text, _nfix = sanitize_customer_notice(
+                    notice_text, exp_rows, f"{article.get('title','')} {body_text}")
+                if _nfix:
+                    print(f"  [고객문구 정제] {article.get('title','')[:30]} — {_nfix}")
                 if _body_failed:
                     notice_text += "\n*(본문 크롤링 실패, 제목 기반 생성)"
                 article["customer_notice"] = notice_text
