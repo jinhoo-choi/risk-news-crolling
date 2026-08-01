@@ -3542,6 +3542,26 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
 
     return result
 
+# ── 계열사 확장 허용 사건유형 (2026-07-31 신설) ──
+# GROUP_ENTITIES_MAP 확장은 원래 "관련 계열사 익스포저를 놓치지 말자"는 장치였으나,
+# event_type 무관하게 항상 전개돼 개별 종목 사건에도 그룹 전체가 카드에 실렸다.
+# 실사례(7/31 07시 SK하이닉스): 프리마켓 1주 체결에서 파생된 개별 종목 가격
+# 이벤트인데 SK 계열 11개사가 붙어 카드가 26행이 됐다(본인 2행 + 계열사 24행).
+# 계열사 익스포저가 판단에 실제로 필요한 것은 '신용이 그룹으로 전이되는' 사건뿐이다.
+#   전이성 있음 → 지주·계열 간 자금지원·교차보증·연쇄 디폴트가 실제로 발생
+#   전이성 없음 → 개별 종목·개별 사업장에서 종결
+# ※ 횡령배임은 경계 사례(대주주 횡령이 계열 신용에 파급될 수 있음)라 일단 제외.
+#   운영하며 미탐이 관측되면 아래 집합에 추가할 것.
+_GROUP_CONTAGIOUS_EVENTS = {"파산부도", "기업회생", "유동성위기", "차환실패", "신용등급강등"}
+
+def allow_group_expansion(article: dict) -> bool:
+    """이 기사에서 계열사 익스포저까지 표시할지 여부."""
+    if not article:
+        return False
+    if article.get("_force_urgent"):      # 당사 직접 이슈는 기존대로 넓게 본다
+        return True
+    return (article.get("event_type") or "").strip() in _GROUP_CONTAGIOUS_EVENTS
+
 def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color: str = "#c0392b", article: dict = None) -> str:
     """익스포저 현황 HTML
     종목유형 체계:
@@ -3842,26 +3862,57 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         '</table>'
     )
 
+    # ── 0억 행 숨김 (2026-07-31 신설) ──
+    # 잔고가 표시상 "0억"(500만원 미만)인 종목은 카드에 "0억 (7명)" 형태로 노출돼
+    # 왔다. 전체 10,864행 중 2,282행(21.0%)이 여기 해당하며, 전부 고객수만 >0이다.
+    # 메일 상단의 위험고객 정의(단일종목 여신 1억원 이상)에도 미달해 담당자가 취할
+    # 액션이 없는 정보이므로 행에서 제외한다.
+    # 다만 해당 종목유형이 '전부' 0억이면 삭제 대신 "소액 (N명)"으로 축약해
+    # 보유 고객이 있다는 사실 자체는 남긴다 — 완전 삭제는 미탐이 된다.
+    _EXPO_ZERO_EPS = 0.05  # 억 단위. 표시 포맷상 "0억"으로 찍히는 경계
+
+    def _drop_zero(merged: dict) -> tuple:
+        """(0억 제외 merged, 제외된 고객수 합계). 채널 스키마(_ch) 없으면 그대로 통과."""
+        if not merged or not any(v.get("_ch") for v in merged.values()):
+            return merged, 0
+        kept, dropped_cust = {}, 0
+        for name, v in merged.items():
+            if v.get("뱅잔고", 0) < _EXPO_ZERO_EPS and v.get("영잔고", 0) < _EXPO_ZERO_EPS:
+                dropped_cust += int(v.get("뱅고객수", 0)) + int(v.get("영고객수", 0))
+                continue
+            kept[name] = v
+        return kept, dropped_cust
+
+    def _section_body(merged: dict) -> str:
+        """종목유형 섹션 본문 — 0억 행 제외 후 렌더. 전량 0억이면 소액 축약."""
+        kept, dropped_cust = _drop_zero(merged)
+        if kept:
+            return _fmt_merged_limited(kept)
+        if dropped_cust > 0:
+            return (f'<div style="font-size:12px;color:#94a3b8;line-height:1.7;">'
+                    f'소액 ({dropped_cust:,}명)</div>')
+        return NONE_HTML
+
     sections = []
     yeosin_merged = _merge_yeosin(yeosin_rows)
-    yeosin_html = _fmt_merged_limited(yeosin_merged) if yeosin_merged else NONE_HTML
+    yeosin_html = _section_body(yeosin_merged) if yeosin_merged else NONE_HTML
 
     # ── 국내주식 블록 ────────────────────────────────────────────
     if domestic_stock_rows:
         sections.append(_section("주식잔고", "#fee2e2", "#c0392b",
-                                 _fmt_merged_limited(_merge_by_name(domestic_stock_rows))))
+                                 _section_body(_merge_by_name(domestic_stock_rows))))
         sections.append(_section("여신잔고", "#fef3c7", "#b45309", yeosin_html))
 
     # ── 해외주식 블록 ────────────────────────────────────────────
     if overseas_stock_rows:
         sections.append(_section("해외주식잔고", "#fee2e2", "#c0392b",
-                                 _fmt_merged_limited(_merge_by_name(overseas_stock_rows))))
+                                 _section_body(_merge_by_name(overseas_stock_rows))))
         sections.append(_section("여신잔고", "#fef3c7", "#b45309", yeosin_html))
 
     # ── 채권 블록 ────────────────────────────────────────────────
     if bond_rows:
         sections.append(_section("채권잔고", "#ede9fe", "#5b21b6",
-                                 _fmt_merged_limited(_merge_by_name(bond_rows))))
+                                 _section_body(_merge_by_name(bond_rows))))
 
     # ── 주식 없고 여신만 있는 경우 ───────────────────────────────
     if not domestic_stock_rows and not overseas_stock_rows and not bond_rows and yeosin_merged:
@@ -4162,14 +4213,16 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         for a in display_items:
             # entities 복수 지원 — 없으면 entity 단수로 fallback
             a_entities = a.get("entities") or ([a.get("entity","")] if a.get("entity") else [])
-            # GROUP_ENTITIES_MAP — entity 하나만 잡혀도 계열사 익스포저 자동 추가
-            _group_extra = []
-            for _ent in list(a_entities):
-                for _extra in GROUP_ENTITIES_MAP.get(_ent, []):
-                    if _extra not in a_entities and _extra not in _group_extra:
-                        _group_extra.append(_extra)
-            if _group_extra:
-                a_entities = list(a_entities) + _group_extra
+            # GROUP_ENTITIES_MAP — 계열사 익스포저는 '신용 전이성' 사건에서만 추가.
+            # (개별 종목 사건에까지 그룹 전체가 붙어 카드가 비대해지던 문제)
+            if allow_group_expansion(a):
+                _group_extra = []
+                for _ent in list(a_entities):
+                    for _extra in GROUP_ENTITIES_MAP.get(_ent, []):
+                        if _extra not in a_entities and _extra not in _group_extra:
+                            _group_extra.append(_extra)
+                if _group_extra:
+                    a_entities = list(a_entities) + _group_extra
             if grade == "참고":
                 r_risk = a.get("_risk_score", "")
                 if r_risk:
@@ -5613,10 +5666,11 @@ JSON만 출력:
         # GROUP_ENTITIES_MAP 계열사 포함한 전체 entities로 익스포저 산출
         _act_entities = article.get("entities") or ([entity] if entity else [])
         _act_extra = []
-        for _e in list(_act_entities):
-            for _x in GROUP_ENTITIES_MAP.get(_e, []):
-                if _x not in _act_entities and _x not in _act_extra:
-                    _act_extra.append(_x)
+        if allow_group_expansion(article):   # 카드 표시 범위와 동일하게 맞춘다
+            for _e in list(_act_entities):
+                for _x in GROUP_ENTITIES_MAP.get(_e, []):
+                    if _x not in _act_entities and _x not in _act_extra:
+                        _act_extra.append(_x)
         _act_entities_full = list(_act_entities) + _act_extra
         exp_rows = []
         _seen_exp = set()
