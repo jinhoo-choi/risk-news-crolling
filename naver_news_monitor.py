@@ -711,12 +711,21 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
     _C_BANK   = '#2563eb'  # 뱅키스
     _C_BRANCH = '#8b5e3c'  # 영업점
 
+    # 채널 라인 — 잔고·고객이 모두 0이면 '0억 (0명)' 대신 '-' (익스포저 카드와 동일 규칙)
+    # 실사례(7/31 21시): KT&G·삼양식품 위험고객 컬럼에 영업점 '● 0억 (0명)'이 표시돼
+    # 위험고객이 있는 것처럼 읽혔다. 정보가치 없는 0 표기를 제거한다.
+    def _ch_line(color, bal, cust, first=True):
+        mt = '' if first else 'margin-top:3px;'
+        if cust <= 0 and bal < 0.05:
+            return f'<div style="{mt}color:#cbd5e1;">-</div>'
+        return f'<div style="{mt}color:{color};">● {bal:,.0f}억 ({cust:,}명)</div>'
+
     def _cust_bal_cell(cust, bal, ch):
         """전체 여신 칸 — 채널 모드: '● 잔고억 (고객수명)' 채널 컬러 2줄 (합산 없음)"""
         if ch:
             return (f'<td class="price-alert-td" style="padding:8px 6px;font-size:12px;font-weight:600;text-align:center;white-space:nowrap;">'
-                    f'<div style="color:{_C_BANK};">● {ch["b"]["bal"]:,.0f}억 ({ch["b"]["cust"]:,}명)</div>'
-                    f'<div style="margin-top:3px;color:{_C_BRANCH};">● {ch["y"]["bal"]:,.0f}억 ({ch["y"]["cust"]:,}명)</div></td>')
+                    + _ch_line(_C_BANK,   ch["b"]["bal"],  ch["b"]["cust"],  True)
+                    + _ch_line(_C_BRANCH, ch["y"]["bal"],  ch["y"]["cust"],  False) + '</td>')
         return (f'<td class="price-alert-td" style="padding:8px 6px;font-size:12px;font-weight:600;color:#1e293b;text-align:center;white-space:nowrap;">'
                 f'{bal:,.0f}억 ({cust:,}명)</td>')
 
@@ -725,8 +734,8 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
             return '<td style="padding:8px 6px;font-size:12px;color:#cbd5e1;text-align:center;white-space:nowrap;">없음</td>'
         if ch:
             return (f'<td style="padding:8px 6px;font-size:12px;font-weight:600;text-align:center;white-space:nowrap;">'
-                    f'<div style="color:{_C_BANK};">● {ch["b"]["rbal"]:,.0f}억 ({ch["b"]["rcust"]:,}명)</div>'
-                    f'<div style="margin-top:3px;color:{_C_BRANCH};">● {ch["y"]["rbal"]:,.0f}억 ({ch["y"]["rcust"]:,}명)</div></td>')
+                    + _ch_line(_C_BANK,   ch["b"]["rbal"], ch["b"]["rcust"], True)
+                    + _ch_line(_C_BRANCH, ch["y"]["rbal"], ch["y"]["rcust"], False) + '</td>')
         return (f'<td style="padding:8px 6px;font-size:12px;font-weight:600;color:#92400e;text-align:center;white-space:nowrap;">'
                 f'{rbal:.0f}억 ({rcust:,}명)</td>')
 
@@ -1239,6 +1248,53 @@ def sanitize_customer_notice(notice: str, exp_rows: list, src_text: str = "") ->
     out = re.sub(r'[ \t]{2,}', ' ', out)
     out = re.sub(r'\(\s*\)|（\s*）', '', out)
     return (out.strip(), fixed)
+
+# ── 익스포저 미보유 유형의 조치 문구 제거 (2026-08-01 신설) ──
+# action_prompt.txt는 이미 "[OB 인계 제외 조건] 여신 익스포저 없음 또는 총규모
+# 10억 미만 → OB 문구 생략"을 명시하고 있으나, AI가 이를 위반한 사례가 발생했다.
+# 실사례(7/31 21시 롯데카드): 익스포저가 채권 1,502억뿐이고 여신은 0인데
+# "여신 보유잔고 3억원 이상 고객 즉시 인계, OB 최우선 진행"이 붙어, 담당자가
+# 실행할 수 없는 조치가 임원 메일에 나갔다.
+# 프롬프트 준수에만 의존하지 않고 결정론적 코드 게이트로 강제한다.
+_OB_CLAUSE_RE = re.compile(
+    r'(?:\s*(?:→|,|·)\s*)?여신\s*보유\s*잔고\s*[\d,]+\s*(?:억원|억|천만원)\s*이상\s*'
+    r'고객\s*(?:즉시\s*)?인계\s*[,、]?\s*OB\s*(?:최우선\s*)?진행'
+)
+_NOTICE_CLAUSE_RE = re.compile(r'(?:\s*(?:→|,|·)\s*)?고객\s*안내\s*준비')
+_YEOSIN_TYPES_ACT = ("여신", "해외대출")
+_STOCK_TYPES_ACT  = ("주식", "해외주식")
+_OB_MIN_YEOSIN    = 10.0   # 억. action_prompt.txt의 OB 제외 기준과 동일
+
+def strip_unsupported_action_clauses(action: str, exp_rows: list) -> tuple:
+    """익스포저에 존재하지 않는 유형의 조치 문구를 제거. (정제문, 제거내역)"""
+    if not action:
+        return (action, [])
+    def _sum(types):
+        t = 0.0
+        for r in exp_rows or []:
+            if r.get("종목유형", "") in types:
+                try:
+                    t += _num(r.get("잔고(억)"))
+                except (ValueError, TypeError):
+                    pass
+        return t
+    removed, out = [], action
+    if _sum(_YEOSIN_TYPES_ACT) < _OB_MIN_YEOSIN:
+        _new = _OB_CLAUSE_RE.sub('', out)
+        if _new != out:
+            removed.append("OB인계(여신 익스포저 없음/10억 미만)")
+            out = _new
+    if _sum(_STOCK_TYPES_ACT) <= 0:
+        _new = _NOTICE_CLAUSE_RE.sub('', out)
+        if _new != out:
+            removed.append("고객안내(주식 익스포저 없음)")
+            out = _new
+    if removed:
+        out = re.sub(r'\s*(?:→|,|·)\s*$', '', out.strip())   # 끝에 남은 연결기호 정리
+        out = re.sub(r'^\s*(?:→|,|·)\s*', '', out)           # 문두에 남은 연결기호 정리
+        out = re.sub(r'\s*→\s*(?=→)', '', out)               # 연속 화살표 축약
+        out = re.sub(r'[ \t]{2,}', ' ', out).strip()
+    return (out, removed)
 
 def find_exposure(entity: str, exposure_data: dict) -> list:
     """entity와 종목명 딕셔너리 매칭 — O(1) 정확 매칭 우선, fallback prefix 6자
@@ -5764,6 +5820,11 @@ JSON만 출력:
                     # 정확한 익스포저는 카드 하단 섹션에 이미 표시되므로 대응방안에는
                     # 부기하지 않는다 — 중복 노출로 인한 피로도 방지.
                     action_text = _strip_tainted_numbers(action_text, _bad)
+                # 익스포저에 없는 유형의 조치(OB 인계·고객 안내) 제거 — 프롬프트
+                # 규칙을 AI가 위반하는 경우가 있어 코드에서 결정론적으로 강제
+                action_text, _rm = strip_unsupported_action_clauses(action_text, exp_rows)
+                if _rm:
+                    print(f"  [미보유 유형 조치 제거] {article.get('title','')[:30]} — {_rm}")
                 if _body_failed:
                     action_text += " *(본문 크롤링 실패, 제목 기반 생성)"
                 article["action"] = action_text
