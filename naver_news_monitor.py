@@ -1249,6 +1249,10 @@ def sanitize_customer_notice(notice: str, exp_rows: list, src_text: str = "") ->
     out = re.sub(r'\(\s*\)|（\s*）', '', out)
     return (out.strip(), fixed)
 
+# 우선주 접미 — 본주와 별개 종목이므로 익스포저 병합에서 제외한다.
+# 국내 표기 관례: 우 / 우B / 1우 / 2우B / 3우B / 우선주
+_PREF_STOCK_SUFFIX_RE = re.compile(r'\d*우[A-Z]?|우선주')
+
 # ── 익스포저 미보유 유형의 조치 문구 제거 (2026-08-01 신설) ──
 # action_prompt.txt는 이미 "[OB 인계 제외 조건] 여신 익스포저 없음 또는 총규모
 # 10억 미만 → OB 문구 생략"을 명시하고 있으나, AI가 이를 위반한 사례가 발생했다.
@@ -3648,6 +3652,16 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
                 seen_row_keys.add(row_key)
                 all_rows.append(row)
 
+    # 사건 주체 — 정렬 시 최상단 고정용. article["entity"]가 기사가 지목한 종목이며,
+    # entities_list는 계열사 확장 결과까지 포함하므로 앞쪽 원본 entity를 우선한다.
+    _subject_names = []
+    if article and article.get("entity"):
+        _subject_names.append(article["entity"])
+    for _e in entities_list:
+        if _e not in _subject_names:
+            _subject_names.append(_e)
+            break   # 확장분까지 주체로 보지 않는다 — 원본 1개면 충분
+
     date_label = f"기준일: {ref_date}" if ref_date else ""
     _AI_BADGE = ('<span style="font-size:10px;font-weight:400;color:#1d4ed8;'
                  'background:#dbeafe;padding:1px 5px;border-radius:2px;margin-left:4px;">'
@@ -3773,6 +3787,12 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
             target = n
             for other in names:
                 if other != n and len(n) >= 6 and other.startswith(n) and len(other) > len(target):
+                    # 우선주는 본주와 별개 종목이므로 병합하지 않는다.
+                    # (2026-08-01) 'SK이노베이션'(주식 1,372억)과 'SK이노베이션우'
+                    # (38억)가 병합돼 1,410억 한 줄로 표시되고, 대표명까지 우선주로
+                    # 잡혀 사건 주체가 'SK이노베이션우'로 보이는 문제가 있었다.
+                    if _PREF_STOCK_SUFFIX_RE.fullmatch(other[len(n):]):
+                        continue
                     target = other  # n이 other의 접두 → 더 긴(완전한) 이름으로
             mapping[n] = target
         return mapping
@@ -3851,8 +3871,30 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
         컬럼 폭 계산 경로가 달라져 렌더링 엔진에 따라 미세하게 어긋날 수 있음
         — 헤더·top1·外 모두 동일한 단일 레벨 3컬럼 구조로 통일해 원천 차단."""
         if any(v.get("_ch") for v in merged.values()):
+            # [정렬 우선순위] ① 사건 주체(기사가 지목한 종목) ② 잔고 큰 순
+            # 계열사 확장이 켜지는 사건(파산·회생·유동성위기 등)에서 잔고순만 쓰면
+            # 사건 주체가 접힘(<details>) 안으로 밀려 클릭해야 보이는 문제가 있었다.
+            # 실사례(검증 발송): SK이노베이션 회생 기사인데 최상단이 SK하이닉스(잔고
+            # 6.4만억)였고, 정작 주체인 SK이노베이션은 '外 10개 종목 더보기' 안에
+            # 있었다. 주체는 판단의 기준점이므로 항상 먼저 보여야 한다.
+            def _subject_rank(name: str) -> int:
+                """주체 정확일치 → 유사명(우선주 등) → 그 외 순."""
+                cn = _canon_name(name)
+                for i, e in enumerate(_subject_names):
+                    ce = _canon_name(e)
+                    if cn == ce:
+                        return i * 2          # 본주 우선 — 'SK이노베이션'
+                    # prefix 매칭은 양쪽 모두 6자 이상일 때만 — 'SK' 같은 짧은
+                    # 지주사명이 'SK이노베이션'의 주체 자리를 가로채는 것을 방지
+                    # (find_exposure의 6자 prefix 규칙과 동일 기준)
+                    if len(cn) >= 6 and len(ce) >= 6 and \
+                       (cn.startswith(ce[:6]) or ce.startswith(cn[:6])):
+                        return i * 2 + 1      # 유사명 후순위 — 'SK이노베이션우'
+                return len(_subject_names) * 2
+
             items = sorted(merged.items(),
-                           key=lambda kv: -max(kv[1].get("뱅잔고", 0), kv[1].get("영잔고", 0)))
+                           key=lambda kv: (_subject_rank(kv[0]),
+                                           -max(kv[1].get("뱅잔고", 0), kv[1].get("영잔고", 0))))
             shown, rest = items[:CHANNEL_MAX_ITEMS], items[CHANNEL_MAX_ITEMS:]
 
             _td_n = 'width="100" style="font-size:12px;font-weight:700;color:#1e293b;padding:8px 6px 8px 0;white-space:nowrap;vertical-align:top;"'
