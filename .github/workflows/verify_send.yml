@@ -1,0 +1,38 @@
+name: 검증 발송 (가상 기사 · 본인 한정)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: '발송하려면 YES 입력 (비우면 렌더만 수행)'
+        required: false
+        default: ''
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 라이브러리 설치
+        run: pip install -r requirements.txt
+
+      - name: 검증 발송 실행
+        env:
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+          EMAIL_CC: ${{ secrets.EMAIL_CC }}
+          NO_RESULT_RECEIVER: ${{ secrets.NO_RESULT_RECEIVER }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+          CONFIRM_SEND: ${{ github.event.inputs.confirm }}
+        run: python verify_send.py
