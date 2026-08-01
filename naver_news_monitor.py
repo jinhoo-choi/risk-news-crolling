@@ -3165,6 +3165,36 @@ def calc_risk_score(article: dict, exposure_data: dict = None) -> float:
     # 겹치면 음수가 나올 수 있다.
     return round(min(max(raw * 5, 0.0), 10.0), 1)
 
+# ── 표시용 리스크 점수 (2026-08-01 신설) ──
+# 내부 원점수(_risk_score)는 '제목 키워드 가중치 × AI 확신도'라서 등급과 산정
+# 축이 다르다. 그 결과 같은 메일에 5.7점 긴급과 5.2점 주의가 나란히 표시돼
+# 임원이 푸터 기준표를 신뢰할 수 없었다.
+# 실측(정탐 이력 35건): 제목 키워드 미매칭이 21건(60%)이라 원점수가 기본값에
+# 눌리고, 긴급 4.5~9.0 / 주의 4.5~6.8로 두 등급 구간이 거의 완전히 겹친다.
+# → 역전은 예외가 아니라 상시 발생이므로 키워드 사전 보강만으로는 해소 불가.
+#
+# [설계] 등급을 1차 신호로 삼고, 표시 점수는 등급 대역 안에 배치한다.
+#   긴급 7.0~10.0 / 주의 5.0~7.0 / 참고 0~5.0
+#   대역 내 위치는 원점수를 0~10 절대 스케일로 매핑 — 회차마다 동반 기사
+#   구성이 달라져도 같은 기사는 항상 같은 점수가 나온다(상대 순위 방식의
+#   회차 간 불일치 회피).
+#
+# ※ 내부 로직(_verify_high_risk_by_claude의 5.0 게이트, dedup 대표기사 선정,
+#   참고 정렬)은 원점수를 그대로 쓴다. 표시값만 분리해 부작용을 차단한다.
+_GRADE_SCORE_BAND = {"긴급": (7.0, 10.0), "주의": (5.0, 7.0), "참고": (0.0, 5.0)}
+
+def display_risk_score(article: dict):
+    """카드에 표시할 점수. 원점수가 없으면 '' 반환(점수 블록 생략)."""
+    raw = article.get("_risk_score")
+    if not raw:
+        return ""
+    try:
+        raw = float(raw)
+    except (TypeError, ValueError):
+        return ""
+    lo, hi = _GRADE_SCORE_BAND.get(article.get("grade", "참고"), (0.0, 5.0))
+    return round(lo + (hi - lo) * min(max(raw, 0.0), 10.0) / 10.0, 1)
+
 def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     """등급별 상한 초과 시 리스크 점수 기반으로 하위 등급 강등"""
     # ── 타 증권사 주체 기사의 당사 오추출 방어 ──
@@ -4322,7 +4352,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 if _group_extra:
                     a_entities = list(a_entities) + _group_extra
             if grade == "참고":
-                r_risk = a.get("_risk_score", "")
+                r_risk = display_risk_score(a)
                 if r_risk:
                     r_filled = min(int(r_risk), 10)
                     r_bar = "█" * r_filled + "░" * (10 - r_filled)
@@ -4352,7 +4382,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     c_exp_html = build_exposure_html(a_entities, exposure_data or {}, ref_date, border_color=gs["border_left"], article=a)
                     c_action_row = f'<tr><td style="padding:10px 16px;background:#ffffff;border-top:1px solid {gs["card_border"]};border-bottom:1px solid {gs["card_border"]};"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#dc2626;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">⚡ 대응방안</span></p><p style="margin:0;font-size:13px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
                     c_exp_row   = f'<tr><td style="padding:0;">{c_exp_html}</td></tr>' if c_exp_html else ""
-                    c_risk = a.get("_risk_score", "")
+                    c_risk = display_risk_score(a)
                     if c_risk:
                         c_filled = min(int(c_risk), 10)
                         c_bar = "█" * c_filled + "░" * (10 - c_filled)
@@ -4390,7 +4420,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     exposure_html = build_exposure_html(a_entities, exposure_data or {}, ref_date, article=a)
                     if exposure_html and "잔고 없음" not in exposure_html:
                         a["_has_exposure"] = True
-                    risk_score = a.get("_risk_score", "")
+                    risk_score = display_risk_score(a)
                     if risk_score:
                         filled = min(int(risk_score), 10)
                         empty  = 10 - filled
@@ -4577,26 +4607,22 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
       </p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
         <tr>
-          <td style="font-size:12px;font-weight:700;color:#4a6099;padding-bottom:6px;" colspan="2">리스크 점수 참고 기준 — 대응 우선순위는 <b>등급</b>, 점수는 보조 지표</td>
+          <td style="font-size:12px;font-weight:700;color:#4a6099;padding-bottom:6px;" colspan="2">리스크 점수 기준 — 점수 구간이 곧 <b>등급</b>입니다</td>
         </tr>
         <tr>
-          <td style="font-size:11px;padding:2px 0;color:#c0392b;font-weight:600;width:80px;">8.0 ~ 10.0</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">최고 심각도 — 당사 직접 연관 또는 확정 손실 + 대규모 익스포저</td>
+          <td style="font-size:11px;padding:2px 0;color:#c0392b;font-weight:600;width:80px;">7.0 ~ 10.0</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;"><b>긴급</b> — 확정된 손실·부실·제재 · 당일 내 확인·점검 필요</td>
         </tr>
         <tr>
-          <td style="font-size:11px;padding:2px 0;color:#c0392b;font-weight:600;">6.5 ~ 8.0</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">고위험 — 중대 사건 키워드 + 유의미한 익스포저</td>
+          <td style="font-size:11px;padding:2px 0;color:#b7791f;font-weight:600;">5.0 ~ 7.0</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;"><b>주의</b> — 손실·부실 가능성 · 주시 및 선제 점검 권고</td>
         </tr>
         <tr>
-          <td style="font-size:11px;padding:2px 0;color:#b7791f;font-weight:600;">5.0 ~ 6.5</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">중위험 — 손실 가능성 단계</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;font-weight:600;">0 ~ 5.0</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;"><b>참고</b> — 직접 손실 없는 동향 · 참고 파악용</td>
         </tr>
         <tr>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">~ 5.0</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">저위험 — 참고·모니터링 수준</td>
-        </tr>
-        <tr>
-          <td style="font-size:11px;padding:6px 0 0 0;color:#94a3b8;" colspan="2">점수 = AI 확신도 × 사건유형 가중치 + 익스포저 보정 (×5 환산). 점수는 <b>같은 등급 안에서의 정렬용</b>이며 등급을 대체하지 않습니다 — 사건이 미확정이면 점수가 높아도 '주의'로 분류됩니다.</td>
+          <td style="font-size:11px;padding:6px 0 0 0;color:#94a3b8;" colspan="2">점수는 등급 대역 안에서 AI 확신도·사건 키워드·익스포저 규모를 반영해 산출됩니다. 같은 등급 안에서 대응 순서를 정할 때 참고하세요 — 점수만으로 등급이 바뀌지는 않습니다.</td>
         </tr>
       </table>
     </td>
@@ -4637,26 +4663,22 @@ def build_empty_html(now) -> str:
       </p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
         <tr>
-          <td style="font-size:12px;font-weight:700;color:#4a6099;padding-bottom:6px;" colspan="2">리스크 점수 참고 기준 — 대응 우선순위는 <b>등급</b>, 점수는 보조 지표</td>
+          <td style="font-size:12px;font-weight:700;color:#4a6099;padding-bottom:6px;" colspan="2">리스크 점수 기준 — 점수 구간이 곧 <b>등급</b>입니다</td>
         </tr>
         <tr>
-          <td style="font-size:11px;padding:2px 0;color:#c0392b;font-weight:600;width:80px;">8.0 ~ 10.0</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">최고 심각도 — 당사 직접 연관 또는 확정 손실 + 대규모 익스포저</td>
+          <td style="font-size:11px;padding:2px 0;color:#c0392b;font-weight:600;width:80px;">7.0 ~ 10.0</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;"><b>긴급</b> — 확정된 손실·부실·제재 · 당일 내 확인·점검 필요</td>
         </tr>
         <tr>
-          <td style="font-size:11px;padding:2px 0;color:#c0392b;font-weight:600;">6.5 ~ 8.0</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">고위험 — 중대 사건 키워드 + 유의미한 익스포저</td>
+          <td style="font-size:11px;padding:2px 0;color:#b7791f;font-weight:600;">5.0 ~ 7.0</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;"><b>주의</b> — 손실·부실 가능성 · 주시 및 선제 점검 권고</td>
         </tr>
         <tr>
-          <td style="font-size:11px;padding:2px 0;color:#b7791f;font-weight:600;">5.0 ~ 6.5</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">중위험 — 손실 가능성 단계</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;font-weight:600;">0 ~ 5.0</td>
+          <td style="font-size:11px;padding:2px 0;color:#7a9abf;"><b>참고</b> — 직접 손실 없는 동향 · 참고 파악용</td>
         </tr>
         <tr>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">~ 5.0</td>
-          <td style="font-size:11px;padding:2px 0;color:#7a9abf;">저위험 — 참고·모니터링 수준</td>
-        </tr>
-        <tr>
-          <td style="font-size:11px;padding:6px 0 0 0;color:#94a3b8;" colspan="2">점수 = AI 확신도 × 사건유형 가중치 + 익스포저 보정 (×5 환산). 점수는 <b>같은 등급 안에서의 정렬용</b>이며 등급을 대체하지 않습니다 — 사건이 미확정이면 점수가 높아도 '주의'로 분류됩니다.</td>
+          <td style="font-size:11px;padding:6px 0 0 0;color:#94a3b8;" colspan="2">점수는 등급 대역 안에서 AI 확신도·사건 키워드·익스포저 규모를 반영해 산출됩니다. 같은 등급 안에서 대응 순서를 정할 때 참고하세요 — 점수만으로 등급이 바뀌지는 않습니다.</td>
         </tr>
       </table>
     </td>
