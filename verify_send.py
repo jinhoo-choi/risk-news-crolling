@@ -14,6 +14,58 @@
 """
 import os
 import sys
+
+# ── 가상 시세 주입 (MOCK_PRICE=1) ──────────────────────────────────
+# 여신잔고 리스크 표는 yfinance 당일 등락률(-3% 이하)이 있어야 렌더된다.
+# 주말·휴장일에는 데이터가 없어 표 자체가 나오지 않아 표 관련 수정
+# (0억 → '-' 표기)을 검증할 수 없다. yfinance를 스텁으로 바꿔 결정론적인
+# 가상 등락률을 주입한다. 실제 발송 경로(naver_news_monitor.py)는 건드리지
+# 않으며, 이 스크립트에서 import 전에만 교체한다.
+if os.environ.get("MOCK_PRICE") == "1":
+    import sys as _sys, types as _types, hashlib as _hashlib
+    from datetime import datetime as _dt, timedelta as _td
+    import pytz as _pytz
+    import pandas as _pd
+
+    _kst_now = _dt.now(_pytz.timezone("Asia/Seoul"))
+
+    # 표는 리스크잔고 상위 3개만 노출(MAX_DISPLAY=3)하므로, 검증하려는
+    # 종목이 상위에 오도록 '대상 종목만' 크게 떨어뜨린다.
+    # 아래 3종목은 위험고객이 한쪽 채널에만 있어(뱅키스만/영업점만) 반대 채널이
+    # '-'로 표기돼야 하는 케이스다. 실데이터 기준으로 선정했다.
+    _TARGET_TICKERS = {
+        "293490.KS": -11.4,   # 카카오게임즈 — 영업점만 위험고객
+        "120110.KS": -9.2,    # 코오롱인더   — 뱅키스만 위험고객
+        "033780.KS": -7.8,    # KT&G        — 뱅키스만 위험고객
+    }
+
+    class _MockTicker:
+        """대상 종목은 지정 등락률, 나머지는 임계(-3%) 위로 고정.
+
+        같은 티커는 항상 같은 값이 나오므로 재실행 시 결과가 재현된다.
+        """
+        def __init__(self, ticker):
+            self.ticker = ticker
+
+        def history(self, *a, **k):
+            if self.ticker in _TARGET_TICKERS:
+                chg = _TARGET_TICKERS[self.ticker]
+            else:
+                # 임계 위(-3%~0%) — 표에 잡히지 않도록
+                h = int(_hashlib.md5(self.ticker.encode()).hexdigest()[:8], 16)
+                chg = -(h % 290) / 100.0
+            prev = 10000.0
+            curr = prev * (1 + chg / 100.0)
+            # tz-aware 유지 — naive로 두면 호출부가 UTC로 해석해 KST 변환 시
+            # 날짜가 하루 밀리고 '오늘 데이터 아님'으로 걸러진다.
+            idx = _pd.DatetimeIndex([_kst_now - _td(days=1), _kst_now])
+            return _pd.DataFrame({"Close": [prev, curr]}, index=idx)
+
+    _stub = _types.ModuleType("yfinance")
+    _stub.Ticker = _MockTicker
+    _sys.modules["yfinance"] = _stub
+    print("[MOCK] 가상 시세 주입 활성 — 실제 시세 미조회")
+
 from datetime import datetime, timezone, timedelta
 
 from naver_news_monitor import (

@@ -7,6 +7,10 @@ on:
         description: '발송하려면 YES 입력 (비우면 렌더만 수행)'
         required: false
         default: ''
+      mock_price:
+        description: '가상 시세 주입 (여신표 검증용). 1 입력 시 활성'
+        required: false
+        default: ''
 
 jobs:
   verify:
@@ -35,4 +39,5 @@ jobs:
           NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
           CONFIRM_SEND: ${{ github.event.inputs.confirm }}
+          MOCK_PRICE: ${{ github.event.inputs.mock_price }}
         run: python verify_send.py
