@@ -1,0 +1,34 @@
+name: 진단 - 익스포저없음 강등
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: 진단 실행 (읽기 전용 · 이메일 발송 없음)
+        env:
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+          NO_RESULT_RECEIVER: ${{ secrets.NO_RESULT_RECEIVER }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+        run: python diag_exposure.py
+      - name: 결과 커밋 (로그 회수용)
+        run: |
+          git config user.name  "github-actions"
+          git config user.email "github-actions@github.com"
+          git add diag_exposure.txt
+          git commit -m "diag: 익스포저없음 강등 진단 결과 [skip ci]" || echo "변경 없음"
+          git push
