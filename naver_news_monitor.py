@@ -1264,10 +1264,76 @@ _OB_CLAUSE_RE = re.compile(
     r'(?:\s*(?:→|,|·)\s*)?여신\s*보유\s*잔고\s*[\d,]+\s*(?:억원|억|천만원)\s*이상\s*'
     r'고객\s*(?:즉시\s*)?인계\s*[,、]?\s*OB\s*(?:최우선\s*)?진행'
 )
-_NOTICE_CLAUSE_RE = re.compile(r'(?:\s*(?:→|,|·)\s*)?고객\s*안내\s*준비')
+# 여신 미보유 시 제거할 '그 외' 조치 표현 (2026-08-02 확장)
+# 기존엔 OB 인계 문구 하나만 잡았는데, 8/2 14시 다원시스 건에서 다른 표현으로
+# 같은 문제가 재발했다. 익스포저가 주식뿐(여신 '잔고 없음')인데 대응방안에
+#   "신용융자·미수 보유 고객 우선 추출하여 담보비율 긴급 점검,
+#    반대매매 연쇄 가능성 사전 차단"
+# 이 붙어, 여신이 없으니 신용융자도 없는 종목에 실행 불가 조치가 나갔다.
+#
+# [삭제 단위] 화살표(→)로 구분되는 '절' 단위로만 지운다. 정규식으로 구절을
+# 잘라내면 유효 조치까지 훼손된다 — 실측에서 "평가손 산출", "손실 금액
+# 재산출"이 함께 사라졌다.
+# [삭제 조건] 절이 여신 전제 조치인지 보수적으로 판정한다.
+#   ① 절이 여신 키워드로 시작하거나  ② 여신 키워드가 2개 이상
+# 조건 미달이면 유지 — 곁가지로 한 번 언급된 정도는 문장을 살리는 쪽이 낫다.
+_YEOSIN_DEP_KW = ("신용융자", "미수금", "미수", "담보비율", "담보 비율",
+                  "담보부족", "담보 부족", "반대매매", "반대 매매",
+                  "강제매도", "강제 매도", "강제청산", "강제 청산", "마진콜")
+
+def _is_yeosin_dependent_clause(clause: str) -> bool:
+    """절이 여신(신용거래) 잔고를 전제로 한 조치인지."""
+    c = _NS_RE.sub("", clause)
+    kws = [k for k in _YEOSIN_DEP_KW if _NS_RE.sub("", k) in c]
+    if not kws:
+        return False
+    if len(set(_NS_RE.sub("", k) for k in kws)) >= 2:
+        return True
+    # '절 시작'은 앞 6자로 한정 — 넓게 잡으면 곁가지로 한 번 언급된 절까지
+    # 걸린다(실측: "상폐 확정 시 강제 매도 수량 재산출 후 보고"가 제거됨).
+    head = c[:6]
+    return any(_NS_RE.sub("", k) in head for k in kws)
+
+_NOTICE_CLAUSE_RE = re.compile(r'(?:\s*(?:→|,|·)\s*)?[^→,·]{0,20}?고객\s*안내\s*준비[^→,·]{0,30}')
 _YEOSIN_TYPES_ACT = ("여신", "해외대출")
 _STOCK_TYPES_ACT  = ("주식", "해외주식")
 _OB_MIN_YEOSIN    = 10.0   # 억. action_prompt.txt의 OB 제외 기준과 동일
+
+# 대응방안 중복 문구 정리 (2026-08-02 신설)
+# 8/2 14시 다원시스 건: "… → 고객 안내 준비, 소비자보호부 고객 안내 준비 요청"
+# 처럼 같은 조치가 한 문장 안에 두 번 나왔다. AI가 절을 이어 붙이며 생긴
+# 중복이라 프롬프트로는 완전히 막기 어렵다.
+# ※ '재산출'·'즉시 산출'·'점검' 같은 일반 동사는 대상에서 제외한다. 실측에서
+#    "손실 금액 재산출"과 "담보부족 계좌 재산출"이 중복으로 잡혀 서로 다른
+#    조치가 삭제됐다. 대상은 그 자체로 완결된 '조치명'으로 한정한다.
+_DUP_PHRASES = ("고객 안내 준비", "컴플라이언스부 보고", "컴플라이언스부 공유",
+                "소비자보호부 통보")
+
+def dedup_action_phrases(action: str) -> tuple:
+    """같은 조치 표현이 2회 이상 나오면 뒤엣것을 담은 하위절을 제거."""
+    if not action:
+        return (action, [])
+    removed = []
+    clauses = action.split("→")
+    for ph in _DUP_PHRASES:
+        ph_ns = _NS_RE.sub("", ph)
+        seen = False
+        for i, c in enumerate(clauses):
+            subs = c.split(",")
+            keep = []
+            for sub in subs:
+                if ph_ns and ph_ns in _NS_RE.sub("", sub):
+                    if seen:
+                        removed.append(ph)
+                        continue     # 중복 — 이 하위절 통째로 제거
+                    seen = True
+                keep.append(sub)
+            clauses[i] = ",".join(keep)
+    if not removed:
+        return (action, [])
+    out = " → ".join(c.strip().strip(",").strip() for c in clauses if c.strip().strip(","))
+    out = re.sub(r'[ \t]{2,}', ' ', out).strip()
+    return (out, sorted(set(removed)))
 
 def strip_unsupported_action_clauses(action: str, exp_rows: list) -> tuple:
     """익스포저에 존재하지 않는 유형의 조치 문구를 제거. (정제문, 제거내역)"""
@@ -1283,11 +1349,20 @@ def strip_unsupported_action_clauses(action: str, exp_rows: list) -> tuple:
                     pass
         return t
     removed, out = [], action
-    if _sum(_YEOSIN_TYPES_ACT) < _OB_MIN_YEOSIN:
+    _yeosin = _sum(_YEOSIN_TYPES_ACT)
+    if _yeosin < _OB_MIN_YEOSIN:
         _new = _OB_CLAUSE_RE.sub('', out)
         if _new != out:
             removed.append("OB인계(여신 익스포저 없음/10억 미만)")
             out = _new
+    # 신용융자·담보비율·반대매매 등은 여신 잔고가 '아예 없을' 때만 제거한다.
+    # 10억 미만이어도 잔고가 있으면 담보비율 점검 자체는 유효한 조치다.
+    if _yeosin <= 0:
+        _clauses = [c for c in out.split("→")]
+        _kept = [c for c in _clauses if not _is_yeosin_dependent_clause(c)]
+        if len(_kept) != len(_clauses):
+            removed.append("신용거래 조치(여신 잔고 없음)")
+            out = " → ".join(c.strip() for c in _kept if c.strip())
     if _sum(_STOCK_TYPES_ACT) <= 0:
         _new = _NOTICE_CLAUSE_RE.sub('', out)
         if _new != out:
@@ -5913,6 +5988,9 @@ JSON만 출력:
                 action_text, _rm = strip_unsupported_action_clauses(action_text, exp_rows)
                 if _rm:
                     print(f"  [미보유 유형 조치 제거] {article.get('title','')[:30]} — {_rm}")
+                action_text, _dup = dedup_action_phrases(action_text)
+                if _dup:
+                    print(f"  [중복 조치 정리] {article.get('title','')[:30]} — {_dup}")
                 if _body_failed:
                     action_text += " *(본문 크롤링 실패, 제목 기반 생성)"
                 article["action"] = action_text
