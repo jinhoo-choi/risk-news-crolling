@@ -3532,8 +3532,17 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
         if a.get("_force_urgent"):
             continue                         # 당사직접 면제
         if not entity_val:
+            # (2026-08-02 계측) 8/2 21시 지역농협 건이 익스포저 없음에도 주의로
+            # 발송됐는데, 로컬·러너 재현에서는 모두 정상 강등돼 우회 지점을
+            # 특정하지 못했다. 면제로 빠지는 건을 기록해 다음 회차에서 확인한다.
+            if a.get("grade") in ("긴급", "주의"):
+                print(f"  [강등면제:entity없음] {a.get('grade')}: {a.get('title','')[:40]}")
             continue                         # 시장전체 이슈 면제 (반대매매·서킷브레이커 등)
-        if find_exposure(entity_val, exposure_data or {}):
+        _exp_hit = find_exposure(entity_val, exposure_data or {})
+        if _exp_hit:
+            if a.get("grade") in ("긴급", "주의"):
+                print(f"  [강등면제:익스포저{len(_exp_hit)}행] entity={entity_val!r} "
+                      f"{a.get('grade')}: {a.get('title','')[:34]}")
             continue                         # 익스포저 있음 — 강등 없음
         # 익스포저 없음 → 참고로 직행 (긴급/주의 불문)
         if a.get("grade") in ("긴급", "주의"):
