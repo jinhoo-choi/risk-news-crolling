@@ -1283,7 +1283,12 @@ _OB_CLAUSE_RE = re.compile(
 # 조건 미달이면 유지 — 곁가지로 한 번 언급된 정도는 문장을 살리는 쪽이 낫다.
 _YEOSIN_DEP_KW = ("신용융자", "미수금", "미수", "담보비율", "담보 비율",
                   "담보부족", "담보 부족", "반대매매", "반대 매매",
-                  "강제매도", "강제 매도", "강제청산", "강제 청산", "마진콜")
+                  "강제매도", "강제 매도", "강제청산", "강제 청산", "마진콜",
+                  # (2026-08-03 보강) 8/3 14시 JR리츠 건에서 여신 잔고가 없는데
+                  # "담보대출 보유 고객 담보비율 긴급 점검"이 통과했다. 담보대출·
+                  # 신용거래·주식담보는 모두 여신 잔고를 전제한 표현이다.
+                  "담보대출", "담보 대출", "주식담보", "주식 담보",
+                  "신용거래", "신용 거래", "융자잔고", "융자 잔고", "대출잔고")
 
 def _is_yeosin_dependent_clause(clause: str) -> bool:
     """절이 여신(신용거래) 잔고를 전제로 한 조치인지."""
@@ -1362,11 +1367,21 @@ def strip_unsupported_action_clauses(action: str, exp_rows: list) -> tuple:
     # 신용융자·담보비율·반대매매 등은 여신 잔고가 '아예 없을' 때만 제거한다.
     # 10억 미만이어도 잔고가 있으면 담보비율 점검 자체는 유효한 조치다.
     if _yeosin <= 0:
-        _clauses = [c for c in out.split("→")]
-        _kept = [c for c in _clauses if not _is_yeosin_dependent_clause(c)]
-        if len(_kept) != len(_clauses):
+        # 절(→) 안에서 '및'·','로 한 단계 더 쪼개 하위절 단위로 판정한다.
+        # 절 전체를 지우면 같은 절에 붙어 있는 주식 관련 유효 조치까지 사라진다.
+        #   실사례(8/3 JR리츠): "보유 주식 고객 평가손 산출 및 담보대출 보유 고객
+        #   담보비율 긴급 점검" — 앞부분은 주식 138억에 대한 유효 조치다.
+        _clauses, _changed = [], False
+        for _c in out.split("→"):
+            _subs = re.split(r'(?<=[^\s])\s*(?:및|,)\s*', _c)
+            _keep = [x for x in _subs if not _is_yeosin_dependent_clause(x)]
+            if len(_keep) != len(_subs):
+                _changed = True
+            if _keep:
+                _clauses.append(", ".join(x.strip() for x in _keep if x.strip()))
+        if _changed:
             removed.append("신용거래 조치(여신 잔고 없음)")
-            out = " → ".join(c.strip() for c in _kept if c.strip())
+            out = " → ".join(c.strip() for c in _clauses if c.strip())
     if _sum(_STOCK_TYPES_ACT) <= 0:
         _new = _NOTICE_CLAUSE_RE.sub('', out)
         if _new != out:

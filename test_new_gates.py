@@ -131,6 +131,14 @@ chk("신용", "키워드 2개면 제거",
     nm._is_yeosin_dependent_clause("신용융자 고객 담보비율 점검"))
 chk("신용", "절 시작 키워드면 제거",
     nm._is_yeosin_dependent_clause("반대매매 연쇄 가능성 사전 차단"))
+# 8/3 JR리츠 — 절 안 '및' 하위절 단위 판정
+jr = nm.find_exposure("제이알글로벌리츠", EXPO)   # 주식·채권만, 여신 0
+JR = ("JR리츠 보유 주식 고객 평가손 산출 및 담보대출 보유 고객 담보비율 긴급 점검 "
+      "→ 임시주총 결과 확인 후 채권 평가손 재산출")
+out3, rm3 = nm.strip_unsupported_action_clauses(JR, jr)
+chk("신용", "8/3 담보대출 하위절 제거", "담보대출" not in out3, out3[:52])
+chk("신용", "같은 절 주식 조치 보존", "주식 고객 평가손 산출" in out3, out3[:52])
+chk("신용", "담보대출 키워드 등재", "담보대출" in nm._YEOSIN_DEP_KW)
 
 
 # ══ 3-C. 중복 조치 정리 (2026-08-02) ═════════════════════════════════
