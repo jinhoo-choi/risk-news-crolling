@@ -173,6 +173,17 @@ chk("완화", "정탐 이력 오차단 없음",
                 open("regression_set.json", encoding="utf-8"))["true_positive_history"]))
 
 
+# ══ 3-E. 여신표 채널 행 정렬 (2026-08-03) ════════════════════════════
+print("\n[3-E] 여신표 정렬 (위험고객 · 최고리스크 줄 수 일치)")
+_seg_src = open("naver_news_monitor.py", encoding="utf-8").read()
+chk("정렬", "최고리스크 빈 채널 '-' 유지",
+    "or _dash" in _seg_src and "_dash = '<span style=\"color:#cbd5e1;\">-</span>'" in _seg_src)
+chk("정렬", "최고리스크 항상 2줄 구조",
+    _seg_src.count('<div>{b_line}</div>') >= 1
+    and '<div style="margin-top:3px;">{y_line}</div>' in _seg_src)
+chk("정렬", "조건부 lines 누적 제거", "if b_line: lines.append" not in _seg_src)
+
+
 # ══ 4. 고객문구 정제 ══════════════════════════════════════════════════
 print("\n[4] 고객문구 정제 (제거돼야 함 / 보존돼야 함)")
 exp = [{"뱅잔고": "2", "뱅고객수": "380", "영잔고": "1", "영고객수": "127"}]

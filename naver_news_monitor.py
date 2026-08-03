@@ -772,14 +772,18 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
 
     def _top_risk_cell(top_rbal, top_cust, top_ratio, ch):
         if ch:
-            b_line = _top_line(_C_BANK,   ch['b']['top_rbal'], ch['b']['top_cust'], ch['b']['top_ratio'])
-            y_line = _top_line(_C_BRANCH, ch['y']['top_rbal'], ch['y']['top_cust'], ch['y']['top_ratio'])
-            lines = []
-            if b_line: lines.append(f'<div>{b_line}</div>')
-            if y_line: lines.append(f'<div style="margin-top:3px;">{y_line}</div>')
-            if lines:
-                return (f'<td style="padding:8px 6px;font-size:12px;font-weight:600;text-align:center;white-space:nowrap;">'
-                        f'{"".join(lines)}</td>')
+            # 빈 채널도 '-'로 자리를 유지한다 (2026-08-03).
+            # 기존엔 값이 있는 줄만 렌더해, 위험고객 칸은 뱅/영 2줄인데 최고
+            # 리스크 칸은 1줄이 되어 두 컬럼의 채널 행이 어긋났다.
+            #   실사례(8/3 21시 미래에셋증권): 위험고객 뱅 '● 5억 (2명)' / 영 '-'
+            #   인데 최고 리스크는 뱅 줄만 있어 영업점 행이 사라졌다.
+            # 두 컬럼 모두 '뱅키스 위 / 영업점 아래' 2줄 구조를 항상 유지한다.
+            _dash = '<span style="color:#cbd5e1;">-</span>'
+            b_line = _top_line(_C_BANK,   ch['b']['top_rbal'], ch['b']['top_cust'], ch['b']['top_ratio']) or _dash
+            y_line = _top_line(_C_BRANCH, ch['y']['top_rbal'], ch['y']['top_cust'], ch['y']['top_ratio']) or _dash
+            return (f'<td style="padding:8px 6px;font-size:12px;font-weight:600;text-align:center;white-space:nowrap;">'
+                    f'<div>{b_line}</div>'
+                    f'<div style="margin-top:3px;">{y_line}</div></td>')
         if not top_rbal and not top_cust:
             return '<td style="padding:8px 6px;font-size:12px;color:#cbd5e1;text-align:center;white-space:nowrap;">-</td>'
         line = _top_line('', top_rbal, top_cust, top_ratio)
