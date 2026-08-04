@@ -5976,6 +5976,24 @@ JSON만 출력:
                 고객 = 0
             return f"{r.get('종목유형','')} {잔고:,.0f}억원/{고객:,}명"
         exp_str = ", ".join([_fmt_exp(r) for r in exp_rows]) if exp_rows else ""
+        # 여신 잔고 유무를 명시적으로 알린다 (2026-08-04).
+        # exp_str은 보유 유형만 나열해서, 여신이 없으면 그 유형이 목록에서 빠질
+        # 뿐 '없다'는 사실이 드러나지 않는다. AI가 부재를 추론해야 하다 보니
+        # 신용융자·담보비율·담보계좌 같은 조치가 반복해서 붙었다
+        # (8/2 다원시스, 8/3 JR리츠, 8/4 본느 — 3회 연속).
+        # action_prompt.txt의 금지 규칙과 짝을 이루도록 신호를 명시한다.
+        _yeosin_bal = 0.0
+        for _r in (exp_rows or []):
+            if _r.get("종목유형", "") in ("여신", "해외대출"):
+                try:
+                    _yeosin_bal += _num(_r.get("잔고(억)"))
+                except (ValueError, TypeError):
+                    pass
+        if _yeosin_bal <= 0:
+            exp_str = ((exp_str + " ") if exp_str else "") + (
+                "※ 여신(신용융자·대출) 잔고 없음 — 신용융자·미수·담보비율·"
+                "담보계좌·신용계좌·반대매매·마진콜 등 신용거래 관련 조치를 "
+                "일절 언급하지 말 것")
         _action_prompt_raw = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                    "action_prompt.txt"), encoding="utf-8").read()
         _act_static, _act_dynamic_tpl = _action_prompt_raw.split("<<<DYNAMIC_SPLIT>>>", 1)
