@@ -139,6 +139,16 @@ out3, rm3 = nm.strip_unsupported_action_clauses(JR, jr)
 chk("신용", "8/3 담보대출 하위절 제거", "담보대출" not in out3, out3[:52])
 chk("신용", "같은 절 주식 조치 보존", "주식 고객 평가손 산출" in out3, out3[:52])
 chk("신용", "담보대출 키워드 등재", "담보대출" in nm._YEOSIN_DEP_KW)
+# 8/4 본느 — 문장 파손 방지 (서술어 없이 끝나면 제거 포기)
+bonne = nm.find_exposure("본느", EXPO)   # 주식만, 여신 0
+out4, rm4 = nm.strip_unsupported_action_clauses(
+    "본느 보유 고객 평가손 및 담보계좌 전수 점검", bonne)
+chk("신용", "파손 방지: 원문 유지", "담보계좌" in out4, out4[:50])
+out5, rm5 = nm.strip_unsupported_action_clauses(
+    "본느 보유 고객 평가손 산출 및 담보계좌 전수 점검", bonne)
+chk("신용", "서술어 있으면 정상 제거", "담보계좌" not in out5 and "산출" in out5, out5[:50])
+chk("신용", "담보계좌·신용계좌 등재",
+    "담보계좌" in nm._YEOSIN_DEP_KW and "신용계좌" in nm._YEOSIN_DEP_KW)
 
 
 # ══ 3-C. 중복 조치 정리 (2026-08-02) ═════════════════════════════════

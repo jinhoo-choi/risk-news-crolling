@@ -1288,7 +1288,17 @@ _YEOSIN_DEP_KW = ("신용융자", "미수금", "미수", "담보비율", "담보
                   # "담보대출 보유 고객 담보비율 긴급 점검"이 통과했다. 담보대출·
                   # 신용거래·주식담보는 모두 여신 잔고를 전제한 표현이다.
                   "담보대출", "담보 대출", "주식담보", "주식 담보",
-                  "신용거래", "신용 거래", "융자잔고", "융자 잔고", "대출잔고")
+                  "신용거래", "신용 거래", "융자잔고", "융자 잔고", "대출잔고",
+                  # (2026-08-04 보강) 8/4 14시 본느 건 — 여신 0인데
+                  # "담보계좌·신용계좌 전수 점검"이 통과했다.
+                  "담보계좌", "담보 계좌", "신용계좌", "신용 계좌",
+                  "담보부족계좌", "위탁증거금", "증거금")
+
+# 조치 서술어 — 하위절 삭제 후 문장이 깨지지 않았는지 확인용
+_ACTION_VERB_RE = re.compile(
+    r'(?:산출|점검|보고|공유|확인|추적|준비|진행|착수|파악|정비|수립|요청|'
+    r'인계|차단|대비|검토|조회|추출|통보|안내|모니터링|실시|이행)\s*$'
+)
 
 def _is_yeosin_dependent_clause(clause: str) -> bool:
     """절이 여신(신용거래) 잔고를 전제로 한 조치인지."""
@@ -1376,6 +1386,15 @@ def strip_unsupported_action_clauses(action: str, exp_rows: list) -> tuple:
             _subs = re.split(r'(?<=[^\s])\s*(?:및|,)\s*', _c)
             _keep = [x for x in _subs if not _is_yeosin_dependent_clause(x)]
             if len(_keep) != len(_subs):
+                # 하위절을 지운 뒤 남은 꼬리가 서술어 없이 명사로 끝나면 문장이
+                # 깨진다. "A 보유 고객 평가손 및 담보계좌 점검"에서 뒤를 지우면
+                # "A 보유 고객 평가손"만 남아 무엇을 하라는 건지 사라진다.
+                # 이런 경우엔 제거를 포기하고 원문을 유지한다 — 실행 불가 조치가
+                # 남는 것보다 문장이 깨지는 쪽이 더 나쁘다.
+                _tail = (_keep[-1].strip() if _keep else "")
+                if _keep and not _ACTION_VERB_RE.search(_tail):
+                    _clauses.append(_c)
+                    continue
                 _changed = True
             if _keep:
                 _clauses.append(", ".join(x.strip() for x in _keep if x.strip()))
