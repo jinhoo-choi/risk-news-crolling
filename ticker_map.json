@@ -1872,6 +1872,7 @@
   "XRX": "Xerox Holdings Corporation",
   "BBDC": "Barings BDC, Inc.",
   "CAPR": "Capricor Therapeutics, Inc.",
+  "CNSY": "CNSY",
   "CYCU": "Cycurion, Inc.",
   "DPRO": "Draganfly Inc.",
   "ECPG": "ECPG",
@@ -2132,6 +2133,5 @@
   "CNR": "Core Natural Resources, Inc.",
   "CRK": "Comstock Resources, Inc.",
   "EWW": "iShares MSCI Mexico ETF",
-  "FPE": "First Trust Preferred Securities and Income ETF",
-  "CNSY": "CNSY"
+  "FPE": "First Trust Preferred Securities and Income ETF"
 }
