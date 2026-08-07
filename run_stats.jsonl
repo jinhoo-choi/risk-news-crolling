@@ -26,3 +26,4 @@
 {"ts": "2026-08-06 21:07", "collected": 1850, "selected": 1, "gemini_ok": 20, "gemini_fail": 0, "gemini_err": "", "gemini_model": "gemini-3.5-flash-lite", "verify_model": "claude-opus-4-6", "scope": "full"}
 {"ts": "2026-08-07 07:03", "collected": 656, "selected": 1, "gemini_ok": 6, "gemini_fail": 0, "gemini_err": "", "gemini_model": "gemini-3.5-flash-lite", "verify_model": "claude-sonnet-4-6", "scope": "self"}
 {"ts": "2026-08-07 14:04", "collected": 1033, "selected": 2, "gemini_ok": 9, "gemini_fail": 0, "gemini_err": "", "gemini_model": "gemini-3.5-flash-lite", "verify_model": "claude-opus-4-6", "scope": "full"}
+{"ts": "2026-08-07 21:05", "collected": 1342, "selected": 2, "gemini_ok": 12, "gemini_fail": 0, "gemini_err": "", "gemini_model": "gemini-3.5-flash-lite", "verify_model": "claude-opus-4-6", "scope": "full"}
