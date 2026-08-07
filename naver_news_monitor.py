@@ -6044,16 +6044,34 @@ JSON만 출력:
             _e = raw.rfind("}") + 1
             if _s != -1 and _e > _s:
                 raw = raw[_s:_e]
+            # ── 응답 잘림 계측 (2026-08-07 신설) ──
+            # 8/6 14시 CMG제약 건에서 대응방안이 "…관리종목 지정 확정 시 상"으로
+            # 끊긴 채 발송됐다. 이 경로에는 stop_reason 검사가 없어 잘려도 감지가
+            # 안 되고, json_repair가 잘린 JSON을 '복구'해 잘린 텍스트가 그대로
+            # 통과한다. 빈도를 모르면 max_tokens 상향이 해법인지 판단할 수 없어
+            # 우선 계측만 넣는다.
+            _stop = payload.get("stop_reason", "")
+            _title_short = article.get('title', '')[:30]
+            if _stop == "max_tokens":
+                print(f"  [대응방안 잘림:max_tokens] {_title_short} — "
+                      f"응답 {len(raw)}자, 상향 검토 필요")
             try:
                 result = json.loads(raw)
             except Exception:
                 try:
                     from json_repair import repair_json
                     result = json.loads(repair_json(raw))
+                    print(f"  [대응방안 JSON 복구] {_title_short} — "
+                          f"원본 파싱 실패(잘림 가능), stop_reason={_stop or 'n/a'}")
                 except Exception:
                     result = {}
             if result.get("action"):
                 action_text = result["action"]
+                # 종결어미 없이 끝나면 잘림 의심 — 정상 문장은 대부분 명사형
+                # 조치어(산출·점검·보고 등)나 마침표로 끝난다.
+                if action_text and not _ACTION_VERB_RE.search(action_text.strip().rstrip('.')):
+                    print(f"  [대응방안 미완결 의심] {_title_short} — "
+                          f"말미: ...{action_text.strip()[-24:]!r} (stop={_stop or 'n/a'})")
                 # ── 할루시네이션 수치 검증 (원천 차단 계층) ──
                 # AI가 생성한 대응방안에 실제 익스포저로 설명 안 되는 창작 수치가
                 # 있으면, 오염 수치를 제거하고 코드가 계산한 정확한 값으로 대체한다.
