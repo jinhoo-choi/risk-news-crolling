@@ -907,13 +907,19 @@ def normalize_ticker(name: str) -> str:
     return stripped
 
 def _normalize_ratio_pct(v: str) -> str:
-    """유지담보비율 단위 방어 로직 — 소수(1.41)로 잘못 들어온 값을 퍼센트(141)로 보정.
-    사유: 7/20 exposure_data.csv 업로드 시 원본 엑셀 export 서식이 바뀌어
+    """유지담보비율 단위 방어 로직 — 소수(1.41)를 퍼센트(141)로 보정하고 정수화.
+
+    [보정] 7/20 exposure_data.csv 업로드 시 원본 엑셀 export 서식이 바뀌어
     '146.87'(퍼센트) 대신 '1.4687'(소수)로 들어온 실사례 발생 → 코드가
     CSV 값 뒤에 '%'만 그대로 붙이는 구조(_top_line())라 메일에 '1.41%'로
     잘못 표기될 뻔함. 유지담보비율은 성격상 항상 두 자릿수 이상(보통
-    130~150대)이므로 10 미만이면 소수 표기로 판단해 ×100 한다. 이미
-    정상(퍼센트) 값이면 그대로 둔다."""
+    130~150대)이므로 10 미만이면 소수 표기로 판단해 ×100 한다.
+
+    [정수화] (2026-08-10 강화) 소수부는 판단에 불필요하고, 표시 경로가
+    _top_line() 하나뿐이라는 보장이 없어 정규화 단계에서 미리 정수로 만든다.
+    표시부의 round()와 이중으로 걸려, 어느 경로로 새더라도 'xxx%' 형태만
+    노출된다. 채널 대표값 선택은 float 비교라 1% 미만 정밀도 손실은 무해하다.
+    """
     v = (v or "").strip()
     if not v:
         return v
@@ -923,7 +929,7 @@ def _normalize_ratio_pct(v: str) -> str:
         return v
     if 0 < x < 10:
         x *= 100
-    return f"{x:.2f}".rstrip("0").rstrip(".")
+    return str(round(x))
 
 
 def _synthesize_channel_totals(row: dict) -> dict:
