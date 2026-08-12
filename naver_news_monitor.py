@@ -3581,13 +3581,23 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
             # 특정하지 못했다. 면제로 빠지는 건을 기록해 다음 회차에서 확인한다.
             if a.get("grade") in ("긴급", "주의"):
                 print(f"  [강등면제:entity없음] {a.get('grade')}: {a.get('title','')[:40]}")
+                _RUN_STATS.setdefault("demote_exempt", []).append(
+                    f"entity없음|{a.get('grade')}|{a.get('title','')[:24]}")
             continue                         # 시장전체 이슈 면제 (반대매매·서킷브레이커 등)
         _exp_hit = find_exposure(entity_val, exposure_data or {})
         if _exp_hit:
             if a.get("grade") in ("긴급", "주의"):
                 print(f"  [강등면제:익스포저{len(_exp_hit)}행] entity={entity_val!r} "
                       f"{a.get('grade')}: {a.get('title','')[:34]}")
+                _RUN_STATS.setdefault("demote_exempt", []).append(
+                    f"{entity_val}|exp{len(_exp_hit)}|{a.get('grade')}|{a.get('title','')[:24]}")
             continue                         # 익스포저 있음 — 강등 없음
+        # (2026-08-12 추적) 강등 판정 결과를 run_stats에 남긴다.
+        # 8/2 지역농협·8/12 수창건설·놀부가 익스포저 없음에도 주의로 발송됐는데,
+        # 로컬·러너 재현에서는 모두 정상 강등돼 우회 지점을 특정하지 못했다.
+        # Actions 로그는 회수가 어려워 커밋되는 run_stats.jsonl에 기록한다.
+        _RUN_STATS.setdefault("no_exp_demote", []).append(
+            f"{entity_val}|{a.get('grade')}|{a.get('title','')[:24]}")
         # 익스포저 없음 → 참고로 직행 (긴급/주의 불문)
         if a.get("grade") in ("긴급", "주의"):
             prev_grade = a["grade"]
@@ -4359,6 +4369,11 @@ def save_run_stats(collected: int, selected: int, verify_model: str,
         "gemini_model": GEMINI_MODEL,   # 전환됐다면 최종 사용 모델
         "verify_model": verify_model,
         "scope": "self" if self_only else "full",
+        # 익스포저없음 강등 추적 (2026-08-12) — 강등 대상/면제/최종등급을 남겨
+        # 강등이 실행됐는지, 이후 되돌려졌는지 사후 대조한다.
+        "no_exp_demote": _RUN_STATS.get("no_exp_demote", [])[:12],
+        "demote_exempt": _RUN_STATS.get("demote_exempt", [])[:12],
+        "final_grades": _RUN_STATS.get("final_grades", [])[:12],
     }
     try:
         # 최근 200줄만 유지 — 무한 증식 방지
@@ -6218,6 +6233,13 @@ JSON만 출력:
     if not _mail_articles:
         subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 여신잔고 위험고객 현황"
         ai_summary = "금일 리스크 뉴스 없음 — 여신잔고 위험고객 하락 현황 확인 필요"
+
+    # 최종 발송 등급 기록 (2026-08-12 추적) — 강등 대상이 참고로 남았는지,
+    # 이후 단계에서 되돌려졌는지 run_stats에서 대조한다.
+    _RUN_STATS["final_grades"] = [
+        f"{a.get('entity','')}|{a.get('grade','')}|{a.get('title','')[:24]}"
+        for a in _mail_articles
+    ]
 
     html = build_email_html(_mail_articles, total_count=total_count,
                             ai_summary=ai_summary, exposure_data=exposure_data,
