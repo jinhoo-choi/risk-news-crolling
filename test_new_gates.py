@@ -221,6 +221,34 @@ chk("담보", "정규화 결과에 소수점 없음",
         for x in ("1.41", "139.07", "149.55", "1.4687")))
 
 
+# ══ 3-G. 익스포저없음 강등 잠금 (2026-08-12) ═════════════════════════
+print("\n[3-G] 익스포저없음 (등급 무관 잠금 / 면제는 잠금 없음)")
+import io as _io2, contextlib as _cl2
+def _regrade(a):
+    with _cl2.redirect_stdout(_io2.StringIO()):
+        return nm.regrade_by_score([dict(a)], EXPO)[0]
+_base = {"entity": "놀부", "event_type": "기업회생", "_ai_confidence": 0.75,
+         "_risk_score": 4.5, "url": "u", "link": "u",
+         "pub_date": "2026-08-12 07:00", "title": "법원, 회생신청 놀부 대표자 심문"}
+# 핵심: Gemini가 처음부터 '참고'로 준 건도 잠겨야 한다.
+# 기존엔 잠금이 '긴급/주의일 때'만 걸려, 참고 입력은 잠기지 않은 채
+# Sonnet 재검증이 주의로 되올렸다(8/2 지역농협·8/12 수창건설·놀부).
+for _g in ("긴급", "주의", "참고"):
+    _r = _regrade({**_base, "grade": _g})
+    chk("익스포저", f"입력{_g} 잠금", _r.get("_grade_locked") is True,
+        f"locked={_r.get('_grade_locked')}")
+    chk("익스포저", f"입력{_g} 참고 확정", _r["grade"] == "참고", _r["grade"])
+# 면제 경로는 잠기면 안 된다 (미탐 방지)
+for _n, _a in [
+    ("당사직접", {**_base, "entity": "한국투자증권", "grade": "긴급", "_force_urgent": True}),
+    ("시장전체", {**_base, "entity": "", "grade": "주의"}),
+    ("익스포저있음", {**_base, "entity": "SK하이닉스", "grade": "주의"}),
+]:
+    _r = _regrade(_a)
+    chk("익스포저", f"면제 {_n} 미잠금", _r.get("_grade_locked") is not True,
+        f"locked={_r.get('_grade_locked')}")
+
+
 # ══ 4. 고객문구 정제 ══════════════════════════════════════════════════
 print("\n[4] 고객문구 정제 (제거돼야 함 / 보존돼야 함)")
 exp = [{"뱅잔고": "2", "뱅고객수": "380", "영잔고": "1", "영고객수": "127"}]

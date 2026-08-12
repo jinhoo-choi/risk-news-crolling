@@ -3598,12 +3598,21 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
         # Actions 로그는 회수가 어려워 커밋되는 run_stats.jsonl에 기록한다.
         _RUN_STATS.setdefault("no_exp_demote", []).append(
             f"{entity_val}|{a.get('grade')}|{a.get('title','')[:24]}")
+        # ★익스포저가 없으면 등급과 무관하게 먼저 잠근다 (2026-08-12).
+        #   기존엔 잠금이 '긴급/주의일 때'만 걸려서, Gemini가 처음부터 '참고'로
+        #   준 기사는 강등할 게 없어 잠금도 안 걸렸다. 그 틈으로 뒤이은 Sonnet
+        #   전건 재검증이 참고→주의로 되올려, 익스포저 0인 기사가 주의로
+        #   발송됐다(8/2 지역농협 5.5, 8/12 수창건설 5.8·놀부 5.7).
+        #   Sonnet 프롬프트에는 익스포저 유무가 전달되지 않아 기사 내용만 보고
+        #   격상하므로, 잠금이 유일한 방어선이다.
+        #   방증: 8/12 07시에 주의가 4건 나갔는데 GRADE_LIMITS["주의"]는 3이다.
+        #   상한은 이 함수 안에서 걸리므로, 초과분은 함수 이후에 승급된 것이다.
+        a["_grade_locked"] = True   # AI 재검증이 되돌리지 못하게 잠금
         # 익스포저 없음 → 참고로 직행 (긴급/주의 불문)
         if a.get("grade") in ("긴급", "주의"):
             prev_grade = a["grade"]
             a["grade"] = "참고"
             a["customer_notice"] = None
-            a["_grade_locked"] = True   # AI 재검증이 되돌리지 못하게 잠금
             print(f"  [익스포저없음 강등] {prev_grade}→참고: {a['title'][:40]}")
     # ─────────────────────────────────────────────────────────────────
 
