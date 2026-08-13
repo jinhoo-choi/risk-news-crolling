@@ -249,6 +249,27 @@ for _n, _a in [
         f"locked={_r.get('_grade_locked')}")
 
 
+# ══ 3-H. entity 정규화 · 수치 잔여물 (2026-08-13) ════════════════════
+print("\n[3-H] entity 별칭 해소 / 수치 수식어 정리")
+_cm = nm.load_entity_canonical_map()
+# 8/13 14시: 같은 IS동서 거래정지가 'IS동서'/'아이에스동서'로 갈려 중복 발송
+_a, _b = (nm.canonicalize_entity("IS동서", _cm, EXPO),
+          nm.canonicalize_entity("아이에스동서", _cm, EXPO))
+chk("정규화", "IS동서 별칭 해소", _a == _b == "아이에스동서", f"{_a} vs {_b}")
+chk("정규화", "known_cases 우선", nm.canonicalize_entity("중앙일보", _cm, EXPO) == "JTBC")
+chk("정규화", "익스포저 없으면 원본", nm.canonicalize_entity("놀부", _cm, EXPO) == "놀부")
+chk("정규화", "다중 해소 시 원본", nm.canonicalize_entity("한화", _cm, EXPO) == "한화")
+chk("정규화", "빈 문자열 안전", nm.canonicalize_entity("", _cm, EXPO) == "")
+chk("정규화", "exposure 미전달 하위호환",
+    nm.canonicalize_entity("IS동서", _cm) == "IS동서")
+# 수치 제거 시 수식어 잔여물
+_t = "평가손 산출(총 채권 익스포저 약 242억 규모, 35명 포함)"
+_o = nm._strip_tainted_numbers(_t, ["242억"])
+chk("수치", "약/규모 잔여물 제거", "약" not in _o and "규모" not in _o, _o)
+chk("수치", "정상 수치 보존", "35명" in _o, _o)
+chk("수치", "오염 없으면 불변", nm._strip_tainted_numbers(_t, []) == _t)
+
+
 # ══ 4. 고객문구 정제 ══════════════════════════════════════════════════
 print("\n[4] 고객문구 정제 (제거돼야 함 / 보존돼야 함)")
 exp = [{"뱅잔고": "2", "뱅고객수": "380", "영잔고": "1", "영고객수": "127"}]

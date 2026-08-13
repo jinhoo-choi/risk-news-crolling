@@ -1196,8 +1196,18 @@ def _strip_tainted_numbers(text: str, bad: list) -> str:
         return inner
     text = re.sub(r'[\(（][^()（）]*(?:억|명)[^()（）]*[\)）]', _paren, text)
 
-    text = re.sub(r'([\d,]+)\s*억원?', lambda m: _repl(m, bad_bal), text)
-    text = re.sub(r'([\d,]+)\s*명',    lambda m: _repl(m, bad_cust), text)
+    # 수치를 지울 때 앞뒤 수식어까지 함께 지운다 (2026-08-13).
+    # 기존엔 숫자만 제거해 "약 242억 규모" → "약 규모"처럼 문장이 깨졌다
+    # (8/13 14시 IS동서: "총 채권 익스포저 약 규모, 35명 포함"). 괄호 안에
+    # 정상 수치가 섞여 있으면 괄호째 제거도 안 되므로 여기서 처리해야 한다.
+    # 수식어는 non-capturing이라 정상 수치일 때는 원본이 그대로 보존된다.
+    _MOD = r'(?:약|총|최대|최소|무려|각각|각)?\s*'
+    _SUF = r'(?:\s*(?:규모|상당|가량|수준))?'
+    text = re.sub(_MOD + r'([\d,]+)\s*억원?' + _SUF, lambda m: _repl(m, bad_bal), text)
+    text = re.sub(_MOD + r'([\d,]+)\s*명' + _SUF,    lambda m: _repl(m, bad_cust), text)
+    # 수치가 빠지며 홀로 남은 조사·기호 정리
+    text = re.sub(r'\(\s*[,·]\s*', '(', text)
+    text = re.sub(r'\s*[,·]\s*\)', ')', text)
 
     for _i, _p in enumerate(_protected):
         text = text.replace(f"\x00{_i}\x00", _p)
@@ -2324,9 +2334,32 @@ def load_entity_canonical_map() -> dict:
     return canon
 
 
-def canonicalize_entity(entity: str, canon_map: dict) -> str:
-    """dedup combo 키 생성 전 entity를 대표명으로 정규화."""
-    return canon_map.get(entity, entity)
+def canonicalize_entity(entity: str, canon_map: dict, exposure_data: dict = None) -> str:
+    """dedup combo 키 생성 전 entity를 대표명으로 정규화.
+
+    [1] known_cases.json 별칭 그룹 (JTBC/중앙일보 등)
+    [2] (2026-08-13 추가) 익스포저 종목명 — known_cases에 없는 일반 종목의
+        표기 흔들림을 잡는다. 실사례(8/13 14시): 같은 IS동서 거래정지 사건이
+        entity 'IS동서'와 '아이에스동서'로 갈려 dedup을 통과, 주의 2건으로
+        중복 발송됐다(익스포저 카드는 둘 다 '아이에스동서'로 동일 표시).
+        find_exposure()가 두 표기를 모두 같은 종목행으로 해소하므로, 그
+        종목명을 대표명으로 삼으면 별칭을 따로 등재하지 않아도 정규화된다.
+        여러 종목이 걸리면 모호하므로 단일 종목으로 해소될 때만 적용한다.
+    """
+    if not entity:
+        return entity
+    if entity in canon_map:
+        return canon_map[entity]
+    if exposure_data:
+        try:
+            rows = find_exposure(entity, exposure_data)
+        except Exception:
+            rows = []
+        names = {(r.get("종목명") or "").strip() for r in rows}
+        names.discard("")
+        if len(names) == 1:
+            return names.pop()
+    return entity
 
 
 # ── 리스크 '해소' 국면 판정 (2026-07-31 신설) ──
@@ -5386,7 +5419,7 @@ def main():
 
     for a in filtered:
         entity   = (a.get("entity") or "").strip()
-        entity   = canonicalize_entity(entity, _entity_canon)
+        entity   = canonicalize_entity(entity, _entity_canon, exposure_data)
         keyword  = (a.get("keyword") or "").strip()
         event_type = (a.get("event_type") or "").strip()
         combo    = (entity, event_type) if entity and event_type else \
@@ -5473,7 +5506,7 @@ def main():
         if ev_key:
             # 비교 대상(filtered_final)의 entity도 정규화 — 별칭이 다른 동일 사건 누락 방지
             existing_grades = [GRADE_ORDER[x["grade"]] for x in filtered_final
-                               if canonicalize_entity(x.get("entity", "") or "", _entity_canon) == entity
+                               if canonicalize_entity(x.get("entity", "") or "", _entity_canon, exposure_data) == entity
                                and x.get("event_type") == event_type]
             if existing_grades and GRADE_ORDER.get(a["grade"], 9) > min(existing_grades):
                 print(f"  [{a['grade']}] '{a['title'][:30]}' — 동일 사건 상위등급 이미 발송, 스킵")
@@ -5491,7 +5524,7 @@ def main():
     _entity_best: dict = {}  # entity(정규화) → 현재 최고 점수 article
     for a in filtered:
         # 별칭 정규화 키 사용 — 같은 메일 안에서 JTBC/중앙일보로 갈려 2장 나가는 것 방지
-        ent = canonicalize_entity(a.get("entity", "") or "", _entity_canon)
+        ent = canonicalize_entity(a.get("entity", "") or "", _entity_canon, exposure_data)
         if not ent:
             continue
         score = a.get("_risk_score", 0) or 0
@@ -5517,7 +5550,7 @@ def main():
     _known_removed = []
     for a in list(filtered):
         # 저장된 combos가 정규화 entity 기준이므로 조회 키도 정규화 (별칭 우회 방지)
-        ent = canonicalize_entity(a.get("entity", "") or "", _entity_canon)
+        ent = canonicalize_entity(a.get("entity", "") or "", _entity_canon, exposure_data)
         if not ent or a.get("_force_urgent") or ent in GENERIC_ENTITIES:
             continue
         days = known_entities.get(ent, 0)
@@ -5550,7 +5583,7 @@ def main():
     # 저장 키는 반드시 정규화 entity 기준 — dedup 비교 측과 대칭 유지
     for a in _known_removed:
         sent_urls.add(a.get("url", ""))
-        _ent = canonicalize_entity((a.get("entity") or "").strip(), _entity_canon)
+        _ent = canonicalize_entity((a.get("entity") or "").strip(), _entity_canon, exposure_data)
         _et  = (a.get("event_type") or "").strip()
         _ek  = (a.get("event_key") or "").strip()
         if _ent and _et:
@@ -6265,7 +6298,7 @@ JSON만 출력:
         sent_urls.add(a.get("url", ""))
         # 저장 키는 정규화 entity 기준 — dedup 비교(canonicalize 적용)와 대칭.
         # 원본 a['entity']는 카드 표시·익스포저 매칭용으로 이미 사용 완료라 무영향.
-        entity     = canonicalize_entity((a.get("entity") or "").strip(), _entity_canon)
+        entity     = canonicalize_entity((a.get("entity") or "").strip(), _entity_canon, exposure_data)
         keyword    = (a.get("keyword") or "").strip()
         event_type = (a.get("event_type") or "").strip()
         event_key  = (a.get("event_key") or "").strip()
@@ -6286,7 +6319,7 @@ JSON만 출력:
     # entity dedup으로 제거된 기사도 URL·combo 등록 — 다음 실행 재탐지 방지
     for a in _removed:
         sent_urls.add(a.get("url", ""))
-        _ent = canonicalize_entity((a.get("entity") or "").strip(), _entity_canon)
+        _ent = canonicalize_entity((a.get("entity") or "").strip(), _entity_canon, exposure_data)
         _kw  = (a.get("keyword") or "").strip()
         _et  = (a.get("event_type") or "").strip()
         _ek  = (a.get("event_key") or "").strip()
