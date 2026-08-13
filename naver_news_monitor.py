@@ -6029,15 +6029,34 @@ JSON만 출력:
         # 해외주식 여부 — 익스포저 rows의 시장 컬럼 또는 keyword 패턴으로 판단
         is_overseas = any(r.get("시장","국내") == "해외" or r.get("종목유형","") in ("해외주식","해외대출") for r in exp_rows)
         def _fmt_exp(r):
-            try:
-                잔고 = _num(r.get('잔고(억)'))
-            except (ValueError, TypeError):
-                잔고 = 0.0
-            try:
-                고객 = int(_num(r.get('고객수')))
-            except (ValueError, TypeError):
-                고객 = 0
-            return f"{r.get('종목유형','')} {잔고:,.0f}억원/{고객:,}명"
+            """익스포저 1행 → AI 전달 문자열. 뱅키스·영업점을 각각 표기한다.
+
+            (2026-08-13) 기존엔 합산값('잔고(억)')만 넘겨서 대응방안에도
+            "여신 보유 고객(2억원/15명)"처럼 합산으로 나왔다. 익스포저 카드는
+            채널 분리 표시(뱅 1억/10명 · 영 1억/5명)라 임원이 대조하기
+            번거로웠다. 메일 전반의 '합산값 미표기' 원칙과도 어긋난다.
+            → 채널별로 전달해 대응방안에서도 각자 표기되게 한다.
+            구 12컬럼 스키마(채널 컬럼 없음)는 기존처럼 합산값으로 폴백.
+            """
+            def _n(key):
+                try:
+                    return _num(r.get(key))
+                except (ValueError, TypeError):
+                    return 0.0
+            유형 = r.get('종목유형', '')
+            has_ch = any(k in r for k in ('뱅잔고', '영잔고'))
+            if not has_ch:
+                return f"{유형} {_n('잔고(억)'):,.0f}억원/{int(_n('고객수')):,}명"
+            parts = []
+            for _label, _bal, _cus in (("뱅키스", '뱅잔고', '뱅고객수'),
+                                       ("영업점", '영잔고', '영고객수')):
+                b, c = _n(_bal), int(_n(_cus))
+                if b <= 0 and c <= 0:
+                    continue
+                parts.append(f"{_label} {b:,.0f}억원/{c:,}명")
+            if not parts:
+                return f"{유형} 잔고 없음"
+            return f"{유형} {' · '.join(parts)}"
         exp_str = ", ".join([_fmt_exp(r) for r in exp_rows]) if exp_rows else ""
         # 여신 잔고 유무를 명시적으로 알린다 (2026-08-04).
         # exp_str은 보유 유형만 나열해서, 여신이 없으면 그 유형이 목록에서 빠질
