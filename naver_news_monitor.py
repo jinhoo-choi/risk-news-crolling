@@ -1259,6 +1259,28 @@ def sanitize_customer_notice(notice: str, exp_rows: list, src_text: str = "") ->
         return m.group(0)
     out = re.sub(r'(\d{4})\s*년\s*', _fix_year, out)
 
+    # 2-b) 월 환각 제거 (2026-08-14 신설)
+    # 실사례(8/14 21시 'TIME 미국배당다우존스액티브' 긴급메일):
+    #   기사는 "19일 상장폐지 / 18일 거래정지"인데 고객문구는 "5월 19일 폐지,
+    #   마지막 거래일 5월 18일" — AI가 없는 달을 창작. 연도 표기가 없어
+    #   2)의 연도 가드를 우회했다. 고객에게 그대로 나가면 매도 시한 오인 유발.
+    # 판정: 기사 원문에 그 달이 등장하지 않고, 현재월 ±1 범위도 아니면 삭제
+    #       ("5월 19일" → "19일"). 일자는 기사 근거가 있으므로 보존한다.
+    _cur_month = datetime.now(timezone(timedelta(hours=9))).month
+    _ok_months = {(_cur_month - 2) % 12 + 1, _cur_month, _cur_month % 12 + 1}
+    def _fix_month(m):
+        try:
+            mm = int(m.group(1))
+        except ValueError:
+            return m.group(0)
+        if not (1 <= mm <= 12):
+            return m.group(0)
+        if f"{mm}월" in src_text or mm in _ok_months:
+            return m.group(0)
+        fixed.append(f"월({mm}월)")
+        return m.group(2)          # "5월 19일" → "19일"
+    out = re.sub(r'(\d{1,2})\s*월\s*(\d{1,2}\s*일)', _fix_month, out)
+
     # 3) 창작 수치 제거 — action과 동일 기준, 오염 값만 타깃 제거
     _t, _bad = sanitize_action_numbers(out, exp_rows, src_text)
     if _t:
@@ -1369,6 +1391,27 @@ def dedup_action_phrases(action: str) -> tuple:
     out = " → ".join(c.strip().strip(",").strip() for c in clauses if c.strip().strip(","))
     out = re.sub(r'[ \t]{2,}', ' ', out).strip()
     return (out, sorted(set(removed)))
+
+# ── 수치 없는 채널 라벨 괄호 정리 (2026-08-14 신설) ──
+# action_prompt는 "수치는 카드에 있으니 대응방안엔 원칙적으로 넣지 않는다"고 규정하나,
+# AI가 이를 부분 적용해 채널 라벨만 남기는 사례가 발생한다.
+#   실사례(8/14 14시 디에이테크놀로지): "보유 고객(뱅키스·영업점) 평가손 즉시 산출"
+#   → 괄호 안에 정보가 0. 임원 입장에선 읽을 게 없는 잡음이다.
+# 수치가 하나도 없이 채널 라벨만 있는 괄호는 괄호째 제거한다.
+# (잔고만·고객수만 남는 반쪽 표기는 프롬프트 규칙으로 방지 — 여기서 지우면
+#  남은 정보까지 잃으므로 코드는 '정보 0'인 경우만 건드린다.)
+_EMPTY_CH_PAREN_RE = re.compile(
+    r'\s*[\(（]\s*(?:뱅키스|영업점)(?:\s*[·,및/]\s*(?:뱅키스|영업점))*\s*[\)）]'
+)
+
+def strip_empty_channel_paren(action: str) -> tuple:
+    """수치 없이 채널명만 든 괄호 제거. (정제문, 제거여부)"""
+    if not action:
+        return (action, False)
+    out = _EMPTY_CH_PAREN_RE.sub('', action)
+    if out == action:
+        return (action, False)
+    return (re.sub(r'\s{2,}', ' ', out).strip(), True)
 
 def strip_unsupported_action_clauses(action: str, exp_rows: list) -> tuple:
     """익스포저에 존재하지 않는 유형의 조치 문구를 제거. (정제문, 제거내역)"""
@@ -3265,6 +3308,15 @@ RISK_PRIORITY = {
     "차환 실패": 1.4, "차환실패": 1.4,
     "감사의견 거절": 1.4, "감사의견거절": 1.4,
     "상장적격성 실질심사": 1.4, "실질심사": 1.4,
+    # 자본잠식 (2026-08-14 등재) — 상장폐지 사유가 확정된 사실인데 가중치 표에
+    # 없어 점수에 반영되지 않았다. 실사례(8/14 14시): 광명전기·디에이테크놀로지가
+    # 같은 '반기말 자본전액잠식·실질심사' 사건인데 9.1/6.4로 갈렸다.
+    # ※ 등급은 올리지 않는다 — 등급 상향은 전사 발송 폭증을 부르므로, 점수(같은
+    #   등급 내 정렬·발송 게이트)에만 반영한다. '자본잠식 해소·탈출' 호재 기사는
+    #   기존 해소 강등 규칙이 별도로 처리하므로 단독형은 최저 대역에 둔다.
+    "완전자본잠식": 1.4, "완전 자본잠식": 1.4,
+    "자본전액잠식": 1.4, "자본 전액잠식": 1.4,
+    "자본잠식": 1.2,
     "신용등급 하향": 1.3, "신용등급 강등": 1.3, "등급 하향": 1.3,
     "불성실공시": 1.3, "투자유의종목": 1.3,
     "회생절차 개시": 1.3, "회생절차 신청": 1.3,
@@ -3488,6 +3540,46 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
             a["_force_urgent"] = False
             a["customer_notice"] = None
     articles = [a for a in articles if not a.get("_excluded")]
+
+    # ── ETF·ETN 구조적 상장폐지 등급 상한 (2026-08-14 신설) ──────────────
+    # 상관계수 미달·추적오차·순자산 미달·존속기한 만료로 인한 ETF 상폐는
+    # 발행사 부실이 아니라 지수 추종 실패에 따른 정리로, 투자자는 NAV 기준
+    # 환매를 받는다. '확정된 손실·부실·제재'인 긴급 대역과 성격이 다르다.
+    #   실사례(8/14 21시 'TIME 미국배당다우존스액티브'): 상관계수 미달 상폐가
+    #   주식 상폐와 동일하게 9.3 긴급으로 발송 — 등급 과대.
+    # → 주의 상한. 단 매도 가능 기한(거래정지일)이 있어 고객 안내는 필요하므로,
+    #   customer_notice 생성 예외 플래그를 남겨 안내 문구는 유지한다.
+    #   기초자산 폭락·조기청산 등 실손실 사유는 이 규칙에 걸리지 않는다.
+    # ETF 표식: 종목명에 'ETF'가 없는 상품이 많아(실사례 'TIME 미국배당다우존스
+    # 액티브') 브랜드 접두어까지 본다. 나아가 '상관계수 미달·추적오차·존속기한·
+    # 순자산 미달'은 ETF·ETN에만 존재하는 상폐 사유라 표식 없이도 인정한다.
+    _ETF_MARK_RE = re.compile(
+        r'ETF|ETN|상장지수|KODEX|TIGER|KBSTAR|ARIRANG|HANARO|ACE\s|SOL\s|PLUS\s|'
+        r'RISE\s|TIME\s|TREX|FOCUS|히어로즈|마이다스|레버리지|인버스|액티브'
+    )
+    _ETF_ONLY_REASON_RE = re.compile(
+        r'상관계수|추적\s*오차|추적오차|존속\s*기한|순자산\s*(?:총액)?\s*미달'
+    )
+    _ETF_GENERIC_REASON_RE = re.compile(
+        r'규모\s*미달|신탁계약\s*해지|자진\s*해지|만기\s*(?:해지|상환)'
+    )
+    for a in articles:
+        if a.get("grade") != "긴급":
+            continue
+        _t = a.get("title", "")
+        _e = (a.get("entity") or "")
+        _ctx = _t + " " + (a.get("summary") or "")
+        if not re.search(r'상장\s*폐지|상폐', _t):
+            continue
+        _marked = bool(_ETF_MARK_RE.search(_t) or _ETF_MARK_RE.search(_e))
+        if not (_ETF_ONLY_REASON_RE.search(_ctx)
+                or (_marked and _ETF_GENERIC_REASON_RE.search(_ctx))):
+            continue
+        print(f"  [ETF 구조적 상폐 주의강등] {_e}: {_t[:35]}")
+        a["grade"] = "주의"
+        a["_grade_locked"] = True      # AI 재검증이 긴급으로 되돌리지 못하게 잠금
+        a["_force_urgent"] = False
+        a["_notice_exempt"] = True     # 주의여도 고객 안내 문구는 생성한다
 
     for a in articles:
         a["_risk_score"] = calc_risk_score(a, exposure_data)
@@ -6037,6 +6129,13 @@ JSON만 출력:
             번거로웠다. 메일 전반의 '합산값 미표기' 원칙과도 어긋난다.
             → 채널별로 전달해 대응방안에서도 각자 표기되게 한다.
             구 12컬럼 스키마(채널 컬럼 없음)는 기존처럼 합산값으로 폴백.
+
+            (2026-08-14) 종목명을 앞에 붙인다. 그룹사 기사처럼 여러 종목이
+            함께 잡히면 유형만 나열돼 AI가 어느 종목의 잔고인지 알 수 없었다.
+            실사례(8/13 21시 금감원-삼성 기사): 삼성생명·삼성화재·삼성증권이
+            함께 전달됐는데 실제로는 삼성'증권' 채권인 값을 AI가 "삼성생명 채권
+            보유 고객"으로 오귀속. 종목 오귀속은 임원이 잘못된 대상에 조치를
+            지시하게 만드는 오류라 수치 오류보다 위험하다.
             """
             def _n(key):
                 try:
@@ -6044,9 +6143,11 @@ JSON만 출력:
                 except (ValueError, TypeError):
                     return 0.0
             유형 = r.get('종목유형', '')
+            _nm = r.get('종목명', '')
+            _head = f"{_nm} {유형}".strip()
             has_ch = any(k in r for k in ('뱅잔고', '영잔고'))
             if not has_ch:
-                return f"{유형} {_n('잔고(억)'):,.0f}억원/{int(_n('고객수')):,}명"
+                return f"{_head} {_n('잔고(억)'):,.0f}억원/{int(_n('고객수')):,}명"
             parts = []
             for _label, _bal, _cus in (("뱅키스", '뱅잔고', '뱅고객수'),
                                        ("영업점", '영잔고', '영고객수')):
@@ -6055,9 +6156,32 @@ JSON만 출력:
                     continue
                 parts.append(f"{_label} {b:,.0f}억원/{c:,}명")
             if not parts:
-                return f"{유형} 잔고 없음"
-            return f"{유형} {' · '.join(parts)}"
-        exp_str = ", ".join([_fmt_exp(r) for r in exp_rows]) if exp_rows else ""
+                return f"{_head} 잔고 없음"
+            return f"{_head} {' · '.join(parts)}"
+
+        # 동일 (종목명·종목코드·종목유형) 행이 원천 데이터에 분리 저장된 경우가
+        # 있어(8/12 삼성증권 채권: 99/323/0/0 + 4/31/92/96) 카드는 합산 표시하는데
+        # AI에는 분리값이 전달돼 대응방안 수치가 카드와 어긋났다. 카드와 동일하게
+        # 병합해 전달한다. sanitize용 exp_rows는 원본 그대로 둔다(부분합 허용 유지).
+        def _merge_exp_rows(rows):
+            _agg, _order = {}, []
+            _SUM_KEYS = ('뱅잔고', '뱅고객수', '영잔고', '영고객수', '잔고(억)', '고객수')
+            for _r in rows:
+                _k = (_r.get('종목명', ''), _r.get('종목코드', ''), _r.get('종목유형', ''))
+                if _k not in _agg:
+                    _agg[_k] = dict(_r)
+                    _order.append(_k)
+                    continue
+                _base = _agg[_k]
+                for _sk in _SUM_KEYS:
+                    if _sk in _base or _sk in _r:
+                        try:
+                            _base[_sk] = _num(_base.get(_sk)) + _num(_r.get(_sk))
+                        except (ValueError, TypeError):
+                            pass
+            return [_agg[_k] for _k in _order]
+
+        exp_str = ", ".join([_fmt_exp(r) for r in _merge_exp_rows(exp_rows)]) if exp_rows else ""
         # 여신 잔고 유무를 명시적으로 알린다 (2026-08-04).
         # exp_str은 보유 유형만 나열해서, 여신이 없으면 그 유형이 목록에서 빠질
         # 뿐 '없다'는 사실이 드러나지 않는다. AI가 부재를 추론해야 하다 보니
@@ -6173,10 +6297,13 @@ JSON만 출력:
                 action_text, _dup = dedup_action_phrases(action_text)
                 if _dup:
                     print(f"  [중복 조치 정리] {article.get('title','')[:30]} — {_dup}")
+                action_text, _ecp = strip_empty_channel_paren(action_text)
+                if _ecp:
+                    print(f"  [빈 채널괄호 제거] {article.get('title','')[:30]}")
                 if _body_failed:
                     action_text += " *(본문 크롤링 실패, 제목 기반 생성)"
                 article["action"] = action_text
-            if result.get("customer_notice") and grade == "긴급":
+            if result.get("customer_notice") and (grade == "긴급" or article.get("_notice_exempt")):
                 notice_text = result["customer_notice"]
                 # ── 고객 안내 문구 검증 (플레이스홀더·연도 환각·창작 수치) ──
                 notice_text, _nfix = sanitize_customer_notice(
@@ -6218,6 +6345,16 @@ JSON만 출력:
     ref_cnt = len([a for a in filtered if a["grade"]=="참고"])
     # AI 요약 컨텍스트 — 탐지 기사 중심 (여신잔고는 보조 참고용, 요약에 직접 언급 금지)
     filtered_titles = f"[등급 분포] 긴급 {urgent_cnt}건 / 주의 {caution_cnt}건 / 참고 {ref_cnt}건\n\n" + "\n".join([f"- [{a['grade']}] {a['title']}" for a in filtered])
+    # 급락 섹션 렌더 여부를 요약 AI에 알린다 (2026-08-14).
+    # 07시 회차는 장 시작 전이라 등락률이 없어 '여신잔고 리스크 현황' 표가
+    # 렌더되지 않는데, 요약문에는 "관리종목 지정 종목 급락 관측"처럼 급락이
+    # 언급돼 본문에 없는 내용을 가리켰다(8/14 07시). 메일 안에서 근거를 찾을
+    # 수 없는 문장은 임원 신뢰도를 깎는다.
+    # ※ decide_send_scope()가 앞서 호출되며 집계를 채우므로 여기서 읽어도 안전하다.
+    _alert_cnt = getattr(build_price_alert_section, "last_alerted_count", 0)
+    if not _alert_cnt:
+        filtered_titles += ("\n\n[본문 구성] 급락 종목 표 없음(장전 회차 등) — "
+                            "'급락'·'하락'·'폭락' 등 주가 하락 표현을 쓰지 말 것")
 
     # 경쟁사 공지 요약 추가
     if competitor_notices:
@@ -6235,7 +6372,7 @@ JSON만 출력:
             json={
                 "model": CLAUDE_MODEL,
                 "max_tokens": 100,
-                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 탐지 기사를 보고, 핵심 리스크 흐름을 40자 이내 한 문장으로만 작성하세요.\n문장 외 다른 내용 일절 금지. 탐지된 기사 내용만 반영 (여신잔고·위험고객 수치는 직접 언급 금지).\n[톤 규칙] 등급 분포에 맞게 과장 없이 서술하세요. 긴급 0건이면 '급증'·'심화'·'비상'·'초비상' 같은 위기 표현을 쓰지 말고 '관측'·'주시'·'가능성' 등 사실 위주로. 참고 등급 기사(전망·분석·회고성)는 확정 사건처럼 단정하지 말 것. 예(긴급 존재): '알테오젠 상폐·홈플러스 회생 부각'  예(참고 위주): '중앙그룹 회생 관련 후속 보도, 일부 종목 상폐 심사 진행 관측'\n\n{filtered_titles}"}],
+                "messages": [{"role": "user", "content": f"아래 오늘의 리스크 탐지 기사를 보고, 핵심 리스크 흐름을 40자 이내 한 문장으로만 작성하세요.\n문장 외 다른 내용 일절 금지. 탐지된 기사 내용만 반영 (여신잔고·위험고객 수치는 직접 언급 금지).\n[톤 규칙] 등급 분포에 맞게 과장 없이 서술하세요. 긴급 0건이면 '급증'·'심화'·'비상'·'초비상' 같은 위기 표현을 쓰지 말고 '관측'·'주시'·'가능성' 등 사실 위주로. 참고 등급 기사(전망·분석·회고성)는 확정 사건처럼 단정하지 말 것.\n[표기 규칙] 항목 구분에는 '·'를 쓰되, 고유명사 안의 가운뎃점은 생략하지 말 것 ('코스피·코스닥'을 '코스피코스닥'으로 붙여 쓰지 말 것). 예(긴급 존재): '알테오젠 상폐·홈플러스 회생 부각'  예(참고 위주): '중앙그룹 회생 관련 후속 보도, 일부 종목 상폐 심사 진행 관측'\n\n{filtered_titles}"}],
             },
             timeout=15,
         )
