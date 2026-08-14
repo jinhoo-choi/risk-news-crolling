@@ -1392,26 +1392,35 @@ def dedup_action_phrases(action: str) -> tuple:
     out = re.sub(r'[ \t]{2,}', ' ', out).strip()
     return (out, sorted(set(removed)))
 
-# ── 수치 없는 채널 라벨 괄호 정리 (2026-08-14 신설) ──
-# action_prompt는 "수치는 카드에 있으니 대응방안엔 원칙적으로 넣지 않는다"고 규정하나,
-# AI가 이를 부분 적용해 채널 라벨만 남기는 사례가 발생한다.
-#   실사례(8/14 14시 디에이테크놀로지): "보유 고객(뱅키스·영업점) 평가손 즉시 산출"
-#   → 괄호 안에 정보가 0. 임원 입장에선 읽을 게 없는 잡음이다.
-# 수치가 하나도 없이 채널 라벨만 있는 괄호는 괄호째 제거한다.
-# (잔고만·고객수만 남는 반쪽 표기는 프롬프트 규칙으로 방지 — 여기서 지우면
-#  남은 정보까지 잃으므로 코드는 '정보 0'인 경우만 건드린다.)
-_EMPTY_CH_PAREN_RE = re.compile(
-    r'\s*[\(（]\s*(?:뱅키스|영업점)(?:\s*[·,및/]\s*(?:뱅키스|영업점))*\s*[\)）]'
+# ── 대응방안 내 익스포저 수치 제거 (2026-08-14) ──
+# action_prompt는 익스포저 수치를 금지하나 AI가 반복해서 위반한다. 카드 하단에
+# 채널별로 정확히 표시되는 값이라 중복이고, 문장만 길어져 정작 '무엇을 할
+# 것인가'가 묻힌다. 실사례(8/14 14시·21시):
+#   "보유 고객(뱅키스 12억원/1,671명·영업점 9억원/409명) 평가손 즉시 산출"
+#   "보유 고객(뱅키스·영업점) 평가손 즉시 산출"   ← 부분 적용해 정보 0
+# → 프롬프트에 의존하지 않고 코드에서 결정론적으로 제거한다.
+# ※ 정책 임계 기준("여신 보유잔고 3억원 이상 고객")은 조치 대상을 가르는 기준선
+#   이라 반드시 살려야 한다. 아래 패턴은 'N억원/N명' 슬래시쌍과 채널 라벨만
+#   노리므로 '이상/미만' 형태의 임계 표현에는 걸리지 않는다.
+_EXP_PAREN_RE = re.compile(r'\s*[\(（][^()（）]*(?:뱅키스|영업점)[^()（）]*[\)）]')
+_EXP_PAIR_RE = re.compile(
+    r'\s*(?:뱅키스|영업점|주식|여신|채권|해외주식|해외대출)?\s*'
+    r'[\d,]+\s*억원?\s*/\s*[\d,]+\s*명'
 )
+_EXP_LONE_PAREN_RE = re.compile(r'\s*[\(（][\s·,]*[\)）]')
 
-def strip_empty_channel_paren(action: str) -> tuple:
-    """수치 없이 채널명만 든 괄호 제거. (정제문, 제거여부)"""
+def strip_exposure_figures(action: str) -> tuple:
+    """대응방안에서 익스포저 수치 표기를 제거. (정제문, 제거여부)"""
     if not action:
         return (action, False)
-    out = _EMPTY_CH_PAREN_RE.sub('', action)
+    out = _EXP_PAREN_RE.sub('', action)      # 채널 라벨이 든 괄호구 통째
+    out = _EXP_PAIR_RE.sub('', out)          # 괄호 밖 'N억원/N명' 쌍
+    out = _EXP_LONE_PAREN_RE.sub('', out)    # 수치가 빠져 홀로 남은 빈 괄호
     if out == action:
         return (action, False)
-    return (re.sub(r'\s{2,}', ' ', out).strip(), True)
+    out = re.sub(r'\s{2,}', ' ', out)
+    out = out.replace(' ,', ',').replace(' .', '.').replace(' →', ' →')
+    return (out.strip(), True)
 
 def strip_unsupported_action_clauses(action: str, exp_rows: list) -> tuple:
     """익스포저에 존재하지 않는 유형의 조치 문구를 제거. (정제문, 제거내역)"""
@@ -6297,9 +6306,9 @@ JSON만 출력:
                 action_text, _dup = dedup_action_phrases(action_text)
                 if _dup:
                     print(f"  [중복 조치 정리] {article.get('title','')[:30]} — {_dup}")
-                action_text, _ecp = strip_empty_channel_paren(action_text)
+                action_text, _ecp = strip_exposure_figures(action_text)
                 if _ecp:
-                    print(f"  [빈 채널괄호 제거] {article.get('title','')[:30]}")
+                    print(f"  [익스포저 수치 제거] {article.get('title','')[:30]}")
                 if _body_failed:
                     action_text += " *(본문 크롤링 실패, 제목 기반 생성)"
                 article["action"] = action_text

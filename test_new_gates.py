@@ -276,8 +276,24 @@ _src = open("naver_news_monitor.py", encoding="utf-8").read()
 chk("채널", "_fmt_exp 채널 분리 구현",
     '"뱅키스", \'뱅잔고\'' in _src or '("뱅키스", \'뱅잔고\', \'뱅고객수\')' in _src)
 chk("채널", "구 스키마 폴백 유지", "has_ch = any(" in _src)
-chk("채널", "프롬프트 합산 금지 명시",
-    "합산하지 말 것" in open("action_prompt.txt", encoding="utf-8").read())
+chk("채널", "프롬프트 익스포저 수치 전면 금지",
+    "절대 쓰지 않는다" in open("action_prompt.txt", encoding="utf-8").read())
+# 대응방안 익스포저 수치는 코드에서 결정론적으로 제거된다 (2026-08-14)
+chk("채널", "채널 괄호구 제거",
+    nm.strip_exposure_figures(
+        "보유 고객(뱅키스 12억원/1,671명·영업점 9억원/409명) 평가손 산출")[0]
+    == "보유 고객 평가손 산출")
+chk("채널", "수치 없는 채널 괄호 제거",
+    nm.strip_exposure_figures("보유 고객(뱅키스·영업점) 평가손 산출")[0]
+    == "보유 고객 평가손 산출")
+chk("채널", "구 스키마 표기 제거",
+    nm.strip_exposure_figures("보유 고객(주식 66억원/3,865명) 평가손 산출")[0]
+    == "보유 고객 평가손 산출")
+chk("채널", "★임계 기준은 보존",
+    nm.strip_exposure_figures(
+        "여신 보유잔고 3억원 이상 고객 즉시 인계, OB 최우선 진행")[1] is False)
+chk("채널", "★기사 사건규모는 보존",
+    nm.strip_exposure_figures("3,820억 규모 부실 사업장 점검")[1] is False)
 # 채널 분리 표기가 수치 검증에서 창작으로 오인되지 않아야 한다
 _isd = nm.find_exposure("아이에스동서", EXPO)
 _t, _b = nm.sanitize_action_numbers(
