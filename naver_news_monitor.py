@@ -1422,6 +1422,29 @@ def strip_exposure_figures(action: str) -> tuple:
     out = out.replace(' ,', ',').replace(' .', '.').replace(' →', ' →')
     return (out.strip(), True)
 
+# ── 고객문구 문장 경계 절단 (2026-08-16 신설) ──
+# 기존 렌더는 notice[:200] + "..." 로 하드컷해 문장 한가운데서 끊겼다.
+#   실사례(8/15 07시 엑시큐어하이트론·엔지켐생명과학 2건 모두):
+#   "…공시 내용은 KIND(kin..." — 담당자가 고객에게 복사해 쓰는 문구인데
+#   미완결이라 그대로는 사용할 수 없다.
+# → 상한 이내의 '마지막 문장 끝'에서 자른다. 잘려도 항상 완결된 문장이 남는다.
+_SENT_END_RE = re.compile(r'(?<=[.!?])\s|(?<=다\.)\s*|(?<=요\.)\s*')
+
+def truncate_at_sentence(text: str, limit: int = 200) -> str:
+    """limit 이내에서 마지막 문장 경계로 절단. 경계가 없으면 어절 경계로 폴백."""
+    if not text or len(text) <= limit:
+        return text or ""
+    head = text[:limit]
+    # 1순위: 문장 종결부호 위치 (한국어 공문체는 '다.'·'요.'로 끝난다)
+    _ends = [m.end() for m in re.finditer(r'[.!?]["\')\]]?', head)]
+    if _ends and _ends[-1] >= limit * 0.5:
+        return head[:_ends[-1]].strip()
+    # 2순위: 어절 경계 — 문장부호가 없거나 너무 앞이면 단어 중간 절단만 피한다
+    _sp = head.rfind(' ')
+    if _sp >= limit * 0.5:
+        return head[:_sp].rstrip() + "…"
+    return head.rstrip() + "…"
+
 def strip_unsupported_action_clauses(action: str, exp_rows: list) -> tuple:
     """익스포저에 존재하지 않는 유형의 조치 문구를 제거. (정제문, 제거내역)"""
     if not action:
@@ -4770,7 +4793,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     urgent_badges += _price_badge(a)  # 등락률 뱃지 — 키워드 옆
                     action_row = f'<tr><td class="action-td" bgcolor="#ffffff" style="padding:10px 16px;border-bottom:1px solid {gs["card_border"]};background:#ffffff;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#dc2626;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">⚡ 대응방안</span></p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
                     exposure_row = f'<tr><td style="padding:0;border-top:1px solid #e2e8f0;border-bottom:1px solid {gs["card_border"]};background:#ffffff;">{exposure_html}</td></tr>' if exposure_html else ""
-                    notice_text = _esc((a["customer_notice"][:200] + "...") if a.get("customer_notice") and len(a["customer_notice"]) > 200 else a.get("customer_notice",""))
+                    notice_text = _esc(truncate_at_sentence(a.get("customer_notice") or "", 200))
                     notice_row = f'<tr><td class="care-td" bgcolor="#f8fafc" style="padding:10px 16px;background:#f8fafc;border-top:1px solid #e2e8f0;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#334155;">고객케어 안내 추천 문구</span></p><p style="margin:0;font-size:12px;color:#334155;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
                     bottom_box = f'<tr><td bgcolor="#fff8f8" style="background:#fff8f8;border-top:1px solid {gs["card_border"]};padding:0;"><table width="100%" cellpadding="0" cellspacing="0" border="0">{action_row}{notice_row}{exposure_row}</table></td></tr>' if (action_row or exposure_row or notice_row) else ""
                     is_last = (display_items.index(a) == len([x for x in display_items if x.get("grade")=="긴급"]) - 1 + sum(1 for x in display_items if x.get("grade")!="긴급"))
