@@ -110,6 +110,31 @@ check("잘림 표시 '...' 잔존 없음", not out.endswith("..."), f"…{out[-1
 short = "[한국투자증권] 안내 보유 수량을 확인하시기 바랍니다."
 check("상한 이하 문구는 원문 유지", M.truncate_at_sentence(short, 200) == short)
 
+# URL 오인 절단 회귀 (2026-08-16) — 도메인의 점을 문장 끝으로 오인해
+# "…KIND(kind.krx.co." 로 잘리던 버그. 고객문구엔 KIND·DART 주소가 거의
+# 항상 들어가므로 상시 회귀로 둔다.
+url_case = ("[한국투자증권] 긴급 안내 윌비스가 반기 재무제표 검토의견 의견거절을 받아 "
+            "상장 폐지 심의 대상이 될 수 있습니다. 심의 결과에 따라 거래가 제한될 수 있으니 "
+            "보유 수량 및 주문 가능 여부를 즉시 확인하시기 바랍니다. 관련 공시는 "
+            "KIND(kind.krx.co.kr) 및 전자공시시스템(dart.fss.or.kr)에서 확인하시기 바랍니다. "
+            "문의: 고객센터 1544-5000")
+u = M.truncate_at_sentence(url_case, 200)
+check("도메인 점을 문장 끝으로 오인하지 않음", u.rstrip().endswith(("다.", "요.")), f"…{u[-26:]}")
+check("URL 중간 절단 없음", not re.search(r'\.(co|or|krx|fss)\.?$', u.rstrip()), f"…{u[-26:]}")
+check("행동유도 보존 (조회처보다 앞에 온 경우)", "확인하시기 바랍니다" in u)
+
+# 행동유도가 마지막에 온 문구는 소실이 계측되는가
+lost_case = ("[한국투자증권] 긴급 안내 엑시큐어하이트론이 상반기 재무제표에 대해 의견거절을 "
+             "받았으며, 자본잠식률이 79.1%로 악화되었습니다. 의견거절은 상장 폐지 사유에 해당할 "
+             "수 있으며, 향후 거래가 제한될 수 있습니다. 해당 종목을 보유하고 계신 고객께서는 "
+             "보유 수량 및 주문 가능 상태를 즉시 확인하시고, KIND(kind.krx.co.kr)에서 공시 "
+             "내용을 확인하시기 바랍니다.")
+_before = getattr(M.truncate_at_sentence, "action_lost", 0)
+l = M.truncate_at_sentence(lost_case, 200)
+check("행동유도 소실이 계측됨",
+      getattr(M.truncate_at_sentence, "action_lost", 0) == _before + 1)
+check("소실되더라도 문장은 완결", l.rstrip().endswith(("다.", "요.")), f"…{l[-24:]}")
+
 
 # ── 대응방안 익스포저 수치 제거 (직전 패치 재확인) ────────────────
 print("\n[E] 대응방안 익스포저 수치 제거 (회귀 확인)")

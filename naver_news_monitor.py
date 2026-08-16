@@ -1431,18 +1431,46 @@ def strip_exposure_figures(action: str) -> tuple:
 _SENT_END_RE = re.compile(r'(?<=[.!?])\s|(?<=다\.)\s*|(?<=요\.)\s*')
 
 def truncate_at_sentence(text: str, limit: int = 200) -> str:
-    """limit 이내에서 마지막 문장 경계로 절단. 경계가 없으면 어절 경계로 폴백."""
+    """limit 이내에서 마지막 문장 경계로 절단. 경계가 없으면 어절 경계로 폴백.
+
+    (2026-08-16) 절단 발생 시 관측 로그를 남긴다. 프롬프트 190자 상한을 이번에
+    처음 넣은 터라 준수율이 미측정이다. 상한이 지켜지면 절단은 거의 일어나지
+    않으므로, 빈도를 재보고 추가 대응(행동유도 우선 보존 등) 필요 여부를
+    데이터로 판단하기 위한 계측이다. 함수 속성에 누적해 회차 요약에서 읽는다.
+    """
+    truncate_at_sentence.total = getattr(truncate_at_sentence, "total", 0) + 1
     if not text or len(text) <= limit:
         return text or ""
+    truncate_at_sentence.truncated = getattr(truncate_at_sentence, "truncated", 0) + 1
     head = text[:limit]
-    # 1순위: 문장 종결부호 위치 (한국어 공문체는 '다.'·'요.'로 끝난다)
-    _ends = [m.end() for m in re.finditer(r'[.!?]["\')\]]?', head)]
+    # 1순위: 문장 종결 위치.
+    # 주의(2026-08-16 수정): 단순히 [.!?]를 찾으면 "kind.krx.co.kr" 같은 도메인의
+    # 점을 문장 끝으로 오인해 "…KIND(kind.krx.co." 로 잘린다 — 고치려던 증상이
+    # 그대로 재현됐다. 고객문구에는 KIND·DART 주소가 거의 항상 들어가므로
+    # 한국어 공문체 종결어미('…습니다.', '…바랍니다.')를 우선 기준으로 삼고,
+    # 그다음 '문장부호 + 공백/문자열끝'만 인정한다. 도메인의 점은 뒤에 곧바로
+    # 문자가 붙으므로 두 기준 모두에서 걸러진다.
+    _ends = [m.end() for m in re.finditer(r'(?:다|요|음|함)[.!?]["\')\]]?(?=\s|$)', head)]
+    if not _ends:
+        _ends = [m.end() for m in re.finditer(r'[.!?]["\')\]]?(?=\s|$)', head)]
     if _ends and _ends[-1] >= limit * 0.5:
-        return head[:_ends[-1]].strip()
+        out = head[:_ends[-1]].strip()
+        # 행동 유도가 절단으로 사라졌는지 — 잘라낸 뒤쪽에만 있으면 소실이다
+        _tail = text[len(out):]
+        if re.search(r'확인하시|점검하시|문의|바랍니다', _tail) and not re.search(
+                r'확인하시|점검하시|바랍니다', out):
+            truncate_at_sentence.action_lost = getattr(
+                truncate_at_sentence, "action_lost", 0) + 1
+            print(f"  [고객문구 절단·행동유도 소실] {len(text)}자 → {len(out)}자")
+        else:
+            print(f"  [고객문구 절단] {len(text)}자 → {len(out)}자")
+        return out
     # 2순위: 어절 경계 — 문장부호가 없거나 너무 앞이면 단어 중간 절단만 피한다
     _sp = head.rfind(' ')
     if _sp >= limit * 0.5:
+        print(f"  [고객문구 절단·어절경계] {len(text)}자 → {_sp}자")
         return head[:_sp].rstrip() + "…"
+    print(f"  [고객문구 절단·강제] {len(text)}자 → {limit}자")
     return head.rstrip() + "…"
 
 def strip_unsupported_action_clauses(action: str, exp_rows: list) -> tuple:
@@ -4540,6 +4568,12 @@ def save_run_stats(collected: int, selected: int, verify_model: str,
         "no_exp_demote": _RUN_STATS.get("no_exp_demote", [])[:12],
         "demote_exempt": _RUN_STATS.get("demote_exempt", [])[:12],
         "final_grades": _RUN_STATS.get("final_grades", [])[:12],
+        # 고객문구 절단 계측 (2026-08-16) — 190자 프롬프트 상한의 준수율을
+        # 데이터로 보기 위한 지표. notice_trunc가 0에 수렴하면 상한이 지켜지는
+        # 것이고, action_lost가 쌓이면 행동유도 보존 로직 추가를 검토한다.
+        "notice_total": getattr(truncate_at_sentence, "total", 0),
+        "notice_trunc": getattr(truncate_at_sentence, "truncated", 0),
+        "notice_action_lost": getattr(truncate_at_sentence, "action_lost", 0),
     }
     try:
         # 최근 200줄만 유지 — 무한 증식 방지
