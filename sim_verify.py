@@ -9,7 +9,7 @@
   C. 익스포저 종목 오귀속 방지      (8/13 삼성 그룹사 기사 재현)
   D. 고객문구 문장 경계 절단        (8/15 엑시큐어 실사례 재현)
 """
-import os, re, sys
+import os, re, sys, io, contextlib
 
 for _k in ("EMAIL_SENDER", "EMAIL_PASSWORD", "EMAIL_RECEIVER",
            "ANTHROPIC_API_KEY", "NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET"):
@@ -154,6 +154,81 @@ for name, txt, keep in [
     r = M.strip_exposure_figures(txt)
     r = r[0] if isinstance(r, tuple) else r
     check(name, keep in r, r)
+
+
+# ── F. 8/17~8/19 회차 검수 반영분 ────────────────────────────────
+print("\n[F] ETF 안내 누락 — 등급 경로와 무관하게 exempt")
+for name, grade in [("AI가 처음부터 주의(8/17 실사례)", "주의"),
+                    ("AI가 긴급 판정", "긴급"),
+                    ("AI가 참고 판정", "참고")]:
+    a = {"title": "수익률 너무 좋은데 상장폐지! 액티브 ETF, 0.7 상관계수 미달",
+         "entity": "TIME 미국배당다우존스액티브", "entities": ["TIME 미국배당다우존스액티브"],
+         "grade": grade, "summary": "", "confidence": 0.9, "event_type": "상장폐지"}
+    M.regrade_by_score([a], {})
+    check(f"{name} → 안내문구 생성", a.get("_notice_exempt") is True)
+
+a = {"title": "광명전기, 반기말 완전자본잠식 상장폐지 심사", "entity": "광명전기",
+     "entities": ["광명전기"], "grade": "주의", "summary": "", "confidence": 0.9,
+     "event_type": "상장폐지"}
+M.regrade_by_score([a], {})
+check("일반주식 상폐는 exempt 미부여", a.get("_notice_exempt") is None)
+
+
+print("\n[G] 사건유형 무근거 배지 차단")
+badge_cases = [
+    ("★우리금융 실적기사→횡령배임", "신한 3040억 벌 때 우리 -571억…임종룡의 해외사업, 왜 거꾸로 가나",
+     "횡령배임", "해외사업 손실 확대로 실적 부진", ""),
+    ("★위메이드 민원기사→금감원제재", '뿔난 위메이드 주주…"새 주인 실체 불분명" 금감원에 민원 제기',
+     "금감원제재", "주주들이 민원을 제기했다", ""),
+]
+for name, title, ev, desc, body in badge_cases:
+    a = {"title": title, "event_type": ev, "entity": "X", "desc": desc, "body": body,
+         "reason": "AI가 생성한 사유 — 근거로 쓰이면 안 된다"}
+    check(f"{name} 배지 생략", M._event_badge_label(a) == "")
+
+ok_cases = [
+    ("한국토지신탁 구속·검찰", "한국토지신탁, 내부통제는?…임직원 구속·회장 검찰", "횡령배임", "횡령·배임"),
+    ("듀오백 거래정지", "거래소 듀오백, 20일부터 주권매매거래 정지", "거래정지", "거래정지"),
+    ("JTBC 상폐확정", "JTBC 상장채권 3종 상폐 확정", "상장폐지", "상장폐지"),
+    ("포스코이앤씨 파산", "브라질 하원, 포스코이앤씨 현지법인 파산 규탄안 의결", "파산부도", "파산·부도"),
+    ("형지글로벌 미지급", "형지글로벌, 전환사채 원리금 미지급 사태 발생", "유동성위기", "유동성 위기"),
+    ("실제 제재", "금감원, 위메이드에 과징금 20억 부과", "금감원제재", "금감원 제재"),
+]
+for name, title, ev, want in ok_cases:
+    a = {"title": title, "event_type": ev, "entity": "X", "desc": "", "body": ""}
+    check(f"{name} 배지 유지", M._event_badge_label(a) == want, M._event_badge_label(a))
+
+
+print("\n[H] 전망성 기사 긴급 과대 강등")
+spec_cases = [
+    ("★한빛소프트(8/19 실사례)", "한빛, 상장폐지 위험권 … 향후 시장 전망은?", True),
+    ("전망 의문형", "OO전자, 상장폐지 가능성 제기…괜찮나", True),
+    ("유동성 위기는 강등 금지", "OO건설 유동성 위기 심화…자금난 확대", False),
+    ("듀오백 확정", "거래소 듀오백, 20일부터 주권매매거래 정지", False),
+    ("JTBC 확정", "JTBC 상장채권 3종 상폐 확정…투자자 매매 주의보", False),
+    ("형지글로벌 확정", "형지글로벌, 관리종목 지정되면서 전환사채 원리금 미지급 사태 발생", False),
+    ("위기+확정 동시", "OO전자 상장폐지 위기…거래정지 결정", False),
+]
+for name, title, expect in spec_cases:
+    a = {"title": title, "entity": "X", "entities": ["X"], "grade": "긴급",
+         "summary": "", "confidence": 0.95, "event_type": "상장폐지"}
+    _buf = io.StringIO()
+    with contextlib.redirect_stdout(_buf):
+        M.regrade_by_score([a], {})
+    fired = "[전망성 기사 긴급→주의]" in _buf.getvalue()
+    check(f"{name} → {'강등' if expect else '유지'}", fired == expect)
+
+
+print("\n[I] 대응방안 종목명 보강")
+for name, txt, ent, expect in [
+    ("★듀오백(8/19 누락)", "보유 고객 평가손 즉시 산출 → 주문 가능 상태 점검", "듀오백", True),
+    ("★JTBC(8/19 누락)", "보유 고객 채권 평가손 즉시 산출 → 정리매매 절차 점검", "JTBC", True),
+    ("모나미(이미 표기)", "모나미 보유 고객 평가손 즉시 산출 → 보고", "모나미", False),
+    ("약칭 표기(중복 방지)", "한빛 보유 고객 평가손 즉시 산출", "한빛소프트", False),
+]:
+    out, fixed = M.prepend_entity_to_action(txt, ent)
+    check(f"{name} 보강={expect}", fixed == expect, out[:48])
+    check(f"{name} 결과에 종목명 존재", ent[:2] in out[:24])
 
 
 print("\n" + "═" * 60)

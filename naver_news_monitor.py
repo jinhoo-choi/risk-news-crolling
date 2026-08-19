@@ -1409,6 +1409,28 @@ _EXP_PAIR_RE = re.compile(
 )
 _EXP_LONE_PAREN_RE = re.compile(r'\s*[\(（][\s·,]*[\)）]')
 
+def prepend_entity_to_action(action: str, entity: str) -> tuple:
+    """대응방안 첫머리에 대상 종목명이 없으면 붙인다. (정제문, 보강여부)
+
+    (2026-08-19) action_prompt에 '첫 조치는 종목명으로 시작' 규칙을 넣었으나,
+    실측(8/19 14시·21시)에서 모나미·한빛소프트는 종목명이 있고 듀오백·JTBC·
+    한국토지신탁은 없어 회차 안에서도 표기가 갈렸다. 그룹사 기사나 다종목
+    회차에서 "보유 고객 평가손 즉시 산출"만 있으면 어느 종목을 조치하라는
+    것인지 문장만으로는 알 수 없다. 프롬프트 준수에 맡기지 않고 보강한다.
+    """
+    if not action or not entity:
+        return (action or "", False)
+    _head = action[:40]
+    if entity in _head:
+        return (action, False)
+    # 약칭↔정식명(예: 한빛 ↔ 한빛소프트)도 이미 언급된 것으로 본다.
+    # 6자 이상 공통 접두어 매칭은 엔티티 매칭 규칙과 같은 기준을 쓴다.
+    for _tok in re.findall(r'[가-힣A-Za-z0-9]{2,}', _head):
+        if len(_tok) >= 2 and (entity.startswith(_tok) or _tok.startswith(entity)):
+            return (action, False)
+    return (f"{entity} {action}", True)
+
+
 def strip_exposure_figures(action: str) -> tuple:
     """대응방안에서 익스포저 수치 표기를 제거. (정제문, 제거여부)"""
     if not action:
@@ -3624,8 +3646,6 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
         r'규모\s*미달|신탁계약\s*해지|자진\s*해지|만기\s*(?:해지|상환)'
     )
     for a in articles:
-        if a.get("grade") != "긴급":
-            continue
         _t = a.get("title", "")
         _e = (a.get("entity") or "")
         _ctx = _t + " " + (a.get("summary") or "")
@@ -3635,11 +3655,53 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
         if not (_ETF_ONLY_REASON_RE.search(_ctx)
                 or (_marked and _ETF_GENERIC_REASON_RE.search(_ctx))):
             continue
-        print(f"  [ETF 구조적 상폐 주의강등] {_e}: {_t[:35]}")
+        # (2026-08-19 수정) 사건 판정과 등급 강등을 분리한다.
+        # 기존엔 grade == "긴급" 인 건만 검사해, AI가 처음부터 주의를 준 ETF
+        # 상폐는 규칙 전체를 건너뛰고 _notice_exempt도 붙지 않았다.
+        #   실사례(8/17 21시 TIME 미국배당다우존스액티브): AI가 주의 6.3으로
+        #   판정 → 강등 경로를 안 타 고객 안내 문구가 아예 생성되지 않았다.
+        #   18일 거래정지가 예정된 건이라 안내가 꼭 필요했다.
+        # 안내 필요 여부는 '등급이 어떻게 정해졌는지'가 아니라 '매도 시한이
+        # 있는 ETF 상폐인지'라는 사실에 달렸다. 그래서 exempt는 사실에 붙이고,
+        # 강등은 긴급인 경우에만 수행한다.
+        a["_notice_exempt"] = True     # 등급과 무관하게 고객 안내 문구는 생성한다
+        if a.get("grade") == "긴급":
+            print(f"  [ETF 구조적 상폐 주의강등] {_e}: {_t[:35]}")
+            a["grade"] = "주의"
+            a["_grade_locked"] = True  # AI 재검증이 긴급으로 되돌리지 못하게 잠금
+            a["_force_urgent"] = False
+        else:
+            print(f"  [ETF 구조적 상폐 — 안내문구 유지] {_e}: {_t[:35]}")
+
+    # ── 전망·가능성 기사 긴급 과대 강등 (2026-08-19 신설) ────────────────
+    # 긴급 대역의 정의는 '확정된 손실·부실·제재'다. 확정되지 않은 전망·위기설
+    # 기사가 긴급으로 나가면 임원이 당일 대응할 사건과 구분되지 않는다.
+    #   실사례(8/19 14시) 한빛소프트: "한빛, 상장폐지 위험권 … 향후 시장 전망은?"
+    #   → 긴급 8.9. 주가 1,000원 하회에 따른 '위험권' 진입 관측 기사로 확정
+    #   사건이 아니고, 정작 대응방안도 "하회 지속 시 편입 여부 재확인"이라는
+    #   가능성 서술이었다. 고객문구까지 "해당할 수 있습니다"로 나가 민원 소지.
+    # 2차 검증 프롬프트에 '가능성·심의 예정이면 주의로' 규칙이 이미 있으나
+    # 지켜지지 않은 사례라, 프롬프트 의존을 걷고 코드로 게이트를 둔다.
+    # 오강등(미탐)이 더 위험하므로 확정 표현이 하나라도 있으면 손대지 않는다.
+    _SPECULATIVE_RE = re.compile(
+        r'위험권|위기설|기로|조짐|기미|경고음|빨간불|위태|전망은|전망\?|'
+        r'가능성|우려|예상된다|관측된다|할\s*수도|될\s*수도|어쩌나|괜찮나'
+    )
+    _CONFIRMED_RE = re.compile(
+        r'확정|결정|의결|지정|공시|접수|발생|선고|개시|착수|부과|적발|'
+        r'정지한다|정지된다|미지급|디폴트|불이행|거절|해지|파산|부도|피소|기소'
+    )
+    for a in articles:
+        if a.get("grade") != "긴급" or a.get("_grade_locked"):
+            continue
+        _t = a.get("title", "")
+        if not _SPECULATIVE_RE.search(_t):
+            continue
+        if _CONFIRMED_RE.search(_t):
+            continue      # 확정 표현이 있으면 전망성으로 보지 않는다
+        print(f"  [전망성 기사 긴급→주의] {a.get('entity','')}: {_t[:35]}")
         a["grade"] = "주의"
-        a["_grade_locked"] = True      # AI 재검증이 긴급으로 되돌리지 못하게 잠금
-        a["_force_urgent"] = False
-        a["_notice_exempt"] = True     # 주의여도 고객 안내 문구는 생성한다
+        a["_grade_locked"] = True
 
     for a in articles:
         a["_risk_score"] = calc_risk_score(a, exposure_data)
@@ -4515,10 +4577,62 @@ _EVENT_LABEL = {
     "차환실패": "차환 실패",
 }
 
+# ── event_type 근거 검증 (2026-08-19 신설) ──────────────────────────
+# event_type은 AI 생성물이라 오분류가 잦다. 점수 계산부는 이미 이를 알고
+# 제목 기준으로 가중치를 매기는데(calc_risk_score 주석), 배지 라벨은 AI 값을
+# 그대로 표시해 방어가 비대칭이었다.
+#   실사례(8/19 14시) 우리금융지주: "신한 3040억 벌 때 우리 -571억…임종룡의
+#     해외사업, 왜 거꾸로 가나" = 해외사업 실적 부진 기사인데 '횡령·배임' 배지.
+#   실사례(8/19 07시) 위메이드: "주주…금감원에 민원 제기" = 주주가 민원을
+#     넣은 기사인데 '금감원 제재' 배지. 제재를 받은 쪽은 위메이드가 아니다.
+# 둘 다 대형주(우리금융 41,077명)라 전사 발송됐다. 배지를 믿고 기사를 열었을 때
+# 내용이 다르면 시스템 전체의 신뢰가 흔들린다 — 오탐 중에서도 타격이 큰 유형.
+# → 사건유형별 근거 표현이 기사(제목+본문 발췌)에 실제로 있을 때만 배지를 단다.
+#   근거가 없으면 배지를 생략한다. 위 주석대로 "틀린 라벨보다 무라벨이 안전".
+#   등급·점수·발송 여부는 건드리지 않는다 — 라벨 표시만의 문제다.
+_EVENT_EVIDENCE = {
+    "상장폐지":     r'상장\s*폐지|상폐|퇴출|정리매매',
+    "거래정지":     r'거래\s*정지|매매거래\s*정지|거래\s*중단',
+    "기업회생":     r'회생|법정관리|워크아웃|기업개선',
+    "파산부도":     r'파산|부도|청산|디폴트|채무불이행',
+    "PF부실":       r'PF|프로젝트\s*파이낸싱|브릿지론|대출\s*연체',
+    "신용등급강등": r'등급\s*(?:하향|강등)|신용등급|아웃룩|부정적\s*검토',
+    "반대매매":     r'반대매매|담보\s*부족|마진콜',
+    # '금감원'만으론 부족하다 — 민원·질의 기사가 제재로 둔갑한다(위메이드 사례)
+    "금감원제재":   r'제재|징계|과징금|과태료|기관\s*경고|영업\s*정지|검사\s*착수|중징계',
+    "시스템장애":   r'전산\s*장애|시스템\s*장애|접속\s*장애|먹통|서비스\s*중단',
+    "발행어음부실": r'발행어음|어음\s*부실',
+    "유동성위기":   r'유동성|자금난|미지급|연체|상환\s*불능|자금\s*경색',
+    "대규모환매":   r'환매|펀드런|자금\s*이탈',
+    "감사의견거절": r'의견\s*거절|한정\s*의견|부적정|감사\s*의견',
+    # 실적 부진 기사가 횡령으로 둔갑한다(우리금융 사례) → 수사·비위 표현을 요구
+    "횡령배임":     r'횡령|배임|유용|비자금|구속|기소|검찰|압수수색|수사|고발',
+    "차환실패":     r'차환|만기\s*연장\s*실패|롤오버',
+}
+
+def _event_type_supported(a: dict) -> bool:
+    """AI가 붙인 event_type이 기사 본문 근거로 뒷받침되는가."""
+    ev = (a.get("event_type") or "").strip()
+    pat = _EVENT_EVIDENCE.get(ev)
+    if not pat:
+        return True     # 매핑에 없는 유형은 판정하지 않는다 (기존 동작 유지)
+    # reason은 AI 생성물이라 근거로 쓰면 순환논증이 된다 — 기사 원문만 본다.
+    src = " ".join(str(a.get(k) or "") for k in ("title", "desc", "body"))
+    # 판정할 원문이 사실상 없으면 손대지 않는다. 본문 크롤이 실패하면 desc·body가
+    # 비는 회차가 실제로 있어(8/16 대호에이엘), 원문 부재를 '무근거'로 처리하면
+    # 정상 사건의 배지까지 사라진다. 미탐(배지 과잉)보다 과차단이 더 나쁘다.
+    if len(src.strip()) < 10:
+        return True
+    return bool(re.search(pat, src))
+
 def _event_badge_label(a: dict) -> str:
-    """배지에 표시할 사건유형 라벨. 미확정·기타면 빈 문자열(배지 생략)."""
+    """배지에 표시할 사건유형 라벨. 미확정·기타·무근거면 빈 문자열(배지 생략)."""
     ev = (a.get("event_type") or "").strip()
     if not ev or ev == "기타리스크":
+        return ""
+    if not _event_type_supported(a):
+        print(f"  [사건유형 무근거 — 배지 생략] {a.get('entity','')}: "
+              f"{ev} ← {a.get('title','')[:35]}")
         return ""
     if ev in _EVENT_LABEL:
         return _EVENT_LABEL[ev]
@@ -6366,6 +6480,10 @@ JSON만 출력:
                 action_text, _ecp = strip_exposure_figures(action_text)
                 if _ecp:
                     print(f"  [익스포저 수치 제거] {article.get('title','')[:30]}")
+                action_text, _ent = prepend_entity_to_action(
+                    action_text, (article.get("entity") or "").strip())
+                if _ent:
+                    print(f"  [대응방안 종목명 보강] {article.get('entity','')}")
                 if _body_failed:
                     action_text += " *(본문 크롤링 실패, 제목 기반 생성)"
                 article["action"] = action_text
@@ -6406,11 +6524,26 @@ JSON만 출력:
 
     subject = f"❗ [리스크 탐지] {now_str_full} 기준"
 
-    urgent_cnt = len([a for a in filtered if a["grade"]=="긴급"])
-    caution_cnt = len([a for a in filtered if a["grade"]=="주의"])
-    ref_cnt = len([a for a in filtered if a["grade"]=="참고"])
+    # 발송 범위를 요약보다 먼저 확정한다 (2026-08-19).
+    # 기존엔 요약을 filtered(선별 전체)로 만들고 그 뒤에 참고 등급을 걷어냈다.
+    # 그래서 메일에 실리지 않은 기사가 요약문에만 등장했다.
+    #   실사례(8/19 21시): 선별 1건(듀오백)인데 요약은 "듀오백 거래 정지·
+    #   테라사이언스·성원에너텍 회생 관련 리스크 관측" — 뒤 두 종목은 메일
+    #   어디에도 없다. 8/14 07시 '급락 관측' 부정합과 같은 계열의 문제로,
+    #   메일 안에서 근거를 찾을 수 없는 요약문은 임원 신뢰도를 깎는다.
+    # → 실제 발송될 기사만 요약 입력으로 준다.
+    _scope = decide_send_scope(filtered, exposure_data, ref_date)
+    _self_only = _scope["self_only"]
+    _mail_articles = filter_articles_for_scope(filtered, exposure_data, _self_only)
+    _summary_src = _mail_articles or filtered
+
+    urgent_cnt = len([a for a in _summary_src if a["grade"]=="긴급"])
+    caution_cnt = len([a for a in _summary_src if a["grade"]=="주의"])
+    ref_cnt = len([a for a in _summary_src if a["grade"]=="참고"])
     # AI 요약 컨텍스트 — 탐지 기사 중심 (여신잔고는 보조 참고용, 요약에 직접 언급 금지)
-    filtered_titles = f"[등급 분포] 긴급 {urgent_cnt}건 / 주의 {caution_cnt}건 / 참고 {ref_cnt}건\n\n" + "\n".join([f"- [{a['grade']}] {a['title']}" for a in filtered])
+    filtered_titles = f"[등급 분포] 긴급 {urgent_cnt}건 / 주의 {caution_cnt}건 / 참고 {ref_cnt}건\n\n" + "\n".join([f"- [{a['grade']}] {a['title']}" for a in _summary_src])
+    filtered_titles += ("\n\n[중요] 위 목록은 메일에 실제로 실리는 기사 전부다. "
+                        "목록에 없는 기업·사건을 요약문에 넣지 말 것.")
     # 급락 섹션 렌더 여부를 요약 AI에 알린다 (2026-08-14).
     # 07시 회차는 장 시작 전이라 등락률이 없어 '여신잔고 리스크 현황' 표가
     # 렌더되지 않는데, 요약문에는 "관리종목 지정 종목 급락 관측"처럼 급락이
@@ -6465,8 +6598,9 @@ JSON만 출력:
     #   (2026-07-28 변이 테스트에서 확인)
     # 발송 범위 판정 — 로직은 decide_send_scope()에 있다.
     # (테스트가 재현본이 아니라 실제 함수를 호출하도록 분리했음)
-    _scope = decide_send_scope(filtered, exposure_data, ref_date)
-    _self_only = _scope["self_only"]
+    # ※ _scope/_self_only/_mail_articles는 요약 생성 전에 이미 확정했다
+    #   (요약이 발송 제외 기사를 언급하던 문제 — 2026-08-19). 여기서는
+    #   재계산하지 않고 그 값을 그대로 쓴다. 두 번 부르면 판정이 갈릴 수 있다.
     _max_score = _scope["max_score"]
     _trg = " + ".join(_scope["triggers"]) if _scope["triggers"] else "없음"
 
@@ -6487,7 +6621,7 @@ JSON만 출력:
         print(f"  [전체 발송] 최고 리스크점수 {_max_score:.2f} ≥ {SELF_ONLY_MAX_SCORE:.2f}")
 
     # 전체 발송 시 참고 등급 축소 — 로직은 filter_articles_for_scope()에 있다.
-    _mail_articles = filter_articles_for_scope(filtered, exposure_data, _self_only)
+    # (요약 생성 전에 이미 산출했다 — 위 주석 참고)
     if len(_mail_articles) != len(filtered):
         print(f"  [전체발송 참고 축소] 참고 {len(filtered)-len(_mail_articles)}건 제외 "
               f"(익스포저 {REF_FULLSEND_MIN_EXPOSURE:,.0f}억 미만) — 본인 메일에는 포함")
