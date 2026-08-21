@@ -723,20 +723,20 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
     def _cust_bal_cell(cust, bal, ch):
         """전체 여신 칸 — 채널 모드: '● 잔고억 (고객수명)' 채널 컬러 2줄 (합산 없음)"""
         if ch:
-            return (f'<td class="price-alert-td" style="padding:8px 6px;font-size:12px;font-weight:600;text-align:center;white-space:nowrap;">'
+            return (f'<td class="price-alert-td" style="padding:8px 3px;font-size:11px;font-weight:600;text-align:center;white-space:nowrap;">'
                     + _ch_line(_C_BANK,   ch["b"]["bal"],  ch["b"]["cust"],  True)
                     + _ch_line(_C_BRANCH, ch["y"]["bal"],  ch["y"]["cust"],  False) + '</td>')
-        return (f'<td class="price-alert-td" style="padding:8px 6px;font-size:12px;font-weight:600;color:#1e293b;text-align:center;white-space:nowrap;">'
+        return (f'<td class="price-alert-td" style="padding:8px 3px;font-size:11px;font-weight:600;color:#1e293b;text-align:center;white-space:nowrap;">'
                 f'{bal:,.0f}억 ({cust:,}명)</td>')
 
     def _risk_cell(rcust, rbal, ch):
         if rcust == 0:
-            return '<td style="padding:8px 6px;font-size:12px;color:#cbd5e1;text-align:center;white-space:nowrap;">없음</td>'
+            return '<td style="padding:8px 3px;font-size:11px;color:#cbd5e1;text-align:center;white-space:nowrap;">없음</td>'
         if ch:
-            return (f'<td style="padding:8px 6px;font-size:12px;font-weight:600;text-align:center;white-space:nowrap;">'
+            return (f'<td style="padding:8px 3px;font-size:11px;font-weight:600;text-align:center;white-space:nowrap;">'
                     + _ch_line(_C_BANK,   ch["b"]["rbal"], ch["b"]["rcust"], True)
                     + _ch_line(_C_BRANCH, ch["y"]["rbal"], ch["y"]["rcust"], False) + '</td>')
-        return (f'<td style="padding:8px 6px;font-size:12px;font-weight:600;color:#92400e;text-align:center;white-space:nowrap;">'
+        return (f'<td style="padding:8px 3px;font-size:11px;font-weight:600;color:#92400e;text-align:center;white-space:nowrap;">'
                 f'{rbal:.0f}억 ({rcust:,}명)</td>')
 
     def _top_line(dot_color, rbal, cust, ratio):
@@ -781,21 +781,21 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
             _dash = '<span style="color:#cbd5e1;">-</span>'
             b_line = _top_line(_C_BANK,   ch['b']['top_rbal'], ch['b']['top_cust'], ch['b']['top_ratio']) or _dash
             y_line = _top_line(_C_BRANCH, ch['y']['top_rbal'], ch['y']['top_cust'], ch['y']['top_ratio']) or _dash
-            return (f'<td style="padding:8px 6px;font-size:12px;font-weight:600;text-align:center;white-space:nowrap;">'
+            return (f'<td style="padding:8px 3px;font-size:11px;font-weight:600;text-align:center;white-space:nowrap;">'
                     f'<div>{b_line}</div>'
                     f'<div style="margin-top:3px;">{y_line}</div></td>')
         if not top_rbal and not top_cust:
-            return '<td style="padding:8px 6px;font-size:12px;color:#cbd5e1;text-align:center;white-space:nowrap;">-</td>'
+            return '<td style="padding:8px 3px;font-size:11px;color:#cbd5e1;text-align:center;white-space:nowrap;">-</td>'
         line = _top_line('', top_rbal, top_cust, top_ratio)
-        return f'<td style="padding:8px 6px;font-size:12px;font-weight:600;text-align:center;white-space:nowrap;">{line}</td>'
+        return f'<td style="padding:8px 3px;font-size:11px;font-weight:600;text-align:center;white-space:nowrap;">{line}</td>'
 
     rows_html = ''
     for i, (name, bal, cust, rcust, rbal, chg, curr, ticker, top_rbal, top_cust, top_ratio, ch) in enumerate(display_alerted):
         bg = '#fafcff' if i % 2 == 0 else '#ffffff'
         rows_html += f'''
             <tr style="background:{bg};border-bottom:1px solid #f1f5f9;">
-              <td class="price-alert-td" style="padding:8px 6px;text-align:center;white-space:nowrap;">
-                <div style="font-size:14px;font-weight:600;color:#1e293b;">{name}</div>
+              <td class="price-alert-td" style="padding:8px 3px;text-align:center;white-space:nowrap;">
+                <div style="font-size:13px;font-weight:600;color:#1e293b;">{name}</div>
                 <div style="font-size:10px;font-weight:700;color:#2563eb;margin-top:2px;">▼{abs(chg):.1f}%</div>
               </td>
               {_cust_bal_cell(cust, bal, ch)}
@@ -834,10 +834,10 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
 
           <thead>
             <tr bgcolor="#f8fafc" style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
-              <th style="padding:7px 6px;font-size:12px;color:#64748b;font-weight:500;text-align:center;">종목명</th>
-              <th style="padding:7px 6px;font-size:12px;color:#64748b;font-weight:500;text-align:center;">전체 여신</th>
-              <th style="padding:7px 6px;font-size:12px;color:#d97706;font-weight:600;text-align:center;">⚠ 위험고객</th>
-              <th style="padding:7px 6px;font-size:12px;color:#dc2626;font-weight:600;text-align:center;">최고 리스크</th>
+              <th style="padding:7px 3px;font-size:11px;color:#64748b;font-weight:500;text-align:center;">종목명</th>
+              <th style="padding:7px 3px;font-size:11px;color:#64748b;font-weight:500;text-align:center;">전체 여신</th>
+              <th style="padding:7px 3px;font-size:11px;color:#d97706;font-weight:600;text-align:center;">⚠ 위험고객</th>
+              <th style="padding:7px 3px;font-size:11px;color:#dc2626;font-weight:600;text-align:center;">최고 리스크</th>
             </tr>
           </thead>
           <tbody>{rows_html}
@@ -4591,23 +4591,32 @@ _EVENT_LABEL = {
 #   근거가 없으면 배지를 생략한다. 위 주석대로 "틀린 라벨보다 무라벨이 안전".
 #   등급·점수·발송 여부는 건드리지 않는다 — 라벨 표시만의 문제다.
 _EVENT_EVIDENCE = {
-    "상장폐지":     r'상장\s*폐지|상폐|퇴출|정리매매',
-    "거래정지":     r'거래\s*정지|매매거래\s*정지|거래\s*중단',
-    "기업회생":     r'회생|법정관리|워크아웃|기업개선',
-    "파산부도":     r'파산|부도|청산|디폴트|채무불이행',
-    "PF부실":       r'PF|프로젝트\s*파이낸싱|브릿지론|대출\s*연체',
-    "신용등급강등": r'등급\s*(?:하향|강등)|신용등급|아웃룩|부정적\s*검토',
-    "반대매매":     r'반대매매|담보\s*부족|마진콜',
+    "상장폐지":     r'상장\s*폐지|상폐|퇴출|정리매매|실질\s*심사|상장\s*적격성',
+    "거래정지":     r'거래\s*정지|매매거래\s*정지|거래\s*중단|매매\s*중단',
+    "기업회생":     r'회생|법정관리|워크아웃|기업개선|자율협약',
+    "파산부도":     r'파산|부도|청산|디폴트|채무\s*불이행|폐업',
+    "PF부실":       r'PF|프로젝트\s*파이낸싱|브릿지론|대출\s*연체|시행사|본PF',
+    "신용등급강등": r'등급\s*(?:하향|강등)|신용등급|아웃룩|부정적\s*검토|워치리스트',
+    "반대매매":     r'반대매매|담보\s*부족|마진콜|담보\s*비율',
     # '금감원'만으론 부족하다 — 민원·질의 기사가 제재로 둔갑한다(위메이드 사례)
-    "금감원제재":   r'제재|징계|과징금|과태료|기관\s*경고|영업\s*정지|검사\s*착수|중징계',
-    "시스템장애":   r'전산\s*장애|시스템\s*장애|접속\s*장애|먹통|서비스\s*중단',
+    "금감원제재":   r'제재|징계|과징금|과태료|기관\s*경고|영업\s*정지|검사\s*착수|'
+                    r'중징계|시정\s*명령|경영\s*유의',
+    "시스템장애":   r'전산\s*장애|시스템\s*장애|접속\s*장애|먹통|서비스\s*중단|마비',
     "발행어음부실": r'발행어음|어음\s*부실',
-    "유동성위기":   r'유동성|자금난|미지급|연체|상환\s*불능|자금\s*경색',
-    "대규모환매":   r'환매|펀드런|자금\s*이탈',
-    "감사의견거절": r'의견\s*거절|한정\s*의견|부적정|감사\s*의견',
+    # (2026-08-21 보강) '미상환'이 빠져 정상 건이 과차단됐다.
+    #   실사례(8/21 14시 셀루메드): "140억 대여금 회수 '빨간불'…담보 미설정·
+    #   만기 미상환" — 유동성위기가 맞는 분류인데 배지가 사라졌다.
+    # 채무 불이행 표현은 어미가 다양해(미상환·미지급·연체·회수 불투명) 넓게 잡되,
+    # 어느 것도 실적 부진 기사에는 쓰이지 않으므로 오탐 위험은 낮다.
+    "유동성위기":   r'유동성|자금난|자금\s*경색|미지급|미상환|연체|상환\s*불능|'
+                    r'회수\s*(?:불확실|불투명|의문|지연)|빨간불|손상|대여금|차입금|'
+                    r'만기\s*도래|채무\s*보증',
+    "대규모환매":   r'환매|펀드런|자금\s*이탈|유출',
+    "감사의견거절": r'의견\s*거절|한정\s*의견|부적정|감사\s*의견|검토\s*의견',
     # 실적 부진 기사가 횡령으로 둔갑한다(우리금융 사례) → 수사·비위 표현을 요구
-    "횡령배임":     r'횡령|배임|유용|비자금|구속|기소|검찰|압수수색|수사|고발',
-    "차환실패":     r'차환|만기\s*연장\s*실패|롤오버',
+    "횡령배임":     r'횡령|배임|유용|비자금|구속|기소|검찰|압수수색|수사|고발|'
+                    r'혐의|송치|영장',
+    "차환실패":     r'차환|만기\s*연장\s*실패|롤오버|재발행',
 }
 
 def _event_type_supported(a: dict) -> bool:
