@@ -1227,6 +1227,60 @@ _NOTICE_PLACEHOLDER_RE = re.compile(
 _NOTICE_BARE_PLACEHOLDER = ("종목코드 확인 요망", "종목코드 확인요망",
                             "○○○", "○○", "XXX", "OOO", "[내용 확인]", "[확인]")
 
+# ── 고객 안내 문구를 만들면 안 되는 기사 (2026-08-27 신설) ──────────
+# customer_notice는 "보유 종목에 이런 일이 생겼으니 확인하세요"를 고객에게
+# 전달하는 문구다. 종목 리스크가 아닌 기사에까지 문구를 만들면 성격이 완전히
+# 달라진다. 실측 3건:
+#   8/21 21시 한국투자증권 전산오류: "MTS 표시 오류로 불편을 드린 점 양해
+#     바랍니다" — 당사 명의 공식 사과문. 담당자가 그대로 보내면 귀책 인정이다.
+#   8/26 07시 카카오페이증권 반대매매 오안내: "증권사 담보비율 오안내로 인한
+#     강제 매도 피해 사례" — 사고를 낸 곳은 타사인데 당사 명의로 나가면
+#     고객은 당사 사고로 읽는다.
+# 이런 기사는 홍보·CS·컴플라이언스 소관이지 리스크봇이 고객 문구를 만들
+# 사안이 아니다. 탐지와 대응방안은 그대로 두고 고객 문구만 막는다.
+def notice_forbidden_reason(a: dict) -> str:
+    """고객 안내 문구를 만들면 안 되는 기사면 사유, 아니면 빈 문자열."""
+    _title = a.get("title", "") or ""
+    _ent = (a.get("entity") or "").strip()
+    _ents = [(_e or "").strip() for _e in (a.get("entities") or [])]
+    if DIRECT_COMPANY_KW in _title or DIRECT_COMPANY_KW in _ent:
+        return "당사 기사"
+    if "한국금융지주" in _ent or "한국금융지주" in _title:
+        return "당사 기사"
+    if _ent in _BROKER_ENTITIES or any(_e in _BROKER_ENTITIES for _e in _ents):
+        return "타 증권사 기사"
+    if not _ent and _kw_hit(_title, _BROKER_ENTITIES):
+        return "타 증권사 기사"
+    return ""
+
+
+# 매매 권유 표현 — 고객 문구에 들어가면 당사 명의 투자권유가 된다.
+#   실사례(8/27 07시 코람코더원리츠): "특별배당을 받으려면 27일 장 마감 전
+#   매수하셔야 합니다" — 배당락 후 주가가 빠지면 부당권유 민원으로 직결된다.
+# 기존 프롬프트에 사과·공포조장 금지는 있었으나 매매 권유 금지가 없었다.
+# 상폐·거래정지 기사만 나오는 동안 드러나지 않았을 뿐, 배당락·유상증자처럼
+# 매매 타이밍이 얽힌 기사에서 재발한다.
+# '보유 수량 확인', '주문 가능 상태 확인' 같은 표준 행동유도는 권유가 아니므로
+# 건드리지 않는다 — 문구의 핵심이라 지우면 안내 목적이 사라진다.
+_SOLICIT_RE = re.compile(
+    r'매수(?:하|해)?\s*(?:하)?(?:셔야|해야|하시|하는\s*것이|권장|추천|바랍니다)|'
+    r'매도(?:하|해)?\s*(?:하)?(?:셔야|해야|하시는\s*것이|권장|추천)|'
+    r'담으시|사(?:두|놓)시|지금\s*(?:사|팔)|저가\s*매수|추가\s*매수|'
+    r'배당(?:을|를)?\s*받으(?:려면|시려면)|장\s*마감\s*전\s*매수|매수하셔야'
+)
+
+def strip_solicitation(notice: str) -> tuple:
+    """매매 권유 문장을 통째로 제거. (정제문, 제거 문장 수)"""
+    if not notice:
+        return (notice or "", 0)
+    _parts = [p for p in re.split(r'(?<=[.!?])\s+', notice) if p.strip()]
+    _kept = [p for p in _parts if not _SOLICIT_RE.search(p)]
+    _removed = len(_parts) - len(_kept)
+    if not _removed:
+        return (notice, 0)
+    return (" ".join(_kept).strip(), _removed)
+
+
 def sanitize_customer_notice(notice: str, exp_rows: list, src_text: str = "") -> tuple:
     """고객 안내 문구에서 플레이스홀더·연도 환각·창작 수치를 제거.
 
@@ -3418,6 +3472,15 @@ DIRECT_INCIDENT_KW = {
 
 # 당사 직접 언급 + 부정적 이슈 복합 조건 — 제목에 둘 다 있을 때만 force_urgent
 DIRECT_COMPANY_KW = "한국투자증권"
+
+# 타 증권사 목록 — regrade의 경쟁사 강등과 고객문구 차단이 함께 쓴다.
+# (2026-08-27) 기존엔 regrade 함수 안의 지역변수였다. 고객문구 차단에서도
+# 같은 판단이 필요해 모듈 레벨로 올렸다. 목록을 복제하면 한쪽만 갱신돼
+# 판정이 갈리므로 정의는 한 곳만 둔다.
+_BROKER_ENTITIES = ("키움증권", "미래에셋증권", "삼성증권", "NH투자증권",
+                    "신한투자증권", "KB증권", "하나증권", "대신증권", "메리츠증권",
+                    "토스증권", "카카오페이증권", "유안타증권", "교보증권",
+                    "현대차증권", "이베스트투자증권", "다올투자증권")
 DIRECT_NEGATIVE_KW = {
     "장애", "오류", "사고", "중단", "차단", "먹통",
     "제재", "과태료", "과징금", "고발", "수사", "검사",
@@ -3573,10 +3636,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
         _pre = _e[:2]
         return any(_b.startswith(_pre) for _b in _kw_hits(_t, _BROKER_ENTITIES))
 
-    _BROKER_ENTITIES = ("키움증권", "미래에셋증권", "삼성증권", "NH투자증권",
-                        "신한투자증권", "KB증권", "하나증권", "대신증권", "메리츠증권",
-                        "토스증권", "카카오페이증권", "유안타증권", "교보증권",
-                        "현대차증권", "이베스트투자증권", "다올투자증권")
+    # _BROKER_ENTITIES는 모듈 레벨 정의를 쓴다 (2026-08-27 승격)
     for a in articles:
         # ★entity 표기 변형 방어(2026-07-29 실측):
         #   정확 일치만 보면 앞뒤 공백·빈값·그룹 계열사명에서 판정이 뚫린다.
@@ -6496,6 +6556,11 @@ JSON만 출력:
                 if _body_failed:
                     action_text += " *(본문 크롤링 실패, 제목 기반 생성)"
                 article["action"] = action_text
+            _nf_reason = notice_forbidden_reason(article)
+            if _nf_reason and result.get("customer_notice"):
+                # 탐지·대응방안은 유지하고 고객 문구만 버린다
+                print(f"  [고객문구 차단:{_nf_reason}] {article.get('title','')[:35]}")
+                result["customer_notice"] = None
             if result.get("customer_notice") and (grade == "긴급" or article.get("_notice_exempt")):
                 notice_text = result["customer_notice"]
                 # ── 고객 안내 문구 검증 (플레이스홀더·연도 환각·창작 수치) ──
@@ -6503,6 +6568,9 @@ JSON만 출력:
                     notice_text, exp_rows, f"{article.get('title','')} {body_text}")
                 if _nfix:
                     print(f"  [고객문구 정제] {article.get('title','')[:30]} — {_nfix}")
+                notice_text, _nsol = strip_solicitation(notice_text)
+                if _nsol:
+                    print(f"  [매매권유 제거 {_nsol}문장] {article.get('title','')[:30]}")
                 if _body_failed:
                     notice_text += "\n*(본문 크롤링 실패, 제목 기반 생성)"
                 article["customer_notice"] = notice_text
