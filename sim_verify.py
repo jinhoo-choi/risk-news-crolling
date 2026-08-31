@@ -272,6 +272,66 @@ _sell, _sn = M.strip_solicitation("손실이 우려되오니 즉시 매도하셔
 check("매도 권유도 제거", _sn == 1 and "매도" not in _sell, _sell)
 
 
+print("\n[L] 사건유형 근거 — 기사 전문이 아닌 제목+리드로 판정")
+# body(기사 전문) 어딘가에 단어가 스치면 통과하던 문제. 실측 3건이 이 경로였다.
+_noise = "기사 전문 배경 설명에 거래정지 상장폐지 제재 같은 단어가 등장한다"
+for name, title, ev in [
+    ("★캐리 유증 기사(8/28)", "캐리 소액주주, 178% 유증 막았다..법원 신주발행 금지", "거래정지"),
+    ("★샤페론 CB 기사(8/27)", "주가 부진에 'CB 청구서'까지…위기의 제약·바이오", "상장폐지"),
+    ("★HDC신라면세점(8/30)", "[단독] 밀수 막아야 할 HDC신라면세점 대표가 '역밀수' 왜? (1부)", "금감원제재"),
+]:
+    a = {"title": title, "event_type": ev, "entity": "X", "desc": "", "body": _noise}
+    check(f"{name} 배지 생략", M._event_badge_label(a) == "", repr(M._event_badge_label(a)))
+
+for name, title, desc, ev, want in [
+    ("JTBC 회생(8/28)", "[속보] 법원, JTBC 회생절차 개시 결정",
+     "서울회생법원이 JTBC에 대한 기업회생절차 개시를 결정했다.", "기업회생", "기업회생"),
+    ("동양생명 상폐(8/30)", "동양생명 17년 만에 상폐…'55조 생보사' 통합작업 본격화",
+     "동양생명은 이달 31일 유가증권시장에서 상장폐지된다.", "상장폐지", "상장폐지"),
+    ("셀루메드 미상환(8/21)", "셀루메드, 140억 대여금 회수 '빨간불'…담보 미설정·만기 미상환",
+     "", "유동성위기", "유동성 위기"),
+]:
+    a = {"title": title, "event_type": ev, "entity": "X", "desc": desc, "body": _noise}
+    check(f"{name} 배지 유지", M._event_badge_label(a) == want, repr(M._event_badge_label(a)))
+
+
+print("\n[M] 영문 약칭 ↔ 한글 음차 — 종목명 중복 보강 방지")
+check("음차 변환", M._romanize_to_ko("HDC신라면세점") == "에이치디씨신라면세점",
+      M._romanize_to_ko("HDC신라면세점"))
+for name, txt, ent, expect in [
+    ("★HDC신라면세점(8/30 실사례)", "에이치디씨(주) 채권 보유 고객 평가손 즉시 산출",
+     "HDC신라면세점", False),
+    ("JTBC 한글표기", "제이티비씨 채권 보유 고객 평가손 산출", "JTBC", False),
+    ("종목명 누락 — 보강 필요", "보유 고객 평가손 즉시 산출", "듀오백", True),
+    ("무관 한글 — 보강 필요", "에이치디씨 채권 보유 고객 산출", "삼성전자", True),
+]:
+    _o, _f = M.prepend_entity_to_action(txt, ent)
+    check(f"{name} 보강={expect}", _f == expect, _o[:46])
+
+
+print("\n[N] 비전이 사건에서 계열사 entities 제외")
+_G = M.GROUP_ENTITIES_MAP
+def _kin_filter(subj, ents, ev):
+    if M.allow_group_expansion({"entity": subj, "entities": ents, "event_type": ev}):
+        return list(ents)
+    _kin = set(_G.get(subj, []))
+    for _k, _v in _G.items():
+        if subj in _v:
+            _kin.add(_k); _kin.update(_v)
+    _kin.discard(subj)
+    return [e for e in ents if e == subj or e not in _kin]
+
+check("★동양생명 상폐 → 우리금융 제외(8/30 실사례)",
+      _kin_filter("동양생명", ["동양생명", "우리금융지주"], "상장폐지") == ["동양생명"])
+check("그룹 관계 없는 복수 종목은 유지",
+      _kin_filter("비투엔", ["비투엔", "에넥스", "한빛소프트"], "상장폐지")
+      == ["비투엔", "에넥스", "한빛소프트"])
+check("전이성 사건(회생)은 확장 경로 유지",
+      M.allow_group_expansion({"entity": "JTBC", "entities": ["JTBC"],
+                               "event_type": "기업회생"}) is True)
+check("우리금융 계열 매핑 등록", "동양생명" in _G.get("우리금융지주", []))
+
+
 print("\n" + "═" * 60)
 print(f"  시뮬레이션 검수: {len(PASS)}건 통과 / {len(FAIL)}건 실패")
 if FAIL:

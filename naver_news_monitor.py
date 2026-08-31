@@ -15,6 +15,15 @@ ENTITY_ALIAS_MAP = {
 # 그룹 계열사 강제 매핑 — AI가 entity 하나만 추출해도 코드에서 계열사 익스포저 추가 조회
 # key: AI가 추출하는 entity명 (별칭 포함), value: 함께 조회할 종목명 리스트
 GROUP_ENTITIES_MAP = {
+    # 우리금융그룹 (2026-08-31 등록)
+    #   8/30 21시 동양생명 상폐 기사에서 AI가 entities에 우리금융지주를 함께
+    #   뽑았는데, 두 종목의 그룹 관계가 어느 매핑에도 없어 '비전이 사건 계열사
+    #   제외'가 작동하지 못했다. 우리금융의 동양생명·ABL생명 인수는 확정 사실이라
+    #   등록해 둔다. 전이성 사건에서는 확장에도 함께 쓰인다.
+    "우리금융지주": ["동양생명", "ABL생명", "우리금융캐피탈", "우리투자증권"],
+    "동양생명":    ["우리금융지주", "ABL생명"],
+    "ABL생명":     ["우리금융지주", "동양생명"],
+
     # 중앙그룹
     "JTBC":      ["제이티비씨", "중앙일보", "콘텐트리중앙", "에스엘엘중앙", "중앙홀딩스", "메가박스중앙"],
     "제이티비씨": ["중앙일보", "콘텐트리중앙", "에스엘엘중앙", "중앙홀딩스", "메가박스중앙"],
@@ -1463,6 +1472,24 @@ _EXP_PAIR_RE = re.compile(
 )
 _EXP_LONE_PAREN_RE = re.compile(r'\s*[\(（][\s·,]*[\)）]')
 
+# 영문 알파벳 → 한글 음차. 기업명 약칭이 한글로 표기되는 경우를 맞추기 위한 것으로
+# 정확한 전사(轉寫)가 목적이 아니다 (2026-08-31).
+_ALPHA_KO = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                     ["에이", "비", "씨", "디", "이", "에프", "지", "에이치", "아이",
+                      "제이", "케이", "엘", "엠", "엔", "오", "피", "큐", "알",
+                      "에스", "티", "유", "브이", "더블유", "엑스", "와이", "지"]))
+
+def _romanize_to_ko(name: str) -> str:
+    """이름 앞머리의 영문 약칭을 한글 음차로 바꾼다. HDC신라면세점 → 에이치디씨신라면세점"""
+    if not name:
+        return ""
+    m = re.match(r'^([A-Za-z]{1,5})(.*)$', name.strip())
+    if not m:
+        return ""
+    _abbr, _rest = m.group(1).upper(), m.group(2)
+    return "".join(_ALPHA_KO.get(c, c) for c in _abbr) + _rest
+
+
 def prepend_entity_to_action(action: str, entity: str) -> tuple:
     """대응방안 첫머리에 대상 종목명이 없으면 붙인다. (정제문, 보강여부)
 
@@ -1482,6 +1509,19 @@ def prepend_entity_to_action(action: str, entity: str) -> tuple:
     for _tok in re.findall(r'[가-힣A-Za-z0-9]{2,}', _head):
         if len(_tok) >= 2 and (entity.startswith(_tok) or _tok.startswith(entity)):
             return (action, False)
+    # 영문 약칭 ↔ 한글 음차 (2026-08-31)
+    #   실사례(8/30 21시): entity 'HDC신라면세점'인데 대응방안이 '에이치디씨(주)
+    #   채권 보유 고객…'으로 시작해, 같은 그룹인데 표기가 달라 중복 판정에
+    #   걸리지 않았다. 결과가 "HDC신라면세점 에이치디씨(주) 채권 보유 고객"이라
+    #   읽기 어색했다. 개별 매핑을 쌓는 대신 글자 단위 음차로 일반화한다
+    #   (HDC→에이치디씨, SK→에스케이, JTBC→제이티비씨, CJ→씨제이 …).
+    _ko = _romanize_to_ko(entity)
+    if _ko and _ko != entity:
+        if _ko in _head:
+            return (action, False)
+        for _tok in re.findall(r'[가-힣]{2,}', _head):
+            if _ko.startswith(_tok) or _tok.startswith(_ko):
+                return (action, False)
     return (f"{entity} {action}", True)
 
 
@@ -4680,16 +4720,22 @@ _EVENT_EVIDENCE = {
 }
 
 def _event_type_supported(a: dict) -> bool:
-    """AI가 붙인 event_type이 기사 본문 근거로 뒷받침되는가."""
+    """AI가 붙인 event_type이 기사 근거로 뒷받침되는가."""
     ev = (a.get("event_type") or "").strip()
     pat = _EVENT_EVIDENCE.get(ev)
     if not pat:
         return True     # 매핑에 없는 유형은 판정하지 않는다 (기존 동작 유지)
-    # reason은 AI 생성물이라 근거로 쓰면 순환논증이 된다 — 기사 원문만 본다.
-    src = " ".join(str(a.get(k) or "") for k in ("title", "desc", "body"))
-    # 판정할 원문이 사실상 없으면 손대지 않는다. 본문 크롤이 실패하면 desc·body가
-    # 비는 회차가 실제로 있어(8/16 대호에이엘), 원문 부재를 '무근거'로 처리하면
-    # 정상 사건의 배지까지 사라진다. 미탐(배지 과잉)보다 과차단이 더 나쁘다.
+    # ★탐색 범위: 제목 + 리드(desc)까지. body(기사 전문)는 제외한다.
+    # (2026-08-31 수정) 기존엔 body 전문까지 뒤져, 기사 뒤쪽 배경 설명에 단어가
+    # 한 번 스치기만 해도 근거로 인정됐다. 실측 3건이 이 경로로 통과했다:
+    #   8/27 샤페론  "CB 청구서…위기의 제약·바이오"      → 상장폐지 배지
+    #   8/28 캐리    "소액주주, 178% 유증 막았다"        → 거래정지 배지
+    #   8/30 HDC신라면세점 "대표가 '역밀수' 왜?"          → 금감원 제재 배지
+    # 셋 다 제목만 놓고 보면 정상적으로 걸러진다. 기사 전문 어딘가의 단어가
+    # 통과시킨 것이다. 기사의 사건은 제목과 리드에 드러나므로 거기까지만 본다.
+    # reason은 AI 생성물이라 근거로 쓰면 순환논증이 되어 계속 제외한다.
+    src = " ".join(str(a.get(k) or "") for k in ("title", "desc"))
+    # 판정할 원문이 사실상 없으면 손대지 않는다(제목까지 비는 비정상 상황).
     if len(src.strip()) < 10:
         return True
     return bool(re.search(pat, src))
@@ -4918,6 +4964,30 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                             _group_extra.append(_extra)
                 if _group_extra:
                     a_entities = list(a_entities) + _group_extra
+            else:
+                # 비전이 사건(상장폐지·거래정지 등)에서는 AI가 entities에 넣은
+                # 계열사도 걷어낸다 (2026-08-31).
+                #   실사례(8/30 21시): "동양생명 17년 만에 상폐…통합작업 본격화"
+                #   기사에서 AI가 entities에 우리금융지주를 함께 뽑아, 카드에
+                #   우리금융 주식 1,434억(41,104명)·채권 521억이 실렸다. 동양생명
+                #   상폐는 우리금융의 완전자회사 편입 절차이지 우리금융 리스크가
+                #   아닌데, 정작 본래 리스크(14억)가 수치에 묻혔다.
+                # GROUP_ENTITIES_MAP으로 '주 종목의 계열사'만 걷어내므로,
+                # 여러 종목이 동시에 상폐되는 기사(코스닥 N개사 심사 등)처럼
+                # 서로 그룹 관계가 아닌 복수 entity는 그대로 남는다.
+                _subj = (a.get("entity") or "").strip()
+                if _subj and len(a_entities) > 1:
+                    _kin = set(GROUP_ENTITIES_MAP.get(_subj, []))
+                    for _k, _v in GROUP_ENTITIES_MAP.items():
+                        if _subj in _v:
+                            _kin.add(_k)
+                            _kin.update(_v)
+                    _kin.discard(_subj)
+                    _kept = [e for e in a_entities if e == _subj or e not in _kin]
+                    if len(_kept) != len(a_entities):
+                        print(f"  [비전이 사건 계열사 제외] {_subj}: "
+                              f"{[e for e in a_entities if e not in _kept]}")
+                        a_entities = _kept
             if grade == "참고":
                 r_risk = display_risk_score(a)
                 if r_risk:
