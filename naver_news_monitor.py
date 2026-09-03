@@ -5780,11 +5780,36 @@ def main():
         "검찰 기소", "구속 영장", "구속 기소",
     ]
 
+    # 과거 사건을 되짚는 배경 서술 표현 (2026-09-03 신설)
+    # desc는 기사 리드라 "지난 5월 상장폐지를 결정했다", "가처분을 신청하면서
+    # 중단된 상태다"처럼 이미 지나간 국면을 설명하는 문장이 자주 섞인다.
+    _PAST_CONTEXT_KW = ("지난", "앞서", "바 있", "상태다", "상태로", "중단된",
+                        "계류", "이후", "당시", "그동안", "해왔", "된 바",
+                        "결정했다", "신청하면서", "신청한", "받은 바")
+
     def _stage_hits(title: str, desc: str) -> list:
-        """매칭된 stage 키워드 추출 — 제목 우선, desc는 제목 무매칭 시만 (우연 매칭 오기록 방지)"""
+        """매칭된 stage 키워드 추출 — 제목 우선, desc는 제목 무매칭 시만 (우연 매칭 오기록 방지)
+
+        (2026-09-03) desc 폴백에 과거 배경 서술 가드를 추가했다.
+        실사례 — 금양이 9/2 21시부터 3회차 연속 발송된 원인:
+          제목 "금융위 '허위매출·자본 과대계상' 금양·대표 고발" → stage 키워드 없음
+          desc  "한국거래소는 지난 5월 20일 …상장폐지를 결정했다. …효력정지
+                 가처분을 신청하면서 잠정 중단된 상태다"
+                 → '가처분'·'효력정지'가 hits로 잡힘
+        금양은 known_cases 등록 종목이라 D+3 강등 대상인데, 이 hits 때문에
+        is_next_stage가 참이 되어 매 회차 강등을 면제받았다. seen_stages는 3일
+        보존이라 5월 기록이 만료돼 있어 늘 '새 조합'으로 통과했다.
+        금양 기사는 대부분의 매체가 배경으로 5월 건을 붙이므로 무한 반복된다.
+        → desc에서만 잡힌 hits는 과거 배경 표현이 함께 있으면 버린다.
+          제목에서 잡힌 hits는 그대로 둔다 — 진짜 신규 사건은 제목에 드러나고,
+          여기까지 막으면 미탐이 된다(9/2 21시 '검찰고발' 건은 정상 발송이었다).
+        """
         hits = [kw for kw in NEXT_STAGE_KEYWORDS if kw in (title or "")]
-        if not hits:
-            hits = [kw for kw in NEXT_STAGE_KEYWORDS if kw in (desc or "")]
+        if hits:
+            return hits
+        hits = [kw for kw in NEXT_STAGE_KEYWORDS if kw in (desc or "")]
+        if hits and any(pk in (desc or "") for pk in _PAST_CONTEXT_KW):
+            return []
         return hits
 
     def is_next_stage(title: str, desc: str, entity: str = "") -> bool:

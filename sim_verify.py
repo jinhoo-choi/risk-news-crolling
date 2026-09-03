@@ -332,6 +332,29 @@ check("전이성 사건(회생)은 확장 경로 유지",
 check("우리금융 계열 매핑 등록", "동양생명" in _G.get("우리금융지주", []))
 
 
+print("\n[O] stage 판정 — 과거 배경 서술은 신규 단계로 보지 않음")
+# 금양이 3회차 연속 발송된 원인. desc(기사 리드)에 실린 과거 국면 설명을
+# '신규 법적 단계'로 오인해 known_cases D+3 강등을 매번 면제받았다.
+_src = open("naver_news_monitor.py", encoding="utf-8").read()
+_kwblk = _src[_src.index("    NEXT_STAGE_KEYWORDS = ["):_src.index("    def is_next_stage(")]
+_ns = {}
+exec("\n".join(l[4:] for l in _kwblk.split("\n")), _ns)
+_hits = _ns["_stage_hits"]
+
+_geum_desc = ("한국거래소는 지난 5월 20일 유가증권시장 상장공시위원회를 열어 금양의 "
+              "상장폐지를 결정했다. 상장폐지 절차는 금양이 법원에 효력정지 가처분을 "
+              "신청하면서 잠정 중단된 상태다.")
+check("★9/3 14시 금양 — 배경 서술 hits 무효화",
+      _hits("금융위 '허위매출·자본 과대계상' 금양·대표 고발", _geum_desc) == [],
+      str(_hits("금융위 '허위매출·자본 과대계상' 금양·대표 고발", _geum_desc)))
+check("★9/2 21시 금양 — 제목의 진짜 신규 단계는 통과",
+      "검찰고발" in _hits("금양, 허위매출 등 회계위반으로 대표이사 검찰고발", ""))
+check("제목에 신규 단계 있으면 desc 과거표현과 무관하게 통과",
+      bool(_hits("OO전자 회생 신청", "지난해 워크아웃을 신청한 바 있다")))
+check("desc 신규 사건(과거표현 없음)은 통과",
+      "파산선고" in _hits("OO사 관련 속보", "법원이 오늘 파산선고를 내렸다"))
+
+
 print("\n" + "═" * 60)
 print(f"  시뮬레이션 검수: {len(PASS)}건 통과 / {len(FAIL)}건 실패")
 if FAIL:
