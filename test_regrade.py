@@ -177,12 +177,36 @@ def run_verify_lock():
     return locked["grade"], unlocked["grade"]
 
 
+# 경쟁사 강등 잠금 검증용 고정 픽스처 (2026-09-03)
+# 기존엔 운영 CSV(EXPO)를 그대로 써서 KB증권의 실제 익스포저 존재 여부에
+# 결과가 좌우됐다. 0903 갱신에서 KB증권 행이 사라지자(0902 채권 100억/280명 →
+# 0903 0행) '익스포저없음 강등'이 먼저 걸려 잠금 판정이 뒤집혔고, 코드가
+# 멀쩡한데 테스트만 깨졌다. test_new_gates.py에서 같은 문제를 이미 겪었다
+# (2026-08-19 아이에스동서 건).
+# 검증 대상은 '경쟁사 강등 시 _grade_locked가 서는가'이지 특정 증권사의
+# 잔고가 아니므로, 운영 데이터에서 떼어낸다.
+_LOCK_EXPO = {
+    "KB증권": [
+        {"기준일": "2026-09-03", "종목명": "KB증권", "종목코드": "999001",
+         "종목유형": "채권", "뱅잔고": "100", "뱅고객수": "280",
+         "영잔고": "0", "영고객수": "0", "잔고(억)": "100", "고객수": "280",
+         "리스크고객수": "0", "리스크잔고(억)": "0", "시장": "국내"},
+    ],
+    "한국투자증권": [
+        {"기준일": "2026-09-03", "종목명": "한국투자증권", "종목코드": "999002",
+         "종목유형": "채권", "뱅잔고": "50", "뱅고객수": "120",
+         "영잔고": "0", "영고객수": "0", "잔고(억)": "50", "고객수": "120",
+         "리스크고객수": "0", "리스크잔고(억)": "0", "시장": "국내"},
+    ],
+}
+
+
 def run_lock(title, entity, grade):
     art = {"title": title, "entity": entity, "entities": [entity],
            "grade": grade, "_ai_confidence": 0.85, "_risk_score": 5.0,
            "url": "http://x", "keyword": "", "desc": ""}
     with contextlib.redirect_stdout(io.StringIO()):
-        out = nm.regrade_by_score([art], exposure_data=EXPO)
+        out = nm.regrade_by_score([art], exposure_data=_LOCK_EXPO)
     return bool(out[0].get("_grade_locked")) if out else False
 
 
@@ -195,6 +219,14 @@ EXPO_CASES = [
 
 def main():
     fails = []
+    # 운영 CSV(EXPO)에 의존하는 케이스의 전제를 먼저 확인한다 (2026-09-03).
+    # exposure_data.csv가 갱신되면서 종목이 빠지면 코드가 멀쩡해도 테스트가
+    # 깨진다. 0903 갱신에서 KB증권 행이 사라져 실제로 겪었다.
+    # 조용히 실패하면 데이터 변동을 코드 결함으로 오인해 엉뚱한 곳을 판다.
+    for _nm_ in ("삼성전자",):
+        if not nm.find_exposure(_nm_, EXPO):
+            print(f"    ⚠ [픽스처 전제] {_nm_}: 익스포저에서 사라짐 — "
+                  f"CSV 갱신 영향. 아래 실패는 코드 결함이 아닐 수 있음")
     print("=" * 76)
     print("[등급 조정(regrade_by_score) 검증]")
     print("=" * 76)
