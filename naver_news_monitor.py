@@ -2929,6 +2929,27 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
         if _b1 not in _NEWSY and _b2 not in _NEWSY:
             return True, f"이중 브래킷 연재물: [{_b1}][{_b2}]"
 
+    # ── 연재 번호 브래킷 차단 ───────────────────────────────────────────
+    # (2026-09-07 신설) 실사례 9/7 14시 세종메디칼 긴급 8.5 오탐:
+    #   "[심층취재④] '수천억'은 사라지고 상장폐지만 남았다…누가 세종메디칼"
+    # 4단의 '브래킷 코너 추정'은 이 제목을 정상적으로 코너물로 판정하지만,
+    # 제목의 '상장폐지'가 3단 bypass를 먼저 발동시켜 도달조차 못 했다.
+    # (이중 브래킷 규칙과 완전히 동일한 함정 — 그래서 같은 1단에 둔다.)
+    # 실제 사건은 3개월 전(6/11) 상폐 결정이었고, 현재형 고객케어 문구까지
+    # 생성돼 나갔다. 코너명 끝 번호(①~⑳·숫자·上中下)는 연재 확정 신호이므로
+    # CRITICAL_KW가 있어도 차단한다. 진짜 신규 사건은 번호 없는 보도로 따로
+    # 나오므로 미탐 위험은 낮다.
+    # 보도성 브래킷의 회차 표기("[속보2]")는 번호를 뗀 base가 보도성이면 면제.
+    _ser = re.match(r'^\[([^\]]{1,20})\]', title)
+    if _ser:
+        _sc = _ser.group(1).strip()
+        _SERIAL_RE = r'(?:[①-⑳]|[0-9]{1,2}|[上中下])\s*$'
+        _sc_base = re.sub(_SERIAL_RE, '', _sc).strip()
+        if (re.search(_SERIAL_RE, _sc)
+                and _sc_base not in {"단독", "속보", "공시", "특징주", "긴급속보", "공식"}
+                and re.search(r'[가-힣]{2,}', _sc_base)):   # 연도("[2026]") 오인 방지
+            return True, f"연재 시리즈 브래킷: [{_sc}]"
+
     # A vs B 대조 비교 기사 — 사실 보도가 아닌 해설·기획물.
     # (7/26 "파산 문턱 홈플러스 vs 흑자 부활 남양유업…사모펀드가 가른 극과 극")
     # ★CRITICAL_KW(파산 등) bypass보다 먼저 판정해야 한다. 뒤에 두면 '파산'
@@ -3699,7 +3720,18 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
             or (_kw_hit(_title, _BROKER_ENTITIES)
                 and (not _ent or _is_same_group(_ent, _title)))
         )
-        if _is_broker_entity and _kw_hit(_title, _OTHER_BROKERS):
+        # ★업계 총괄 기사 — 제목에 개별 증권사명이 없는데 entity만 특정 증권사
+        #   (2026-09-07 신설) 실사례 9/7 21시 주의 6.3 오탐:
+        #     "[단독]10대 증권사 지난해부터 MTS앱 사고 57건" → entity=삼성증권
+        #   당사 포함 업계 전체를 다룬 기사인데 AI가 근거 없이 한 곳에 귀속시켰다.
+        #   제목에 증권사명이 하나도 없으므로 기존 _OTHER_BROKERS 매칭이 실패해
+        #   경쟁사 강등 경로를 그대로 비껴갔다. 총칭 표현만 있으면 동일 처리한다.
+        _is_industry_wide = (
+            _ent in _BROKER_ENTITIES
+            and not _kw_hit(_title, _BROKER_ENTITIES)
+            and re.search(r'(\d+대\s*증권사|주요\s*증권사|증권사들|증권업계|증권가)', _title)
+        )
+        if _is_broker_entity and (_kw_hit(_title, _OTHER_BROKERS) or _is_industry_wide):
             # 익스포저 조회는 '제목에서 찾은 경쟁사'를 우선 사용 — entity가
             # 비어 있으면 조회 자체가 안 돼 잘못 배제될 수 있다.
             if _ent not in _BROKER_ENTITIES:
