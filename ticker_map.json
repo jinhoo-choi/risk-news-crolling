@@ -1211,6 +1211,7 @@
   "MERC": "Mercer International Inc.",
   "MPTI": "M-tron Industries, Inc.",
   "NRXP": "NRx Pharmaceuticals, Inc.",
+  "NXAT": "NXAT",
   "PLAG": "Planet Green Holdings Corp.",
   "PTON": "Peloton Interactive, Inc.",
   "QTEC": "QTEC",
@@ -2129,6 +2130,5 @@
   "FUTU": "Futu Holdings Limited",
   "HYPR": "Hyperfine, Inc.",
   "IETC": "iShares U.S. Tech Independence Focused ETF",
-  "RDIV": "Invesco S&P Ultra Dividend Revenue ETF",
-  "NXAT": "NXAT"
+  "RDIV": "Invesco S&P Ultra Dividend Revenue ETF"
 }
