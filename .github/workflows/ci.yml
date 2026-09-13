@@ -1,0 +1,21 @@
+name: 회귀 테스트 (PR)
+
+# PR에서 run_tests.sh 전체 회귀를 자동 검증한다.
+# 시크릿을 일절 쓰지 않으므로 외부 API 호출·비용이 발생하지 않는다.
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: bash run_tests.sh
+      - run: python3 check_changes.py

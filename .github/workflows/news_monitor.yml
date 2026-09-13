@@ -105,7 +105,14 @@ jobs:
           git stash pop || true
           git add seen_news.json ticker_map.json run_stats.jsonl || true
           git diff --cached --quiet || git commit -m "update seen_news [skip ci]"
-          git push || exit 1
+          # 다른 워크플로(dart_mapper 등)와 동시 푸시 시 non-fast-forward로 죽는다.
+          # 파이프라인은 성공했는데 seen 저장만 실패하면 다음 회차가 중복 발송한다.
+          for i in 1 2 3; do
+            git pull --rebase -q origin main || true
+            git push && exit 0
+            sleep $((i * 5))
+          done
+          exit 1
 
       - name: 필터링 로그 artifact 저장
         if: always()

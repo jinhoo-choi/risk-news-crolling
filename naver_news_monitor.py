@@ -3181,6 +3181,7 @@ def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
                 ),
             )
             print(f"  [Gemini] 배치 {offset//50+1} 응답 {time.time()-_t0:.1f}초")
+            _track_llm(GEMINI_MODEL, "filter_gemini", getattr(_resp, "usage_metadata", None))
 
             grades = json.loads(_resp.text)
             if not isinstance(grades, list):
@@ -3314,6 +3315,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 continue
             res.raise_for_status()
             payload = res.json()
+            _track_llm(CLAUDE_MODEL, "filter_fallback", payload.get("usage"))
             stop_reason = payload.get("stop_reason", "")
             if stop_reason == "max_tokens":
                 raise ValueError(f"응답 max_tokens 초과로 잘림 (배치 {offset//50+1}) — max_tokens 증가 필요")
@@ -4114,7 +4116,9 @@ def _verify_high_risk_by_claude(articles: list):
             timeout=20,
         )
         _res.raise_for_status()
-        _raw = (_res.json().get("content", [{}])[0].get("text") or "").strip()
+        _vpayload = _res.json()
+        _track_llm(CLAUDE_MODEL, "verify_grade", _vpayload.get("usage"))
+        _raw = (_vpayload.get("content", [{}])[0].get("text") or "").strip()
         _raw = _raw.replace("```json", "").replace("```", "").strip()
         _s = _raw.find("["); _e = _raw.rfind("]") + 1
         if _s != -1 and _e > _s:
@@ -4807,6 +4811,36 @@ _RUN_STATS = {"gemini_ok": 0, "gemini_fail": 0, "gemini_err": "",
               "gemini_model_switched": False}
 
 
+def _track_llm(model: str, purpose: str, usage) -> None:
+    """LLM 호출 수·토큰을 (모델|용도) 단위로 누적.
+
+    추정이 아니라 실측으로 비용 구조를 보기 위한 계측. 단가는 수시로 바뀌고
+    모델도 교체되므로 금액은 하드코딩하지 않고 토큰만 남긴다(사후 계산).
+    계측 실패가 본 파이프라인을 죽이면 안 되므로 전 구간 예외 무시.
+    """
+    try:
+        if usage is None:
+            return
+        if isinstance(usage, dict):   # Anthropic REST
+            _in  = usage.get("input_tokens", 0) or 0
+            _out = usage.get("output_tokens", 0) or 0
+            _cr  = usage.get("cache_read_input_tokens", 0) or 0
+            _cw  = usage.get("cache_creation_input_tokens", 0) or 0
+        else:                          # google-genai usage_metadata
+            _in  = getattr(usage, "prompt_token_count", 0) or 0
+            _out = getattr(usage, "candidates_token_count", 0) or 0
+            _cr  = getattr(usage, "cached_content_token_count", 0) or 0
+            _cw  = 0
+        d = _RUN_STATS.setdefault("llm", {}).setdefault(
+            f"{model}|{purpose}",
+            {"calls": 0, "in": 0, "out": 0, "cache_read": 0, "cache_write": 0})
+        d["calls"] += 1
+        d["in"] += _in; d["out"] += _out
+        d["cache_read"] += _cr; d["cache_write"] += _cw
+    except Exception:
+        pass
+
+
 def save_run_stats(collected: int, selected: int, verify_model: str,
                    self_only: bool, path: str = "run_stats.jsonl"):
     """회차별 운영 지표를 1줄 JSON으로 누적 기록."""
@@ -4835,6 +4869,11 @@ def save_run_stats(collected: int, selected: int, verify_model: str,
         "notice_total": getattr(truncate_at_sentence, "total", 0),
         "notice_trunc": getattr(truncate_at_sentence, "truncated", 0),
         "notice_action_lost": getattr(truncate_at_sentence, "action_lost", 0),
+        # LLM 계측 (2026-09-13) — 추정 대신 실측. 회차별 호출 수/토큰을
+        # (모델|용도) 단위로 남겨, 어느 단계가 비용을 쓰는지 사후 분해한다.
+        # 금액은 단가 변동 때문에 기록하지 않는다(토큰 × 당시 단가로 계산).
+        "llm_calls": sum(v["calls"] for v in _RUN_STATS.get("llm", {}).values()),
+        "llm": _RUN_STATS.get("llm", {}),
     }
     try:
         # 최근 200줄만 유지 — 무한 증식 방지
@@ -6348,7 +6387,9 @@ JSON만 출력:
             )
             if res.status_code != 200:
                 return True  # API 오류 → 안전하게 유지
-            raw = (res.json().get("content", [{}])[0].get("text") or "").strip()
+            _bpayload = res.json()
+            _track_llm(_model, "verify_body", _bpayload.get("usage"))
+            raw = (_bpayload.get("content", [{}])[0].get("text") or "").strip()
             data = json.loads(raw)
             is_risk = data.get("risk", True)
             # 판정 근거 기록 — 오탐 발생 시 어느 단계에서 틀렸는지 추적용.
@@ -6616,6 +6657,7 @@ JSON만 출력:
                 return
             res.raise_for_status()
             payload = res.json()
+            _track_llm(CLAUDE_ACTION_MODEL, "action", payload.get("usage"))
             content = payload.get("content", [])
             raw = (content[0].get("text") or "").strip() if content else ""
             if not raw:
@@ -6780,6 +6822,7 @@ JSON만 출력:
             timeout=15,
         )
         _sum_payload = sum_res.json()
+        _track_llm(CLAUDE_MODEL, "summary", _sum_payload.get("usage"))
         _sum_content = _sum_payload.get("content", [])
         _sum_text = next((b.get("text","") for b in _sum_content if b.get("type")=="text"), "")
         ai_summary = _sum_text.strip()
