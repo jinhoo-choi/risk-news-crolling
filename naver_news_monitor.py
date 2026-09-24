@@ -250,6 +250,10 @@ PRICE_RESEND_THRESHOLD = -8.0
 EXPOSURE_FILE = "exposure_data.csv"
 CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL",        "claude-sonnet-4-6")  # Gemini fallback·재검증용
 CLAUDE_ACTION_MODEL = os.environ.get("CLAUDE_ACTION_MODEL", "claude-sonnet-4-6")  # action 생성 전용
+# 1차 필터 전용 (2026-09-24). Gemini 크레딧 소진으로 필터가 전량 Claude로 넘어와
+# 비용이 올랐다. 필터는 정형 분류라 하위 모델로 내릴 여지가 있어 재검증용
+# CLAUDE_MODEL과 분리한다. 미지정 시 기존과 동일하게 동작한다.
+CLAUDE_FILTER_MODEL = os.environ.get("CLAUDE_FILTER_MODEL", CLAUDE_MODEL)
 # 전체 발송이 예상될 때 2차 본문검증에 쓰는 상위 모델.
 # 임원 전사 발송은 오탐 비용이 가장 크므로 마지막 관문만 승급한다.
 # ★단계를 늘리지 않고 '모델만 교체'하는 이유: 검증 단계를 추가하면 단계 간
@@ -3295,7 +3299,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                     "content-type": "application/json",
                 },
                 json={
-                    "model": CLAUDE_MODEL,
+                    "model": CLAUDE_FILTER_MODEL,
                     "max_tokens": 8000,
                     "temperature": 0.0,
                     "system": "당신은 JSON API입니다. 설명·요약·표·마크다운 없이 JSON 배열만 출력하세요. 출력은 반드시 [ 로 시작하고 ] 로 끝나야 합니다. 코드블록(```)도 사용하지 마세요. 각 객체의 식별자 키는 반드시 \"id\"여야 하며 \"news_id\" 등 다른 이름을 사용하지 마세요. 필드명은 정확히 id, relevant, grade, reason, confidence, action, entity, entities, event_type 만 사용하세요.",
@@ -3315,7 +3319,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 continue
             res.raise_for_status()
             payload = res.json()
-            _track_llm(CLAUDE_MODEL, "filter_fallback", payload.get("usage"))
+            _track_llm(CLAUDE_FILTER_MODEL, "filter_fallback", payload.get("usage"))
             stop_reason = payload.get("stop_reason", "")
             if stop_reason == "max_tokens":
                 raise ValueError(f"응답 max_tokens 초과로 잘림 (배치 {offset//50+1}) — max_tokens 증가 필요")
@@ -4902,6 +4906,8 @@ def _model_label() -> str:
         _tier = _m.split("-")[1].capitalize()      # claude-opus-4-6 → Opus
     except (IndexError, AttributeError):
         _tier = "Sonnet"
+    if not GOOGLE_API_KEY:          # Claude 단일 운영 (2026-09-24)
+        return f"Claude {_tier}"
     return f"Claude {_tier} / Gemini {GEMINI_MODEL.replace('gemini-', '')}"
 
 
