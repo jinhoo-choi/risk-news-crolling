@@ -6645,8 +6645,12 @@ JSON만 출력:
                     "max_tokens": 800,
                     "temperature": 0.0,
                     "messages": [{"role": "user", "content": [
-                        {"type": "text", "text": _act_static,
-                         "cache_control": {"type": "ephemeral"}},
+                        # 캐싱 제거 (2026-09-24). 실측 27회차 전부 cache_read=0,
+                        # cache_write 424K 토큰만 발생해 입력 단가 1.25배를 순손실로 냈다.
+                        # 원인: 이 호출은 ThreadPoolExecutor(max_workers=3) 동시 발사인데,
+                        # 캐시 항목은 첫 응답이 시작된 뒤에야 읽을 수 있다(공식 문서).
+                        # 회차당 호출이 1~3건뿐이고 회차 간격은 7시간이라 TTL 5분도 못 넘긴다.
+                        {"type": "text", "text": _act_static},
                         {"type": "text", "text": _act_dynamic},
                     ]}],
                 },
