@@ -33,8 +33,7 @@ sys.modules["yfinance"] = _yf
 
 for _k, _v in [("EMAIL_SENDER", "me@test.com"), ("EMAIL_PASSWORD", "x"),
                ("EMAIL_RECEIVER", "grp@test.com"), ("ANTHROPIC_API_KEY", "x"),
-               ("NAVER_CLIENT_ID", "x"), ("NAVER_CLIENT_SECRET", "x"),
-               ("GOOGLE_API_KEY", "x")]:
+               ("NAVER_CLIENT_ID", "x"), ("NAVER_CLIENT_SECRET", "x")]:
     os.environ.setdefault(_k, _v)
 os.environ["FORCE_SELF_ONLY"] = "1"      # 혹시라도 실제 발송 경로를 타지 않도록
 

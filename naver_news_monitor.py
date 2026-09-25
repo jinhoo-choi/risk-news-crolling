@@ -209,7 +209,6 @@ try:
 except ValueError:
     MARKET_CRASH_RBAL_THRESHOLD = 150.0
 ANTHROPIC_KEY     = os.environ["ANTHROPIC_API_KEY"]
-GOOGLE_API_KEY    = os.environ.get("GOOGLE_API_KEY", "")       # Gemini 필터링용 (없으면 Claude fallback)
 NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
 NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
@@ -268,26 +267,6 @@ CLAUDE_VERIFY_HIGH_MODEL = os.environ.get("CLAUDE_VERIFY_HIGH_MODEL", "claude-op
 FORCE_SELF_ONLY = os.environ.get("FORCE_SELF_ONLY", "").strip() == "1"
 # 실제로 이번 회차 2차 검증에 사용된 모델 — 메일 헤더 표기에 사용
 _LAST_VERIFY_MODEL = CLAUDE_MODEL
-# ── Gemini 모델 설정 ────────────────────────────────────────────────────
-# ★2026-07-29 사고: gemini-2.5-flash로 승급했더니 fallback 100%.
-#   원인은 해당 모델이 공지된 종료일(10/16)보다 일찍 내려간 것.
-#   Google은 모델 은퇴 주기가 짧아, 단일 모델명을 하드코딩하면 조용히
-#   전량 실패하고 유료 Claude가 1차 필터를 대신하게 된다(비용 급증).
-# → 후보 목록을 두고 실패 시 다음 모델로 자동 전환한다.
-#   GEMINI_MODEL을 지정하면 그 모델을 최우선으로 시도한다.
-_GEMINI_CANDIDATES = [
-    m.strip() for m in os.environ.get(
-        "GEMINI_MODEL_CANDIDATES",
-        "gemini-3.5-flash-lite,gemini-3.6-flash,gemini-flash-latest,gemini-2.5-flash-lite"
-    ).split(",") if m.strip()
-]
-_env_model = os.environ.get("GEMINI_MODEL", "").strip()
-if _env_model and _env_model in _GEMINI_CANDIDATES:
-    _GEMINI_CANDIDATES.remove(_env_model)
-if _env_model:
-    _GEMINI_CANDIDATES.insert(0, _env_model)
-GEMINI_MODEL = _GEMINI_CANDIDATES[0]
-
 # 중복 제거 유사도 임계값 — 운영 중 조정 가능
 TITLE_SIM_THRESHOLD = 0.92  # 제목 유사도 (연합뉴스 재인용 대응)
 DESC_SIM_THRESHOLD  = 0.84  # 본문 요약 유사도 (0.84: 안정적, 0.76은 정상 기사 누락 위험)
@@ -2657,7 +2636,7 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
 
     # ═══ [2단] 사건 성격 게이트 — CRITICAL_KW bypass보다 반드시 앞 ═══
     # ── 호재성 상장폐지 원천 차단 (AND 게이트) ──
-    # 배경: M&A·공개매수 자진상폐는 filter_prompt(75행)·gemini(109행)·
+    # 배경: M&A·공개매수 자진상폐는 filter_prompt(75행)·
     # 2차검증 프롬프트에 모두 규칙이 있는데도 AI가 반복적으로 놓쳐 왔음
     # (7/19 골드그룹 참고, 7/23 동양생명 주의, 7/24 SK시그넷 긴급 6.5).
     # "상장폐지" 단어가 CRITICAL_KW라 AI 우회 경로를 타는 게 근인.
@@ -3116,161 +3095,6 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     return False, None
 
 
-def ai_filter_batch_gemini(batch: list, offset: int = 0) -> list:
-    """Gemini Flash 1차 필터링 — response_schema 강제로 JSON 파싱 오류 원천 차단
-    반환: list(성공) | None(실패 → Claude fallback 트리거)
-    인터페이스: ai_filter_batch와 완전 동일
-    """
-    global GEMINI_MODEL   # 모델 은퇴 시 후보로 전환하기 위해
-    if not batch or not GOOGLE_API_KEY:
-        return None
-
-    try:
-        from google import genai as _genai
-        from google.genai import types as _gtypes
-    except ImportError:
-        print("  [Gemini] google-genai 미설치 — Claude fallback")
-        return None
-
-    numbered = "\n".join([
-        f"{i+offset+1}. {a['title']}\n   요약: {a.get('desc','')}"
-        for i, a in enumerate(batch)
-    ])
-    _fp = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-               "filter_prompt_gemini.txt"), encoding="utf-8").read()
-    prompt = _fp.replace("{numbered}", numbered).replace("__KNOWN_CASES__", render_known_cases())
-
-    # response_schema — 모든 필드 타입 명시, entities는 ARRAY(STRING)
-    _item_schema = _gtypes.Schema(
-        type=_gtypes.Type.OBJECT,
-        properties={
-            "id":             _gtypes.Schema(type=_gtypes.Type.INTEGER),
-            "relevant":       _gtypes.Schema(type=_gtypes.Type.BOOLEAN),
-            "grade":          _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
-            "reason":         _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
-            "confidence":     _gtypes.Schema(type=_gtypes.Type.NUMBER),
-            "action":         _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
-            "entity":         _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
-            "entities":       _gtypes.Schema(
-                                  type=_gtypes.Type.ARRAY,
-                                  items=_gtypes.Schema(type=_gtypes.Type.STRING),
-                                  nullable=True,
-                              ),
-            "event_type":     _gtypes.Schema(type=_gtypes.Type.STRING,  nullable=True),
-            "related_stocks": _gtypes.Schema(
-                                  type=_gtypes.Type.ARRAY,
-                                  items=_gtypes.Schema(type=_gtypes.Type.STRING),
-                                  nullable=True,
-                              ),
-        },
-        required=["id", "relevant", "confidence"],
-    )
-    _schema = _gtypes.Schema(type=_gtypes.Type.ARRAY, items=_item_schema)
-
-    # 15 RPM 기준 — 첫 배치 제외, 이후 배치는 5초 간격
-    if offset > 0:
-        time.sleep(5)
-
-    for attempt in range(3):
-        try:
-            _t0 = time.time()
-            _client = _genai.Client(api_key=GOOGLE_API_KEY)
-            _resp = _client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-                config=_gtypes.GenerateContentConfig(
-                    temperature=0.0,
-                    response_mime_type="application/json",
-                    response_schema=_schema,
-                ),
-            )
-            print(f"  [Gemini] 배치 {offset//50+1} 응답 {time.time()-_t0:.1f}초")
-            _track_llm(GEMINI_MODEL, "filter_gemini", getattr(_resp, "usage_metadata", None))
-
-            grades = json.loads(_resp.text)
-            if not isinstance(grades, list):
-                raise ValueError(f"Gemini 응답 list 아님: {type(grades)}")
-
-            # 파싱 후 article 필드 세팅 — ai_filter_batch와 동일 로직
-            grade_map = {}
-            for g in grades:
-                _gid = g.get("id", g.get("news_id"))
-                if _gid is not None:
-                    grade_map[_gid] = g
-            result = []
-            for i, article in enumerate(batch):
-                info = grade_map.get(i + offset + 1, {})
-                article["_ai_confidence"] = info.get("confidence", None)
-                if info.get("relevant") and info.get("grade"):
-                    _ent = (info.get("entity") or "").strip()
-                    if not _ent:
-                        print(f"  [entity 빈값] relevant 무효화: {article.get('title','')[:30]}")
-                        continue
-                    article["grade"]      = info["grade"]
-                    article["reason"]     = info.get("reason") or ""
-                    article["action"]     = info.get("action") or ""
-                    article["entity"]     = _ent
-                    _ents_raw = info.get("entities") or []
-                    _ents_clean = [e.strip() for e in _ents_raw if e and e.strip()] or [_ent]
-                    if _ent not in _ents_clean:
-                        _ents_clean = [_ent] + _ents_clean
-                    article["entities"]      = _ents_clean
-                    article["event_type"]    = info.get("event_type") or ""
-                    # related_stocks: AI 추출 관련 상장주 — exposure_data 매칭 시 관련주 섹션 표시
-                    _rs_raw = info.get("related_stocks") or []
-                    article["related_stocks"] = [s.strip() for s in _rs_raw if s and s.strip()]
-                    _evt = article["event_type"]
-                    article["event_key"]  = f"{_ent}_{_evt}" if _ent and _evt else ""
-                    # ※ 과거 _gemini_filtered 플래그로 재검증을 트리거했으나,
-                    #    현재 재검증은 Gemini 사용 시 전건 대상이라 불필요.
-                    #    설정만 하고 읽지 않는 죽은 플래그였으므로 제거(2026-07-29).
-                    result.append(article)
-            return result
-
-        except Exception as e:
-            _es = str(e)
-            # 모델명 오류(404/NOT_FOUND)는 재시도해도 소용없다 → 즉시 fallback
-            if any(x in _es for x in ["404", "NOT_FOUND", "no longer available",
-                                       "is not found", "not supported"]):
-                # ★모델이 은퇴했을 수 있다. 다음 후보로 전환해 재시도한다.
-                #   (2026-07-29: gemini-2.5-flash가 공지일보다 일찍 내려가
-                #    fallback 100% 발생 — 단일 모델 하드코딩의 위험)
-                _cur = GEMINI_MODEL
-                _rest = [m for m in _GEMINI_CANDIDATES if m != _cur]
-                if _rest and not _RUN_STATS.get("gemini_model_switched"):
-                    GEMINI_MODEL = _rest[0]
-                    _RUN_STATS["gemini_model_switched"] = True
-                    if not _RUN_STATS.get("gemini_err"):
-                        _RUN_STATS["gemini_err"] = f"MODEL_SWITCH:{_cur}→{GEMINI_MODEL}"
-                    print(f"  [Gemini] 모델 '{_cur}' 사용 불가 → '{GEMINI_MODEL}'로 전환 후 재시도")
-                    continue
-                print(f"  [Gemini] 모델 오류 → Claude fallback: {_es[:60]}")
-                if not _RUN_STATS.get("gemini_err"):
-                    _RUN_STATS["gemini_err"] = f"MODEL:{_es[:100]}"
-                return None
-            # 429·503·quota는 '일시적 제한'이므로 백오프 후 재시도한다.
-            # 기존엔 즉시 Claude fallback으로 빠져 1차 필터가 유료 Claude로
-            # 대체되고 있었음(2026-07-29 실측: 8배치 중 6배치). 유료 전환 후에도
-            # 순간 버스트로 걸릴 수 있어 재시도를 둔다.
-            if any(x in _es for x in ["429", "503", "quota", "RESOURCE_EXHAUSTED",
-                                       "UNAVAILABLE"]):
-                if attempt < 2:
-                    _wait = (2 ** attempt) * 8 + random.uniform(0, 4)   # 8~12s, 16~20s
-                    print(f"  [Gemini] 일시적 제한({_es[:40]}) — {_wait:.0f}초 후 재시도 "
-                          f"({attempt+2}/3)")
-                    time.sleep(_wait)
-                    continue
-                print(f"  [Gemini] 재시도 3회 소진 → Claude fallback: {_es[:50]}")
-                if not _RUN_STATS.get("gemini_err"):
-                    _RUN_STATS["gemini_err"] = f"QUOTA:{_es[:100]}"
-                return None
-            print(f"  [Gemini] 오류 시도 {attempt+1}/3: {_es[:80]}")
-            if attempt < 2:
-                time.sleep(random.uniform(5, 15))
-                continue
-            return None
-    return None
-
 def ai_filter_batch(batch: list, offset: int = 0) -> list:
     """50건씩 배치로 AI 필터링"""
     if not batch:
@@ -3684,7 +3508,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     # AI가 entity를 "한국투자증권"으로 뽑았으나 제목에 당사가 없고 타 증권사(키움·
     # 미래에셋 등)가 제목에 있으면, 경쟁사 이슈를 당사 이슈로 오인한 것. entity를
     # 비우고 참고로 강등해 당사 익스포저 매칭·긴급 발송을 차단한다.
-    # 유지보수 주의: 이 증권사 목록은 filter_prompt.txt, filter_prompt_gemini.txt,
+    # 유지보수 주의: 이 증권사 목록은 filter_prompt.txt,
     # _verify_high_risk_by_claude() 재검증 프롬프트까지 4곳에 흩어져 있다.
     # 증권사를 추가/제외할 때는 4곳 모두 동일하게 수정할 것.
     _OTHER_BROKERS = ("키움", "미래에셋", "삼성증권", "NH투자", "신한투자", "KB증권",
@@ -4188,26 +4012,17 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
     batch_size = 100
     ai_fail_count = 0
     MAX_AI_FAILS = 3
-    _used_gemini = False  # 긴급 재검증 트리거용
+    # 1차 필터가 재검증용 모델보다 하위면 등급 재검증을 건다.
+    # (Gemini 제거 전에는 _used_gemini 가 이 역할을 했다. 1차를 저가 모델로
+    #  내린 이상 게이트가 사라지면 안 되므로 모델 비교로 대체한다.)
+    _need_regrade = CLAUDE_FILTER_MODEL != CLAUDE_MODEL
     for i in range(0, len(articles), batch_size):
         if ai_fail_count >= MAX_AI_FAILS:
             print(f"  ❗ AI 연속 {MAX_AI_FAILS}회 실패 — circuit breaker 작동, 필터링 중단")
             break
         batch = articles[i:i+batch_size]
         print(f"  배치 {i//batch_size+1}/{-(-len(articles)//batch_size)} 처리 중... ({len(batch)}건)")
-        # ── 1차: Gemini Flash / 실패 시 Claude fallback ──────────────
-        if GOOGLE_API_KEY:
-            batch_result = ai_filter_batch_gemini(batch, offset=i)
-            if batch_result is None:
-                print(f"  [Gemini 실패] Claude fallback (배치 {i//batch_size+1})")
-                _RUN_STATS["gemini_fail"] += 1
-                batch_result = ai_filter_batch(batch, offset=i)
-            else:
-                _used_gemini = True
-                _RUN_STATS["gemini_ok"] += 1
-        else:
-            batch_result = ai_filter_batch(batch, offset=i)
-        # ─────────────────────────────────────────────────────────────
+        batch_result = ai_filter_batch(batch, offset=i)
         if batch_result is None:
             ai_fail_count += 1
             print(f"  배치 실패 ({ai_fail_count}/{MAX_AI_FAILS})")
@@ -4224,10 +4039,10 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
 
     result = regrade_by_score(result, exposure_data=exposure_data)
 
-    # ── Gemini 사용 시 Sonnet 등급 재검증 (전건) ──────────────────────────
+    # ── 1차가 하위 모델일 때 상위 모델로 등급 재검증 (전건) ────────────────
     # 기존엔 '긴급 or 5.0점↑'만 대상이었으나, 참고로 강등된 기사에 6.5점이
     # 매겨지는 등 등급-점수 불일치가 반복돼 전건으로 확대(정확도 우선).
-    if _used_gemini:
+    if _need_regrade:
         _to_verify = [a for a in result if not a.get('_force_urgent')]
         if _to_verify:
             print(f"  [Sonnet 등급 재검증] {len(_to_verify)}건 검증 중...")
@@ -4840,8 +4655,7 @@ def _price_badge(a: dict) -> str:
 # Actions 로그는 외부망에서 내려받기 어렵고 90일 뒤 삭제된다. 튜닝 판단에
 # 필요한 최소 지표만 레포에 누적해 언제든 조회할 수 있게 한다.
 # (Gemini 무료 티어 RPM 초과로 Claude fallback이 얼마나 나는지가 핵심)
-_RUN_STATS = {"gemini_ok": 0, "gemini_fail": 0, "gemini_err": "",
-              "gemini_model_switched": False}
+_RUN_STATS = {}
 
 
 def _track_llm(model: str, purpose: str, usage) -> None:
@@ -4854,12 +4668,12 @@ def _track_llm(model: str, purpose: str, usage) -> None:
     try:
         if usage is None:
             return
-        if isinstance(usage, dict):   # Anthropic REST
+        if isinstance(usage, dict):   # Anthropic REST (현행 유일 경로)
             _in  = usage.get("input_tokens", 0) or 0
             _out = usage.get("output_tokens", 0) or 0
             _cr  = usage.get("cache_read_input_tokens", 0) or 0
             _cw  = usage.get("cache_creation_input_tokens", 0) or 0
-        else:                          # google-genai usage_metadata
+        else:                          # SDK 객체형 usage (방어용)
             _in  = getattr(usage, "prompt_token_count", 0) or 0
             _out = getattr(usage, "candidates_token_count", 0) or 0
             _cr  = getattr(usage, "cached_content_token_count", 0) or 0
@@ -4883,12 +4697,7 @@ def save_run_stats(collected: int, selected: int, verify_model: str,
         "ts": datetime.now(_kst).strftime("%Y-%m-%d %H:%M"),
         "collected": collected,
         "selected": selected,
-        "gemini_ok": _RUN_STATS["gemini_ok"],
-        "gemini_fail": _RUN_STATS["gemini_fail"],
-        # 실패 사유를 남겨야 '모델명 오류인지 할당량 초과인지'를 사후에 가린다.
-        # (2026-07-29: fallback 100%인데 사유가 없어 진단 불가했음)
-        "gemini_err": _RUN_STATS.get("gemini_err", "")[:120],
-        "gemini_model": GEMINI_MODEL,   # 전환됐다면 최종 사용 모델
+        "filter_model": CLAUDE_FILTER_MODEL,
         "verify_model": verify_model,
         "scope": "self" if self_only else "full",
         # 익스포저없음 강등 추적 (2026-08-12) — 강등 대상/면제/최종등급을 남겨
@@ -4918,8 +4727,8 @@ def save_run_stats(collected: int, selected: int, verify_model: str,
         lines.append(json.dumps(rec, ensure_ascii=False))
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
-        print(f"  [운영지표] Gemini 성공 {rec['gemini_ok']} / fallback "
-              f"{rec['gemini_fail']} — {path} 기록")
+        print(f"  [운영지표] 수집 {rec['collected']} / 선별 {rec['selected']} "
+              f"— {path} 기록")
     except Exception as e:
         print(f"  [운영지표] 기록 실패(무시): {type(e).__name__}")
 
@@ -4936,9 +4745,7 @@ def _model_label() -> str:
         _tier = _m.split("-")[1].capitalize()      # claude-opus-4-6 → Opus
     except (IndexError, AttributeError):
         _tier = "Sonnet"
-    if not GOOGLE_API_KEY:          # Claude 단일 운영 (2026-09-24)
-        return f"Claude {_tier}"
-    return f"Claude {_tier} / Gemini {GEMINI_MODEL.replace('gemini-', '')}"
+    return f"Claude {_tier}"          # Claude 단일 운영 (2026-09-24)
 
 
 def decide_send_scope(filtered: list, exposure_data: dict, ref_date: str = "") -> dict:
@@ -5830,6 +5637,8 @@ def main():
         send_email_no_result(subject, build_empty_html(now))
         save_seen_urls(seen_urls)
         save_filter_log([], [], [], [])
+        # 선별 0건 회차도 LLM 비용은 발생한다. 계측이 비면 기준선이 낮게 잡힌다.
+        save_run_stats(0, 0, globals().get("_LAST_VERIFY_MODEL") or CLAUDE_MODEL, True)
         return
 
     before_hard = len(raw_articles)
@@ -6204,6 +6013,8 @@ def main():
             send_email_no_result(subject, build_empty_html(now))
         save_seen_urls(seen_urls)
         save_filter_log(raw_articles, hard_excluded_articles, ai_filtered_articles, filtered)
+        save_run_stats(total_count, 0,
+                       globals().get("_LAST_VERIFY_MODEL") or CLAUDE_MODEL, True)
         return
 
     print("  본문 크롤링 중... (전체 등급 — 2차 정밀검수용)")

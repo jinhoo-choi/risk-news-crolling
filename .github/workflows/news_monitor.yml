@@ -83,7 +83,6 @@ jobs:
           ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
           NAVER_CLIENT_ID:      ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET:  ${{ secrets.NAVER_CLIENT_SECRET }}
-          GOOGLE_API_KEY:       ${{ secrets.GOOGLE_API_KEY }}
           EMAIL_CC:             ${{ secrets.EMAIL_CC }}
         run: python naver_news_monitor.py
 

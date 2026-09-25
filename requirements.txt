@@ -4,4 +4,3 @@ rapidfuzz
 json-repair
 yfinance
 pytz
-google-genai
