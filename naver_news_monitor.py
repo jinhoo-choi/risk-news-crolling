@@ -3394,22 +3394,48 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             return None  # 실패 (빈 결과 []와 구분)
     return None  # 3회 실패
 
+try:
+    from rapidfuzz import fuzz as _fuzz
+    def _title_ratio(a, b): return _fuzz.ratio(a, b) / 100.0
+except ImportError:
+    from difflib import SequenceMatcher as _SM
+    def _title_ratio(a, b): return _SM(None, a, b).ratio()
+
+
+def _title_norm(text: str) -> str:
+    """제목 정규화 — 중복 판정 공용(dedup_deterministic·투입 전 계측)"""
+    t = unicodedata.normalize("NFKC", text)
+    t = re.sub(r"\[.*?\]|\(.*?\)", "", t)
+    t = re.sub(r"속보|단독|긴급|종합", "", t)
+    t = re.sub(r"[^가-힣a-zA-Z0-9]", "", t)
+    return t.strip()
+
+
+def count_title_dup_candidates(articles: list) -> int:
+    """LLM 투입 전 제목 유사 중복 후보 수 — 계측 전용, 제거는 하지 않는다.
+
+    dedup_deterministic은 AI 필터 '이후'에 돈다(entity 등 AI 생성 필드를 쓰기
+    때문). 그래서 동일 사건 재탕 기사도 전부 LLM을 거친 뒤에야 버려진다.
+    사전 제거로 투입 건수를 얼마나 줄일 수 있는지 먼저 숫자로 확인한다.
+    """
+    norms = []
+    dup = 0
+    for a in articles:
+        n = _title_norm(a.get("title", ""))
+        if len(n) < 8:
+            continue
+        if any(_title_ratio(n, m) >= TITLE_SIM_THRESHOLD for m in norms):
+            dup += 1
+        else:
+            norms.append(n)
+    return dup
+
+
 def dedup_deterministic(articles: list) -> list:
     """3단계 중복 제거 — 제목 유사도 + 기업명·키워드 조합 + desc 유사도"""
 
-    try:
-        from rapidfuzz import fuzz as _fuzz
-        def _ratio(a, b): return _fuzz.ratio(a, b) / 100.0
-    except ImportError:
-        from difflib import SequenceMatcher
-        def _ratio(a, b): return SequenceMatcher(None, a, b).ratio()
-
-    def normalize(text: str) -> str:
-        t = unicodedata.normalize("NFKC", text)
-        t = re.sub(r"\[.*?\]|\(.*?\)", "", t)
-        t = re.sub(r"속보|단독|긴급|종합", "", t)
-        t = re.sub(r"[^가-힣a-zA-Z0-9]", "", t)
-        return t.strip()
+    _ratio = _title_ratio
+    normalize = _title_norm
 
     seen_norms    = []
     seen_entities = []
@@ -4879,6 +4905,7 @@ def save_run_stats(collected: int, selected: int, verify_model: str,
         # LLM 계측 (2026-09-13) — 추정 대신 실측. 회차별 호출 수/토큰을
         # (모델|용도) 단위로 남겨, 어느 단계가 비용을 쓰는지 사후 분해한다.
         # 금액은 단가 변동 때문에 기록하지 않는다(토큰 × 당시 단가로 계산).
+        "pre_llm_dup": _RUN_STATS.get("pre_llm_dup", 0),
         "llm_calls": sum(v["calls"] for v in _RUN_STATS.get("llm", {}).values()),
         "llm": _RUN_STATS.get("llm", {}),
     }
@@ -5818,6 +5845,13 @@ def main():
     raw_articles = raw_articles_kept
     if before_hard != len(raw_articles):
         print(f"  하드 제외룰: {before_hard}건 → {len(raw_articles)}건 ({before_hard - len(raw_articles)}건 제거)")
+
+    # ── LLM 투입 전 중복 계측 (2026-09-24). 제거는 하지 않고 숫자만 남긴다 ──
+    _pre_dup = count_title_dup_candidates(raw_articles)
+    _RUN_STATS["pre_llm_dup"] = _pre_dup
+    if raw_articles:
+        print(f"  [계측] 투입 전 제목 유사 중복 후보 {_pre_dup}건 / "
+              f"{len(raw_articles)}건 ({_pre_dup/len(raw_articles)*100:.1f}%)")
 
     print(f"\nAI 필터링 중... (총 {len(raw_articles)}건)")
     filtered = ai_filter_and_grade(raw_articles, exposure_data=exposure_data)
