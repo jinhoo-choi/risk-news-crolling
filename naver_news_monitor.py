@@ -253,7 +253,7 @@ CLAUDE_ACTION_MODEL = os.environ.get("CLAUDE_ACTION_MODEL", "claude-sonnet-4-6")
 # 1차 필터 전용 (2026-09-24). Gemini 크레딧 소진으로 필터가 전량 Claude로 넘어와
 # 비용이 올랐다. 필터는 정형 분류라 하위 모델로 내릴 여지가 있어 재검증용
 # CLAUDE_MODEL과 분리한다. 미지정 시 기존과 동일하게 동작한다.
-CLAUDE_FILTER_MODEL = os.environ.get("CLAUDE_FILTER_MODEL", CLAUDE_MODEL)
+CLAUDE_FILTER_MODEL = os.environ.get("CLAUDE_FILTER_MODEL", "claude-haiku-4-5")
 # 전체 발송이 예상될 때 2차 본문검증에 쓰는 상위 모델.
 # 임원 전사 발송은 오탐 비용이 가장 크므로 마지막 관문만 승급한다.
 # ★단계를 늘리지 않고 '모델만 교체'하는 이유: 검증 단계를 추가하면 단계 간
@@ -4156,7 +4156,10 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
     if not articles:
         return []
     result = []
-    batch_size = 50
+    # 50 → 100 (2026-09-24). 배치를 키우면 호출 수가 절반이 되고,
+    # 호출마다 재전송되는 고정 프리픽스(약 10.8K 토큰)와 캐시 쓰기도 절반이 된다.
+    # 출력은 100건이어도 max_tokens 8000에 크게 못 미친다(건당 12~30토큰).
+    batch_size = 100
     ai_fail_count = 0
     MAX_AI_FAILS = 3
     _used_gemini = False  # 긴급 재검증 트리거용

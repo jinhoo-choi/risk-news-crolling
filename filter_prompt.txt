@@ -163,7 +163,10 @@ __KNOWN_CASES__
 [출력 필드]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 반드시 JSON 배열만 반환 (마크다운 코드블록 없이).
-- reason: 선별 이유, 증권사 실무관점 20자 이내 (false면 null)
+- relevant:false 인 기사는 id·relevant·confidence 3개만 반환한다.
+  grade·reason·action·entity·entities·event_type·related_stocks 는 아예 쓰지 마라
+  (null 로도 쓰지 마라). 대부분의 기사가 false이므로 이 축약이 출력량을 좌우한다.
+- reason: 선별 이유, 증권사 실무관점 20자 이내 (true인 기사만)
 - confidence: 0.0~1.0, false도 반드시 포함
 - action: true인 기사에 대해 실무자가 즉시 취할 구체적 조치 50자 이내
   ("보고""공유""전달" 등 보고행위 제외, 실제 확인·점검·산출만 기재)
@@ -210,7 +213,7 @@ __KNOWN_CASES__
 [
   {{"id":1,"relevant":true,"grade":"긴급","reason":"리츠 기초자산 회생신청·손실 확정","confidence":0.97,"action":"해당 리츠 보유 고객 전수 파악 및 금일 내 평가손 산출","entity":"제이알글로벌리츠","entities":["제이알글로벌리츠"],"event_type":"기업회생","related_stocks":[]}},
   {{"id":2,"relevant":true,"grade":"주의","reason":"PF 부실 징후·손실 미확정 단계","confidence":0.82,"action":"주 1회 PF 잔액 추이 점검, 연체 발생 시 즉시 대응","entity":"태영건설","entities":["태영건설"],"event_type":"PF부실","related_stocks":[]}},
-  {{"id":3,"relevant":false,"grade":null,"reason":null,"confidence":0.12,"action":null,"entity":null,"entities":[],"event_type":null,"related_stocks":[]}}
+  {{"id":3,"relevant":false,"confidence":0.12}}
 ]
 
 뉴스 목록:
