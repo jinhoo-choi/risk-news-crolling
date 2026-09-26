@@ -3194,9 +3194,11 @@ def ai_filter_batch(batch: list, offset: int = 0, *, full_response: bool = False
                     continue
                 if g["relevant"] and (
                         g.get("grade") not in ("긴급", "주의", "참고") or
-                        not isinstance(g.get("entity"), str) or not g["entity"].strip() or
+                        "entity" not in g or
+                        (g["entity"] is not None and not isinstance(g["entity"], str)) or
                         not isinstance(g.get("entities", []), list) or
-                        any(not isinstance(e, str) for e in g.get("entities", []))):
+                        any(not isinstance(e, str) for e in g.get("entities", [])) or
+                        (not (g.get("entity") or "").strip() and g.get("entities"))):
                     _valid = False
                     continue
                 if _gid in grade_map:
@@ -3228,16 +3230,15 @@ def ai_filter_batch(batch: list, offset: int = 0, *, full_response: bool = False
                 article["_ai_confidence"] = info.get("confidence", None)
                 if info.get("relevant") and info.get("grade"):
                     article["_filter_id"] = i + offset + 1
-                    if not (info.get("entity") or "").strip():
-                        print(f"  [entity 빈값] relevant 무효화: {article.get('title','')[:30]}")
-                        continue
                     article["grade"]      = info["grade"]
                     article["reason"]     = info.get("reason", "")
                     article["action"]     = info.get("action", "")
                     article["entity"]     = (info.get("entity") or "").strip()
                     _ent2 = (info.get("entity") or "").strip()
-                    _ents_clean2 = [e.strip() for e in (info.get("entities") or []) if e and e.strip()] or [_ent2]
-                    if _ent2 not in _ents_clean2:
+                    # 프롬프트가 허용하는 시장전체 이슈는 entity=null, entities=[]다.
+                    # 가짜 종목명을 채우거나 정상 positive를 삭제하지 않는다.
+                    _ents_clean2 = [e.strip() for e in (info.get("entities") or []) if e and e.strip()]
+                    if _ent2 and _ent2 not in _ents_clean2:
                         _ents_clean2 = [_ent2] + _ents_clean2
                     article["entities"]   = _ents_clean2
                     article["event_type"] = info.get("event_type", "")

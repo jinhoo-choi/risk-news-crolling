@@ -71,6 +71,18 @@ class FilterProtocolTests(unittest.TestCase):
             self.assertEqual(M.filter_batch_complete([]), [])
         post.assert_not_called()
 
+    def test_market_wide_positive_allows_empty_entity(self):
+        batch = [{"title": "반대매매 역대 최대, 하루 3000억 강제청산", "desc": "", "url": "https://example.com/market"}]
+        for entity in (None, ""):
+            row = dict(positive(1), entity=entity, entities=[], event_type="반대매매")
+            with self.subTest(entity=entity), patch.object(M.requests, "post", return_value=Response(
+                    [row, {"id": 0, "seen": 1}])) as post:
+                result = M.filter_batch_complete(batch)
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0]["entity"], "")
+            self.assertEqual(result[0]["entities"], [])
+            self.assertEqual(post.call_count, 1)
+
     def test_equal_length_results_union(self):
         first = Response([positive(1)])  # sentinel 없음: 최초 후보는 보존
         second = Response([{"id": 1, "relevant": False}, positive(2), {"id": 0, "seen": 2}])
