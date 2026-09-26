@@ -1,5 +1,5 @@
 {
-  "_설명": "filter_prompt.txt / filter_prompt_gemini.txt 수정 시 회귀 검증 기준. false_positive_history=relevant:false여야 함, true_positive_history=relevant:true여야 함(등급은 참고용).",
+  "_설명": "filter_prompt.txt / filter_prompt_gemini.txt 수정 시 회귀 검증 기준. false_positive_history=relevant:false여야 함, true_positive_history=relevant:true여야 함(등급은 참고용). | 정답 변경 이력: 2026-09-26 '코스피 8%대 폭락…대규모 반대매매 강제청산'을 false_positive_history → true_positive_history 로 이동(운영자 결정). 사유: 기존 정답은 'entity 없음이라 제외'였으나, filter_prompt.txt 기준5(반대매매 실제 급증·역대최대 수치 확정)와 110행 예시('반대매매 역대 최대, 하루 3000억 강제청산' → ✅ 긴급), 186행(시황·반대매매 등 시장전체 이슈는 entity=null 처리)과 정면으로 충돌했다. entity 부재는 제외 사유가 아니라 entity=null 로 표기할 사유다.",
   "false_positive_history": [
     {
       "title": "한국투자증권 IT투자액 1762억 '톱'…KB·신한·NH·하나증권도",
@@ -50,11 +50,6 @@
     {
       "title": "[기자수첩] '포모'가 부추긴 빚투 경고음",
       "category": "칼럼"
-    },
-    {
-      "title": "코스피 8%대 폭락에 사상 최대 빚투 비상…대규모 반대매매 강제청산",
-      "category": "시장전체 시황(entity 없음)",
-      "entity": ""
     },
     {
       "title": "태영건설 PF 천안 20년 악몽",
@@ -580,6 +575,12 @@
       "grade": "주의",
       "category": "규제 강화(완화 예외)",
       "entity": "증권업"
+    },
+    {
+      "title": "코스피 8%대 폭락에 사상 최대 빚투 비상…대규모 반대매매 강제청산",
+      "grade": "긴급",
+      "category": "기준5 반대매매 실제수치 확정(시장전체)",
+      "entity": ""
     }
   ]
 }
