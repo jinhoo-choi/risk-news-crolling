@@ -70,7 +70,10 @@ def decide(articles, crash=False):
 
     with contextlib.redirect_stdout(io.StringIO()):
         sc = nm.decide_send_scope(articles, EXPO, "2026-07-27")
-        mail = nm.filter_articles_for_scope(articles, EXPO, sc["self_only"])
+        # 운영(main)은 market_crash 를 넘긴다. 테스트가 인자를 빠뜨리면
+        # 시장급락 시 참고 임계 완화 경로가 검증되지 않는다(로직 복제 금지 원칙).
+        mail = nm.filter_articles_for_scope(articles, EXPO, sc["self_only"],
+                                            sc["market_crash"])
 
     return {"full": not sc["self_only"], "max": sc["max_score"],
             "crash": sc["market_crash"], "cnt": sc["alerted_count"],
@@ -108,7 +111,20 @@ THRESHOLD_CASES = [
      lambda: 10 <= nm.STRONG_CAUTION_MIN_EXPOSURE <= 500),
     ("참고 축소 임계가 상식 범위(500~20000억)",
      lambda: 500 <= nm.REF_FULLSEND_MIN_EXPOSURE <= 20000),
+    ("급락장 참고 임계가 평시보다 느슨",
+     lambda: nm.REF_FULLSEND_MIN_EXPOSURE_CRASH <= nm.REF_FULLSEND_MIN_EXPOSURE),
+    # 급락 임계는 코드와 filter_prompt.txt 가 반드시 같아야 한다.
+    # 2026-09-26 이전에는 코드 -3% / 프롬프트 -5% 로 갈라져 있었고,
+    # 메일 안내 문구까지 -3% 로 남아 수신자에게 잘못 안내됐다.
+    ("급락 임계가 프롬프트 기준과 일치",
+     lambda: f"{abs(nm.PRICE_DROP_THRESHOLD):g}%" in _prompt_drop_line()),
 ]
+
+
+def _prompt_drop_line() -> str:
+    """filter_prompt.txt 의 급락 기준 줄을 찾아 돌려준다."""
+    with open("filter_prompt.txt", encoding="utf-8") as f:
+        return next((l for l in f if "급락:" in l), "")
 
 REF_CASES = [
     ("전체발송 시 소액 참고 제외",
@@ -117,6 +133,12 @@ REF_CASES = [
      [A("긴급", 8.0), A("참고", 4.0, 0.5, "삼성전자")], False, 2),
     ("본인한정 시 참고 전부 유지",
      [A("참고", 4.0, 0.5, "예선테크"), A("참고", 3.0, 0.5, "삼성전자")], False, 2),
+    # 참고 임계 절충(2026-09-26) — 평시 3,000억 / 시장급락 회차 500억.
+    # SK텔레콤(2,900억)은 평시엔 잘리고 급락장에선 남아야 한다.
+    ("평시 + 참고 2,900억 — 메일에서 제외",
+     [A("긴급", 6.0), A("참고", 3.0, 0.3, "SK텔레콤")], False, 1),
+    ("급락장 + 참고 2,900억 — 완화되어 포함",
+     [A("긴급", 6.0), A("참고", 3.0, 0.3, "SK텔레콤")], True, 2),
 ]
 
 
