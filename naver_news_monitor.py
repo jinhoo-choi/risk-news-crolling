@@ -194,6 +194,16 @@ try:
     REF_FULLSEND_MIN_EXPOSURE = float(os.environ.get("REF_FULLSEND_MIN_EXPOSURE", "3000"))
 except ValueError:
     REF_FULLSEND_MIN_EXPOSURE = 3000.0
+# 시장급락으로 강제 전사발송된 회차에 한해 참고 등급 임계를 완화한다(절충안).
+# 배경: 평시 기준 3,000억은 시장급락 강제발송 기준(리스크잔고 150억)과 20배
+# 차이라, 정보가 가장 필요한 급락장에서 참고 기사가 통째로 가려졌다.
+# 완화폭은 점수 보정 최상위 구간(500억)에 맞춘다. 참고 오탐률이 78%로 높아
+# 전면 해제는 하지 않는다. 긴급·고신뢰주의로 인한 전사발송에는 적용하지 않는다.
+try:
+    REF_FULLSEND_MIN_EXPOSURE_CRASH = float(
+        os.environ.get("REF_FULLSEND_MIN_EXPOSURE_CRASH", "500"))
+except ValueError:
+    REF_FULLSEND_MIN_EXPOSURE_CRASH = 500.0
 
 # 시장급락 강제발송 기준 — 종목 수와 '위험고객 리스크잔고 규모'를 함께 본다.
 # 기존엔 -3%↓ 종목 수(10개)만 봤는데, 위험고객 보유 종목이 305개나 되고
@@ -497,7 +507,12 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
 
     _build_price_alert_section_uncached.last_alerted_count = 0
     _build_price_alert_section_uncached.last_alerted_rbal = 0
-    THRESHOLD = -3.0  # 2026-07-15: -5% → -3% 환원 (탐지 범위 확대)
+    # 2026-09-26: -3% → -5% 재환원. 뉴스 필터(filter_prompt.txt 기준)는 -5%인데
+    # 여기만 -3%라 -3~-5% 구간이 가격경보에는 뜨고 기사는 걸리는 불일치가 있었다.
+    # 급락 기준은 -5% 단일로 규정한다.
+    # ※ 이 값은 시장급락 강제발송 집계(alerted_count/alerted_rbal)의 입력이기도
+    #   하므로, 경보 종목 수가 줄어 전사 강제발송 발동 빈도도 함께 낮아진다.
+    THRESHOLD = -5.0
 
     # 잔고 기준일 파싱
     bal_date = ref_date
@@ -1400,7 +1415,11 @@ def _is_yeosin_dependent_clause(clause: str) -> bool:
 _NOTICE_CLAUSE_RE = re.compile(r'(?:\s*(?:→|,|·)\s*)?[^→,·]{0,20}?고객\s*안내\s*준비[^→,·]{0,30}')
 _YEOSIN_TYPES_ACT = ("여신", "해외대출")
 _STOCK_TYPES_ACT  = ("주식", "해외주식")
-_OB_MIN_YEOSIN    = 10.0   # 억. action_prompt.txt의 OB 제외 기준과 동일
+# 억. action_prompt.txt의 OB 제외 기준과 동일.
+# ※ 합산 범위는 '여신 유형만'(_YEOSIN_TYPES_ACT)이다. calc_risk_score()의
+#   익스포저 구간 보정(500/100/10억)은 전체 유형 합산이라 같은 '10억'이라도
+#   대상이 다르다. 둘은 목적이 달라 의도적으로 분리해 둔 것이다.
+_OB_MIN_YEOSIN    = 10.0
 
 # 대응방안 중복 문구 정리 (2026-08-02 신설)
 # 8/2 14시 다원시스 건: "… → 고객 안내 준비, 소비자보호부 고객 안내 준비 요청"
@@ -4843,7 +4862,8 @@ def decide_send_scope(filtered: list, exposure_data: dict, ref_date: str = "") -
             "triggers": _triggers}
 
 
-def filter_articles_for_scope(filtered: list, exposure_data: dict, self_only: bool) -> list:
+def filter_articles_for_scope(filtered: list, exposure_data: dict, self_only: bool,
+                              market_crash: bool = False) -> list:
     """발송 범위에 맞춰 메일에 실을 기사를 추린다.
 
     전체 발송 시 '참고' 등급은 익스포저가 매우 큰 종목만 남긴다.
@@ -4853,6 +4873,9 @@ def filter_articles_for_scope(filtered: list, exposure_data: dict, self_only: bo
     if self_only:
         return filtered
 
+    _min_exp = (REF_FULLSEND_MIN_EXPOSURE_CRASH if market_crash
+                else REF_FULLSEND_MIN_EXPOSURE)
+
     def _keep(a):
         if a.get("grade") != "참고":
             return True
@@ -4860,7 +4883,7 @@ def filter_articles_for_scope(filtered: list, exposure_data: dict, self_only: bo
         if not _e:
             return False
         _bal = sum(_num(r.get("잔고(억)")) for r in find_exposure(_e, exposure_data))
-        return _bal >= REF_FULLSEND_MIN_EXPOSURE
+        return _bal >= _min_exp
 
     return [a for a in filtered if _keep(a)]
 
@@ -6683,7 +6706,8 @@ JSON만 출력:
     # → 실제 발송될 기사만 요약 입력으로 준다.
     _scope = decide_send_scope(filtered, exposure_data, ref_date)
     _self_only = _scope["self_only"]
-    _mail_articles = filter_articles_for_scope(filtered, exposure_data, _self_only)
+    _mail_articles = filter_articles_for_scope(filtered, exposure_data, _self_only,
+                                               _scope["market_crash"])
     _summary_src = _mail_articles or filtered
 
     urgent_cnt = len([a for a in _summary_src if a["grade"]=="긴급"])
@@ -6773,8 +6797,12 @@ JSON만 출력:
     # 전체 발송 시 참고 등급 축소 — 로직은 filter_articles_for_scope()에 있다.
     # (요약 생성 전에 이미 산출했다 — 위 주석 참고)
     if len(_mail_articles) != len(filtered):
+        _ref_min = (REF_FULLSEND_MIN_EXPOSURE_CRASH if _scope["market_crash"]
+                    else REF_FULLSEND_MIN_EXPOSURE)
         print(f"  [전체발송 참고 축소] 참고 {len(filtered)-len(_mail_articles)}건 제외 "
-              f"(익스포저 {REF_FULLSEND_MIN_EXPOSURE:,.0f}억 미만) — 본인 메일에는 포함")
+              f"(익스포저 {_ref_min:,.0f}억 미만"
+              f"{', 시장급락 완화 적용' if _scope['market_crash'] else ''}) "
+              f"— 본인 메일에는 포함")
 
     # 뉴스가 0건이면 제목·요약을 상황에 맞게 바꾼다 — '리스크 탐지'라는
     # 제목에 본문이 비어 있으면 수신자가 발송 의도를 오해한다.
