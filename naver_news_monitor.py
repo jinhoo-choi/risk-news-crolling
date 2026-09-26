@@ -4010,6 +4010,7 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
     # 호출마다 재전송되는 고정 프리픽스(약 10.8K 토큰)와 캐시 쓰기도 절반이 된다.
     # 출력은 100건이어도 max_tokens 8000에 크게 못 미친다(건당 12~30토큰).
     batch_size = 100
+    _RUN_STATS["filter_input_count"] = len(articles)
     ai_fail_count = 0
     MAX_AI_FAILS = 3
     # 1차 필터가 재검증용 모델보다 하위면 등급 재검증을 건다.
@@ -4748,6 +4749,10 @@ def save_run_stats(collected: int, selected: int, verify_model: str,
         # (모델|용도) 단위로 남겨, 어느 단계가 비용을 쓰는지 사후 분해한다.
         # 금액은 단가 변동 때문에 기록하지 않는다(토큰 × 당시 단가로 계산).
         "pre_llm_dup": _RUN_STATS.get("pre_llm_dup", 0),
+        "filter_input_count": _RUN_STATS.get("filter_input_count", 0),
+        "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+        "commit": os.environ.get("GITHUB_SHA", ""),
+        "is_test": FORCE_SELF_ONLY,
         "llm_calls": sum(v["calls"] for v in _RUN_STATS.get("llm", {}).values()),
         "llm": _RUN_STATS.get("llm", {}),
     }
@@ -6047,7 +6052,8 @@ def main():
         save_seen_urls(seen_urls)
         save_filter_log(raw_articles, hard_excluded_articles, ai_filtered_articles, filtered)
         save_run_stats(total_count, 0,
-                       globals().get("_LAST_VERIFY_MODEL") or CLAUDE_MODEL, True)
+                       globals().get("_LAST_VERIFY_MODEL") or CLAUDE_MODEL,
+                       (not _nr_full) or FORCE_SELF_ONLY)
         return
 
     print("  본문 크롤링 중... (전체 등급 — 2차 정밀검수용)")

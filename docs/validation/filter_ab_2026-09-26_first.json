@@ -1,0 +1,2872 @@
+{
+  "base_ref": "773a670235e7581aea10ec4f9b7944426c097d31",
+  "candidate_sha": "2bdc5b69a72421d78c85d8aeea69f6380b587486",
+  "model": "claude-haiku-4-5",
+  "batches": [
+    {
+      "name": "history-0",
+      "input_count": 19,
+      "offset": 0,
+      "cases": [
+        {
+          "case_id": "tp-0",
+          "title": "금양, 상장폐지 효력정지 가처분 신청",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-1",
+          "title": "한국투자증권 전산사고 과태료 1억 제재",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-2",
+          "title": "제이알글로벌리츠 400억 채무불이행, 법원에 회생 신청",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-3",
+          "title": "금감원, 증권사 PF 브릿지론 현장검사 착수",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-4",
+          "title": "빚투 우려 현실로…반대매매 역대 최대, 하루 3000억 강제청산",
+          "expected": true,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-5",
+          "title": "한국투자증권 MTS 접속 장애, 매매 1시간 중단",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-0",
+          "title": "한국투자증권 IT투자액 1762억 '톱'…KB·신한·NH·하나증권도",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-1",
+          "title": "'출산 휴가' 한민용, JTBC '뉴스룸' 떠나는 직원에 인사",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-2",
+          "title": "샘킴, 얼마나 이기고 싶으면 정호영 배신하고 에스파 춤췄다..카리나 깜짝",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-3",
+          "title": "JTBC '사기꾼들', 재정비 돌입 8월 중 방송 재개",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-4",
+          "title": "신동국 회장, 한미약품 경영권 승기 놓쳤다…엑시트 키 쥔 '4자연합'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-5",
+          "title": "금양, 삼성SDI부터 에코프로까지 … K-배터리 유상증자 잔혹사 [N-경제포커스]",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-6",
+          "title": "도쿄전력, 후쿠시마 오염수 처리비용 눈덩이…적자 확대",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-7",
+          "title": "김미경, 회사 부도 위기·빚 수십억",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-8",
+          "title": "[속보] 필에너지, 712억 공급계약 체결",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-9",
+          "title": "[미국발 고금리] 불안한 빚투…코스피 뇌관 되나",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-10",
+          "title": "빚투 잔고 26조 돌파, 삼성전자 쏠림",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-11",
+          "title": "[기자수첩] '포모'가 부추긴 빚투 경고음",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-12",
+          "title": "코스피 8%대 폭락에 사상 최대 빚투 비상…대규모 반대매매 강제청산",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        }
+      ],
+      "baseline": {
+        "selected": [
+          "tp-0",
+          "tp-1",
+          "tp-2",
+          "tp-3",
+          "tp-5"
+        ],
+        "stats": {
+          "llm": {
+            "claude-haiku-4-5|filter_fallback": {
+              "calls": 1,
+              "in": 777,
+              "out": 1035,
+              "cache_read": 0,
+              "cache_write": 12727
+            }
+          }
+        }
+      },
+      "candidate": {
+        "error": "RuntimeError",
+        "stats": {
+          "llm": {
+            "claude-haiku-4-5|filter_fallback": {
+              "calls": 2,
+              "in": 1638,
+              "out": 2068,
+              "cache_read": 0,
+              "cache_write": 25367
+            }
+          },
+          "filter_seen_detail": [
+            {
+              "batch": 1,
+              "expected": 19,
+              "reported": 19,
+              "returned": 5,
+              "complete": false,
+              "mode": "sparse"
+            },
+            {
+              "batch": 1,
+              "expected": 19,
+              "reported": 19,
+              "returned": 16,
+              "complete": false,
+              "mode": "full"
+            }
+          ],
+          "filter_seen_mismatch": 2,
+          "filter_seen_retry": 1
+        }
+      }
+    },
+    {
+      "name": "history-1",
+      "input_count": 19,
+      "offset": 0,
+      "cases": [
+        {
+          "case_id": "tp-6",
+          "title": "거래소 투비소프트 주권매매거래 정지",
+          "expected": true,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-7",
+          "title": "다원시스, 불성실공시법인 지정예고→상장적격성 실질심사 가능성",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-8",
+          "title": "나이스신평, H社 신용등급 BBB→BB 하향…부정적 검토 지속",
+          "expected": true,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-9",
+          "title": "OO건설 ABCP 차환 실패 우려…만기 3주 앞두고 미매각",
+          "expected": true,
+          "baseline": false,
+          "candidate": true
+        },
+        {
+          "case_id": "tp-10",
+          "title": "XX리츠 감사의견 거절 가능성…내달 감사보고서 제출",
+          "expected": true,
+          "baseline": false,
+          "candidate": true
+        },
+        {
+          "case_id": "tp-11",
+          "title": "엔비디아 2분기 실적 예상치 대비 -15% 쇼크…가이던스 대폭 하향",
+          "expected": true,
+          "baseline": true,
+          "candidate": true
+        },
+        {
+          "case_id": "fp-13",
+          "title": "태영건설 PF 천안 20년 악몽",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-14",
+          "title": "이원컴포텍, 액면병합 주권 변경상장→매매거래 정지 해제",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-15",
+          "title": "이오플로우, 상폐 결정 연기…인슐렛 항소심 승",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-16",
+          "title": "[공시] 한국제13호스팩, 상장폐지 따른 청산 절차 안내",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-17",
+          "title": "다시 떠오른 사모신용 리스크…블랙스톤, 사모대출펀드 환매 제한",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-18",
+          "title": "가상자산 핵심 알트코인 솔라나, 벼랑 끝 기술적 분석",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-19",
+          "title": "메모리값 폭등에 액션캠 강자 고프로 휘청… 반도체 호황 그늘",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-20",
+          "title": "200만원 넘던 주가 5개월만에…\"도대체 바닥이 어디냐\" 눈물",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-21",
+          "title": "콘텐트리중앙 하한가…롯데시네마·메가박스 합병 무산 후폭풍 [이런국장]",
+          "expected": false,
+          "baseline": true,
+          "candidate": true
+        },
+        {
+          "case_id": "fp-22",
+          "title": "CMG제약, 외형 성장 이면의 수익성 둔화...현금흐름 '적신호'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-23",
+          "title": "'중앙그룹 위기'에 떠는 콘텐츠 업계···개봉도 배급도 제작도 '움츠'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-24",
+          "title": "홈플러스 회생기로 '운명의 날'…연장·폐지 갈림길",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-25",
+          "title": "키움證, 빗썸 지분 인수 추진…잦은 전산사고는 '부담'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        }
+      ],
+      "baseline": {
+        "selected": [
+          "fp-15",
+          "fp-16",
+          "fp-21",
+          "tp-11",
+          "tp-7"
+        ],
+        "stats": {
+          "llm": {
+            "claude-haiku-4-5|filter_fallback": {
+              "calls": 1,
+              "in": 811,
+              "out": 1093,
+              "cache_read": 12727,
+              "cache_write": 0
+            }
+          }
+        }
+      },
+      "candidate": {
+        "selected": [
+          "fp-21",
+          "tp-10",
+          "tp-11",
+          "tp-9"
+        ],
+        "stats": {
+          "llm": {
+            "claude-haiku-4-5|filter_fallback": {
+              "calls": 1,
+              "in": 853,
+              "out": 703,
+              "cache_read": 12675,
+              "cache_write": 0
+            }
+          },
+          "filter_seen_detail": [
+            {
+              "batch": 1,
+              "expected": 19,
+              "reported": 19,
+              "returned": 4,
+              "complete": true,
+              "mode": "sparse"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "history-2",
+      "input_count": 19,
+      "offset": 0,
+      "cases": [
+        {
+          "case_id": "tp-12",
+          "title": "테슬라 하루 -8% 급락…머스크 발언 논란",
+          "expected": true,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-13",
+          "title": "마이크론, 나스닥 상장폐지 확정",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-14",
+          "title": "거래소, ACE SK하이닉스 단일종목레버리지 등 3종 투자유의종목 적출",
+          "expected": true,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-15",
+          "title": "제이티비씨 채무불이행→콘텐트리중앙·메가박스중앙 회생절차 신청",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-16",
+          "title": "OO증권 발행어음 만기 500억 미상환 확정",
+          "expected": true,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-17",
+          "title": "삼성전자·SK하이닉스 신용거래 동반 급증, 반대매매 위험 확대",
+          "expected": true,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-26",
+          "title": "키움증권 MTS 접속 장애…30분간 매매 중단",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-27",
+          "title": "미래에셋증권 HTS 먹통에 투자자 불편",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-28",
+          "title": "거래정지? 오히려 불쏘시개였다···금호건설 '4천원→1만6천원' 광란",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-29",
+          "title": "'애 아빠가 많이 화났어요' 주가 하락에 '하이닉스 환불' 밈 확산",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-30",
+          "title": "파산 문턱서 나스닥까지…곽노정이 되짚은 SK하이닉스 25년",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-31",
+          "title": "\"삼전닉스 레버리지? 지금은 비중 축소 권한다\"[경제적본능]",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-32",
+          "title": "비비안 주가 장중 상한가, '상장폐지 막자' 응원 매수에 관련주 강세",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-33",
+          "title": "[특징주] \"상장폐지 막자\" 애국 테마주 또 급등…모나미, 3거래일 연속 상승",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-34",
+          "title": "[단독] 신한투자증권, 美 운용사 파산보호로 2800억원 회수 불투명",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-35",
+          "title": "신한투자증권, \"RIA, 청산 아닌 기업회생…2800억 전액 손실 아냐\"",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-36",
+          "title": "하나증권, 전부문 성장에 2분기 순익 1700억…ROE 개선",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-37",
+          "title": "영광의 IMA, 하지만 상당한 왕관의 무게...한국금융지주 주주 챙기기 쟁점",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-38",
+          "title": "[제약공시 책갈피] 7월 4주차 - 삼성바이오로직스·유한양행外",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        }
+      ],
+      "baseline": {
+        "selected": [
+          "fp-34",
+          "tp-13",
+          "tp-15"
+        ],
+        "stats": {
+          "llm": {
+            "claude-haiku-4-5|filter_fallback": {
+              "calls": 1,
+              "in": 817,
+              "out": 877,
+              "cache_read": 12727,
+              "cache_write": 0
+            }
+          }
+        }
+      },
+      "candidate": {
+        "error": "RuntimeError",
+        "stats": {
+          "llm": {
+            "claude-haiku-4-5|filter_fallback": {
+              "calls": 2,
+              "in": 1718,
+              "out": 1599,
+              "cache_read": 25367,
+              "cache_write": 0
+            }
+          },
+          "filter_seen_detail": [
+            {
+              "batch": 1,
+              "expected": 19,
+              "reported": 19,
+              "returned": 3,
+              "complete": false,
+              "mode": "sparse"
+            },
+            {
+              "batch": 1,
+              "expected": 19,
+              "reported": 19,
+              "returned": 17,
+              "complete": false,
+              "mode": "full"
+            }
+          ],
+          "filter_seen_mismatch": 2,
+          "filter_seen_retry": 1
+        }
+      }
+    },
+    {
+      "name": "history-3",
+      "input_count": 19,
+      "offset": 0,
+      "cases": [
+        {
+          "case_id": "tp-18",
+          "title": "금감원, 증권사 CRO 긴급 소집…PF 리스크 점검",
+          "expected": true,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-19",
+          "title": "NH투자증권 직원이 DI동일 주가조작 가담 적발",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-20",
+          "title": "대호에이엘 임시주총 또 연기…매각·상폐 심사 변수",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-21",
+          "title": "[특징주] 삼성전자, 25만원선 붕괴…코스피 변동성 확대에 7%대 급락",
+          "expected": true,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-22",
+          "title": "인텔 '깜짝 실적'에도 7.89%↓ SK하이닉스 ADR 8.81%↓",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-23",
+          "title": "마이크론 주가 한 달 새 25% 급락…'역대급 실적'에도 무너진 이유",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-39",
+          "title": "서천특화시장 재건축 '엎친 데 덮친 격'… 시공사 부도 이어 '축소 설계' 논란",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-40",
+          "title": "[공시] 엔젠바이오·휴림에이텍 '투자경고', SK이터닉스·벨로크 '투자주의'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-41",
+          "title": "AI 투자정보·상품·자산관리 \"올 서비스\"...증권업계, MTS 경쟁 '확전'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-42",
+          "title": "SK에코플랜트, 회사채 1000억→2000억 '증액 확정'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-43",
+          "title": "파산 문턱 홈플러스 vs 흑자 부활 남양유업… 사모펀드가 가른 '극과 극'",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-44",
+          "title": "치솟는 유가에 관련 ETN, 이달 수익률 상위권 싹쓸이",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-45",
+          "title": "1분기 어닝서프라이즈 가스공사 2분기에도 이어질 듯",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-46",
+          "title": "'매출 3조ʼ 육박 넷마블, 이익잉여금은 40% 줄어 [Z-스코어 기업가치 ...",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-47",
+          "title": "모비어스, 중복상장 문턱서 상장 철회…SJG세종 투자 부담 부메랑[IPO 엑...",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-48",
+          "title": "다시 직면한 '고유가-고금리' 위험",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-49",
+          "title": "거래정지 풀리고 70% 뛴 효성화학…2분기 반전 쓸까",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-50",
+          "title": "일정실업, K-OTC 상장폐지지정기업부 신규 지정…29일 거래 시작",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-51",
+          "title": "檢, 김광일 MBK파트너스 부회장 재소환…경영진 조사 속도",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        }
+      ],
+      "baseline": {
+        "selected": [
+          "fp-43",
+          "fp-49",
+          "fp-50",
+          "tp-19",
+          "tp-20",
+          "tp-22",
+          "tp-23"
+        ],
+        "stats": {
+          "llm": {
+            "claude-haiku-4-5|filter_fallback": {
+              "calls": 1,
+              "in": 866,
+              "out": 1035,
+              "cache_read": 12727,
+              "cache_write": 0
+            }
+          }
+        }
+      },
+      "candidate": {
+        "error": "RuntimeError",
+        "stats": {
+          "llm": {
+            "claude-haiku-4-5|filter_fallback": {
+              "calls": 2,
+              "in": 1816,
+              "out": 2433,
+              "cache_read": 25367,
+              "cache_write": 0
+            }
+          },
+          "filter_seen_detail": [
+            {
+              "batch": 1,
+              "expected": 19,
+              "reported": 19,
+              "returned": 6,
+              "complete": false,
+              "mode": "sparse"
+            },
+            {
+              "batch": 1,
+              "expected": 19,
+              "reported": 19,
+              "returned": 17,
+              "complete": false,
+              "mode": "full"
+            }
+          ],
+          "filter_seen_mismatch": 2,
+          "filter_seen_retry": 1
+        }
+      }
+    },
+    {
+      "name": "history-4",
+      "input_count": 19,
+      "offset": 0,
+      "cases": [
+        {
+          "case_id": "tp-24",
+          "title": "상장 이후 3년 중 7개월 빼고 거래정지… 시큐레터, 정상궤도 찾을까",
+          "expected": true,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-25",
+          "title": "“인터록 논란에 초기대응 부실”…HL만도, 중처법 적용되나",
+          "expected": true,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-26",
+          "title": "엘앤에프 테슬라 계약 정정 공시 논란, 금융당국 압수수색 착수",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-27",
+          "title": "삼성전자 11%·SK하이닉스 13% 급락…코스피 6200선도 붕괴",
+          "expected": true,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-28",
+          "title": "NAVER(네이버) 주가 21만원대로 '털썩'…코스피·코스닥 서킷브레이커 발...",
+          "expected": true,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-29",
+          "title": "한국투자증권의 황당한 오류 '논란'…연도 하나 틀려 8천700명 '복지 재심사'",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-52",
+          "title": "한국거래소, 지난해 경영평가 B등급…전산장애 영향에 두 단계 하락",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-53",
+          "title": "하나금융 \"연말까지 NPL 커버리지 비율, 100% 위로 끌어올릴 것\"",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-54",
+          "title": "스토리지랩스, 미국 파산법 11장 절차 신청",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-55",
+          "title": "유럽 배터리 산업 붕괴 조짐...노스볼트 이어 바르타 파산 가능성",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-56",
+          "title": "KB금융, 호실적 뒤엔 충당금 감소 한몫…상반기 대손비용 23%↓",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-57",
+          "title": "박은영, 'JTBC 재정난'에 유튜브도 중단…\"제작비의 어려움, 슬퍼\"",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-58",
+          "title": "[더벨][상장폐지 카운트다운] 온타이드, 제이에스코퍼레이션 오너 2세 경...",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-59",
+          "title": "이번엔 기관주의…KB증권, 가중 제제 리스크 노출",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-60",
+          "title": "금융위의 삼성증권 봐주기?...중징계 감경될 듯",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-61",
+          "title": "키움증권, 300억 IT 추가 투자 발표 뒤 또 전산사고…입금했는데 '반대매매'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-62",
+          "title": "젠토신 파산…산업은행·하나은행 손실",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-63",
+          "title": "감사원 “HUG, PF보증 부실심사로 ‘거절 대상’ 3820억 사업장까지 보증”",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-64",
+          "title": "주택도시보증공사 부실심사 도마…감사원 주의 통보",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        }
+      ],
+      "baseline": {
+        "selected": [
+          "fp-54",
+          "fp-58",
+          "fp-62",
+          "tp-26",
+          "tp-29"
+        ],
+        "stats": {
+          "llm": {
+            "claude-haiku-4-5|filter_fallback": {
+              "calls": 1,
+              "in": 867,
+              "out": 1003,
+              "cache_read": 12727,
+              "cache_write": 0
+            }
+          }
+        }
+      },
+      "candidate": {
+        "error": "RuntimeError",
+        "stats": {
+          "llm": {
+            "claude-haiku-4-5|filter_fallback": {
+              "calls": 2,
+              "in": 1818,
+              "out": 1918,
+              "cache_read": 25367,
+              "cache_write": 0
+            }
+          },
+          "filter_seen_detail": [
+            {
+              "batch": 1,
+              "expected": 19,
+              "reported": 19,
+              "returned": 4,
+              "complete": false,
+              "mode": "sparse"
+            },
+            {
+              "batch": 1,
+              "expected": 19,
+              "reported": 19,
+              "returned": 17,
+              "complete": false,
+              "mode": "full"
+            }
+          ],
+          "filter_seen_mismatch": 2,
+          "filter_seen_retry": 1
+        }
+      }
+    },
+    {
+      "name": "history-5",
+      "input_count": 14,
+      "offset": 0,
+      "cases": [
+        {
+          "case_id": "tp-30",
+          "title": "해성에어로보틱스, 인천지법 접수 파산신청 공시",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-31",
+          "title": "'거래정지' 진원생명과학 \"주요 사업 중단 아냐…해소 최선\"",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-32",
+          "title": "미중 반도체 쇼크에 '검은 화요일'…코스피 장중 6,000 붕괴",
+          "expected": true,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-33",
+          "title": "골프존홀딩스 상장폐지 제동…터톤 캐피탈, 금감원에 진정 제기",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-34",
+          "title": "주택도시보증공사 신용등급 하향 검토…정부 출자 축소 논의",
+          "expected": true,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-35",
+          "title": "금융위, 증권사 부동산PF 익스포저 한도 규제 강화…자본확충 요구",
+          "expected": true,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-65",
+          "title": "국정감사서 신용보증기금 보증사고율 급등 질타",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-66",
+          "title": "캠코, 부실채권 인수 심사 허술…내부통제 미비 지적",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-67",
+          "title": "[단독] 기술보증기금, 보증심사 부실로 수백억 손실 우려",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-68",
+          "title": "“23조 부실 털자”…지역농협 NPL펀드 셀프투자 허용",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-69",
+          "title": "금융위, 증권사 부동산PF 익스포저 한도 규제 완화",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-70",
+          "title": "금감원, 부실채권 매각 규제 개선…처리 속도 빨라진다",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-71",
+          "title": "당국, 저축은행 PF 대출 만기연장 요건 완화 허용",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "fp-72",
+          "title": "“30조 연체” 카드사 대손상각 기준 완화 인가",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        }
+      ],
+      "baseline": {
+        "selected": [
+          "tp-30",
+          "tp-31",
+          "tp-33"
+        ],
+        "stats": {
+          "llm": {
+            "claude-haiku-4-5|filter_fallback": {
+              "calls": 1,
+              "in": 566,
+              "out": 850,
+              "cache_read": 12727,
+              "cache_write": 0
+            }
+          }
+        }
+      },
+      "candidate": {
+        "error": "RuntimeError",
+        "stats": {
+          "llm": {
+            "claude-haiku-4-5|filter_fallback": {
+              "calls": 2,
+              "in": 1216,
+              "out": 2117,
+              "cache_read": 25367,
+              "cache_write": 0
+            }
+          },
+          "filter_seen_detail": [
+            {
+              "batch": 1,
+              "expected": 14,
+              "reported": 14,
+              "returned": 3,
+              "complete": false,
+              "mode": "sparse"
+            },
+            {
+              "batch": 1,
+              "expected": 14,
+              "reported": 14,
+              "returned": 13,
+              "complete": false,
+              "mode": "full"
+            }
+          ],
+          "filter_seen_mismatch": 2,
+          "filter_seen_retry": 1
+        }
+      }
+    },
+    {
+      "name": "sparse-first",
+      "input_count": 100,
+      "offset": 0,
+      "cases": [
+        {
+          "case_id": "tp-2",
+          "title": "제이알글로벌리츠 400억 채무불이행, 법원에 회생 신청",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-0",
+          "title": "한국투자증권 IT투자액 1762억 '톱'…KB·신한·NH·하나증권도",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-1",
+          "title": "'출산 휴가' 한민용, JTBC '뉴스룸' 떠나는 직원에 인사",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-2",
+          "title": "샘킴, 얼마나 이기고 싶으면 정호영 배신하고 에스파 춤췄다..카리나 깜짝",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-3",
+          "title": "JTBC '사기꾼들', 재정비 돌입 8월 중 방송 재개",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-4",
+          "title": "신동국 회장, 한미약품 경영권 승기 놓쳤다…엑시트 키 쥔 '4자연합'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-5",
+          "title": "금양, 삼성SDI부터 에코프로까지 … K-배터리 유상증자 잔혹사 [N-경제포커스]",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-6",
+          "title": "도쿄전력, 후쿠시마 오염수 처리비용 눈덩이…적자 확대",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-7",
+          "title": "김미경, 회사 부도 위기·빚 수십억",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-8",
+          "title": "[속보] 필에너지, 712억 공급계약 체결",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-9",
+          "title": "[미국발 고금리] 불안한 빚투…코스피 뇌관 되나",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-10",
+          "title": "빚투 잔고 26조 돌파, 삼성전자 쏠림",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-11",
+          "title": "[기자수첩] '포모'가 부추긴 빚투 경고음",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-12",
+          "title": "코스피 8%대 폭락에 사상 최대 빚투 비상…대규모 반대매매 강제청산",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-13",
+          "title": "태영건설 PF 천안 20년 악몽",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-14",
+          "title": "이원컴포텍, 액면병합 주권 변경상장→매매거래 정지 해제",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-15",
+          "title": "이오플로우, 상폐 결정 연기…인슐렛 항소심 승",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-16",
+          "title": "[공시] 한국제13호스팩, 상장폐지 따른 청산 절차 안내",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-17",
+          "title": "다시 떠오른 사모신용 리스크…블랙스톤, 사모대출펀드 환매 제한",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-18",
+          "title": "가상자산 핵심 알트코인 솔라나, 벼랑 끝 기술적 분석",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-19",
+          "title": "메모리값 폭등에 액션캠 강자 고프로 휘청… 반도체 호황 그늘",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-20",
+          "title": "200만원 넘던 주가 5개월만에…\"도대체 바닥이 어디냐\" 눈물",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-21",
+          "title": "콘텐트리중앙 하한가…롯데시네마·메가박스 합병 무산 후폭풍 [이런국장]",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-22",
+          "title": "CMG제약, 외형 성장 이면의 수익성 둔화...현금흐름 '적신호'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-23",
+          "title": "'중앙그룹 위기'에 떠는 콘텐츠 업계···개봉도 배급도 제작도 '움츠'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-24",
+          "title": "홈플러스 회생기로 '운명의 날'…연장·폐지 갈림길",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-25",
+          "title": "키움證, 빗썸 지분 인수 추진…잦은 전산사고는 '부담'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-26",
+          "title": "키움증권 MTS 접속 장애…30분간 매매 중단",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-27",
+          "title": "미래에셋증권 HTS 먹통에 투자자 불편",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-28",
+          "title": "거래정지? 오히려 불쏘시개였다···금호건설 '4천원→1만6천원' 광란",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-29",
+          "title": "'애 아빠가 많이 화났어요' 주가 하락에 '하이닉스 환불' 밈 확산",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-30",
+          "title": "파산 문턱서 나스닥까지…곽노정이 되짚은 SK하이닉스 25년",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-31",
+          "title": "\"삼전닉스 레버리지? 지금은 비중 축소 권한다\"[경제적본능]",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-32",
+          "title": "비비안 주가 장중 상한가, '상장폐지 막자' 응원 매수에 관련주 강세",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-33",
+          "title": "[특징주] \"상장폐지 막자\" 애국 테마주 또 급등…모나미, 3거래일 연속 상승",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-34",
+          "title": "[단독] 신한투자증권, 美 운용사 파산보호로 2800억원 회수 불투명",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-35",
+          "title": "신한투자증권, \"RIA, 청산 아닌 기업회생…2800억 전액 손실 아냐\"",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-36",
+          "title": "하나증권, 전부문 성장에 2분기 순익 1700억…ROE 개선",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-37",
+          "title": "영광의 IMA, 하지만 상당한 왕관의 무게...한국금융지주 주주 챙기기 쟁점",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-38",
+          "title": "[제약공시 책갈피] 7월 4주차 - 삼성바이오로직스·유한양행外",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-39",
+          "title": "서천특화시장 재건축 '엎친 데 덮친 격'… 시공사 부도 이어 '축소 설계' 논란",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-40",
+          "title": "[공시] 엔젠바이오·휴림에이텍 '투자경고', SK이터닉스·벨로크 '투자주의'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-41",
+          "title": "AI 투자정보·상품·자산관리 \"올 서비스\"...증권업계, MTS 경쟁 '확전'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-42",
+          "title": "SK에코플랜트, 회사채 1000억→2000억 '증액 확정'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-43",
+          "title": "파산 문턱 홈플러스 vs 흑자 부활 남양유업… 사모펀드가 가른 '극과 극'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-44",
+          "title": "치솟는 유가에 관련 ETN, 이달 수익률 상위권 싹쓸이",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-45",
+          "title": "1분기 어닝서프라이즈 가스공사 2분기에도 이어질 듯",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-46",
+          "title": "'매출 3조ʼ 육박 넷마블, 이익잉여금은 40% 줄어 [Z-스코어 기업가치 ...",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-47",
+          "title": "모비어스, 중복상장 문턱서 상장 철회…SJG세종 투자 부담 부메랑[IPO 엑...",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-48",
+          "title": "다시 직면한 '고유가-고금리' 위험",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-49",
+          "title": "거래정지 풀리고 70% 뛴 효성화학…2분기 반전 쓸까",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-50",
+          "title": "일정실업, K-OTC 상장폐지지정기업부 신규 지정…29일 거래 시작",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-51",
+          "title": "檢, 김광일 MBK파트너스 부회장 재소환…경영진 조사 속도",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-52",
+          "title": "한국거래소, 지난해 경영평가 B등급…전산장애 영향에 두 단계 하락",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-53",
+          "title": "하나금융 \"연말까지 NPL 커버리지 비율, 100% 위로 끌어올릴 것\"",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-54",
+          "title": "스토리지랩스, 미국 파산법 11장 절차 신청",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-55",
+          "title": "유럽 배터리 산업 붕괴 조짐...노스볼트 이어 바르타 파산 가능성",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-56",
+          "title": "KB금융, 호실적 뒤엔 충당금 감소 한몫…상반기 대손비용 23%↓",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-57",
+          "title": "박은영, 'JTBC 재정난'에 유튜브도 중단…\"제작비의 어려움, 슬퍼\"",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-58",
+          "title": "[더벨][상장폐지 카운트다운] 온타이드, 제이에스코퍼레이션 오너 2세 경...",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-59",
+          "title": "이번엔 기관주의…KB증권, 가중 제제 리스크 노출",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-60",
+          "title": "금융위의 삼성증권 봐주기?...중징계 감경될 듯",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-61",
+          "title": "키움증권, 300억 IT 추가 투자 발표 뒤 또 전산사고…입금했는데 '반대매매'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-62",
+          "title": "젠토신 파산…산업은행·하나은행 손실",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-63",
+          "title": "감사원 “HUG, PF보증 부실심사로 ‘거절 대상’ 3820억 사업장까지 보증”",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-64",
+          "title": "주택도시보증공사 부실심사 도마…감사원 주의 통보",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-65",
+          "title": "국정감사서 신용보증기금 보증사고율 급등 질타",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-66",
+          "title": "캠코, 부실채권 인수 심사 허술…내부통제 미비 지적",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-67",
+          "title": "[단독] 기술보증기금, 보증심사 부실로 수백억 손실 우려",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-68",
+          "title": "“23조 부실 털자”…지역농협 NPL펀드 셀프투자 허용",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-69",
+          "title": "금융위, 증권사 부동산PF 익스포저 한도 규제 완화",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-70",
+          "title": "금감원, 부실채권 매각 규제 개선…처리 속도 빨라진다",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-71",
+          "title": "당국, 저축은행 PF 대출 만기연장 요건 완화 허용",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-72",
+          "title": "“30조 연체” 카드사 대손상각 기준 완화 인가",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-73",
+          "title": "한국투자증권 IT투자액 1762억 '톱'…KB·신한·NH·하나증권도",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-74",
+          "title": "'출산 휴가' 한민용, JTBC '뉴스룸' 떠나는 직원에 인사",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-75",
+          "title": "샘킴, 얼마나 이기고 싶으면 정호영 배신하고 에스파 춤췄다..카리나 깜짝",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-76",
+          "title": "JTBC '사기꾼들', 재정비 돌입 8월 중 방송 재개",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-77",
+          "title": "신동국 회장, 한미약품 경영권 승기 놓쳤다…엑시트 키 쥔 '4자연합'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-78",
+          "title": "금양, 삼성SDI부터 에코프로까지 … K-배터리 유상증자 잔혹사 [N-경제포커스]",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-79",
+          "title": "도쿄전력, 후쿠시마 오염수 처리비용 눈덩이…적자 확대",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-80",
+          "title": "김미경, 회사 부도 위기·빚 수십억",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-81",
+          "title": "[속보] 필에너지, 712억 공급계약 체결",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-82",
+          "title": "[미국발 고금리] 불안한 빚투…코스피 뇌관 되나",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-83",
+          "title": "빚투 잔고 26조 돌파, 삼성전자 쏠림",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-84",
+          "title": "[기자수첩] '포모'가 부추긴 빚투 경고음",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-85",
+          "title": "코스피 8%대 폭락에 사상 최대 빚투 비상…대규모 반대매매 강제청산",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-86",
+          "title": "태영건설 PF 천안 20년 악몽",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-87",
+          "title": "이원컴포텍, 액면병합 주권 변경상장→매매거래 정지 해제",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-88",
+          "title": "이오플로우, 상폐 결정 연기…인슐렛 항소심 승",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-89",
+          "title": "[공시] 한국제13호스팩, 상장폐지 따른 청산 절차 안내",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-90",
+          "title": "다시 떠오른 사모신용 리스크…블랙스톤, 사모대출펀드 환매 제한",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-91",
+          "title": "가상자산 핵심 알트코인 솔라나, 벼랑 끝 기술적 분석",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-92",
+          "title": "메모리값 폭등에 액션캠 강자 고프로 휘청… 반도체 호황 그늘",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-93",
+          "title": "200만원 넘던 주가 5개월만에…\"도대체 바닥이 어디냐\" 눈물",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-94",
+          "title": "콘텐트리중앙 하한가…롯데시네마·메가박스 합병 무산 후폭풍 [이런국장]",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-95",
+          "title": "CMG제약, 외형 성장 이면의 수익성 둔화...현금흐름 '적신호'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-96",
+          "title": "'중앙그룹 위기'에 떠는 콘텐츠 업계···개봉도 배급도 제작도 '움츠'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-97",
+          "title": "홈플러스 회생기로 '운명의 날'…연장·폐지 갈림길",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-98",
+          "title": "키움證, 빗썸 지분 인수 추진…잦은 전산사고는 '부담'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        }
+      ],
+      "baseline": {
+        "selected": [
+          "noise-13",
+          "noise-15",
+          "noise-21",
+          "noise-24",
+          "noise-34",
+          "noise-50",
+          "noise-86",
+          "noise-88",
+          "noise-94",
+          "noise-97",
+          "tp-2"
+        ],
+        "stats": {
+          "llm": {
+            "claude-haiku-4-5|filter_fallback": {
+              "calls": 1,
+              "in": 4359,
+              "out": 3671,
+              "cache_read": 12727,
+              "cache_write": 0
+            }
+          }
+        }
+      },
+      "candidate": {
+        "error": "RuntimeError",
+        "stats": {
+          "llm": {
+            "claude-haiku-4-5|filter_fallback": {
+              "calls": 2,
+              "in": 8802,
+              "out": 4331,
+              "cache_read": 25367,
+              "cache_write": 0
+            }
+          },
+          "filter_seen_detail": [
+            {
+              "batch": 1,
+              "expected": 100,
+              "reported": 100,
+              "returned": 9,
+              "complete": false,
+              "mode": "sparse"
+            },
+            {
+              "batch": 1,
+              "expected": 100,
+              "reported": 100,
+              "returned": 95,
+              "complete": false,
+              "mode": "full"
+            }
+          ],
+          "filter_seen_mismatch": 2,
+          "filter_seen_retry": 1
+        }
+      }
+    },
+    {
+      "name": "sparse-last-offset",
+      "input_count": 100,
+      "offset": 100,
+      "cases": [
+        {
+          "case_id": "noise-0",
+          "title": "한국투자증권 IT투자액 1762억 '톱'…KB·신한·NH·하나증권도",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-1",
+          "title": "'출산 휴가' 한민용, JTBC '뉴스룸' 떠나는 직원에 인사",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-2",
+          "title": "샘킴, 얼마나 이기고 싶으면 정호영 배신하고 에스파 춤췄다..카리나 깜짝",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-3",
+          "title": "JTBC '사기꾼들', 재정비 돌입 8월 중 방송 재개",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-4",
+          "title": "신동국 회장, 한미약품 경영권 승기 놓쳤다…엑시트 키 쥔 '4자연합'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-5",
+          "title": "금양, 삼성SDI부터 에코프로까지 … K-배터리 유상증자 잔혹사 [N-경제포커스]",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-6",
+          "title": "도쿄전력, 후쿠시마 오염수 처리비용 눈덩이…적자 확대",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-7",
+          "title": "김미경, 회사 부도 위기·빚 수십억",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-8",
+          "title": "[속보] 필에너지, 712억 공급계약 체결",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-9",
+          "title": "[미국발 고금리] 불안한 빚투…코스피 뇌관 되나",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-10",
+          "title": "빚투 잔고 26조 돌파, 삼성전자 쏠림",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-11",
+          "title": "[기자수첩] '포모'가 부추긴 빚투 경고음",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-12",
+          "title": "코스피 8%대 폭락에 사상 최대 빚투 비상…대규모 반대매매 강제청산",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-13",
+          "title": "태영건설 PF 천안 20년 악몽",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-14",
+          "title": "이원컴포텍, 액면병합 주권 변경상장→매매거래 정지 해제",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-15",
+          "title": "이오플로우, 상폐 결정 연기…인슐렛 항소심 승",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-16",
+          "title": "[공시] 한국제13호스팩, 상장폐지 따른 청산 절차 안내",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-17",
+          "title": "다시 떠오른 사모신용 리스크…블랙스톤, 사모대출펀드 환매 제한",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-18",
+          "title": "가상자산 핵심 알트코인 솔라나, 벼랑 끝 기술적 분석",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-19",
+          "title": "메모리값 폭등에 액션캠 강자 고프로 휘청… 반도체 호황 그늘",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-20",
+          "title": "200만원 넘던 주가 5개월만에…\"도대체 바닥이 어디냐\" 눈물",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-21",
+          "title": "콘텐트리중앙 하한가…롯데시네마·메가박스 합병 무산 후폭풍 [이런국장]",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-22",
+          "title": "CMG제약, 외형 성장 이면의 수익성 둔화...현금흐름 '적신호'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-23",
+          "title": "'중앙그룹 위기'에 떠는 콘텐츠 업계···개봉도 배급도 제작도 '움츠'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-24",
+          "title": "홈플러스 회생기로 '운명의 날'…연장·폐지 갈림길",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-25",
+          "title": "키움證, 빗썸 지분 인수 추진…잦은 전산사고는 '부담'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-26",
+          "title": "키움증권 MTS 접속 장애…30분간 매매 중단",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-27",
+          "title": "미래에셋증권 HTS 먹통에 투자자 불편",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-28",
+          "title": "거래정지? 오히려 불쏘시개였다···금호건설 '4천원→1만6천원' 광란",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-29",
+          "title": "'애 아빠가 많이 화났어요' 주가 하락에 '하이닉스 환불' 밈 확산",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-30",
+          "title": "파산 문턱서 나스닥까지…곽노정이 되짚은 SK하이닉스 25년",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-31",
+          "title": "\"삼전닉스 레버리지? 지금은 비중 축소 권한다\"[경제적본능]",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-32",
+          "title": "비비안 주가 장중 상한가, '상장폐지 막자' 응원 매수에 관련주 강세",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-33",
+          "title": "[특징주] \"상장폐지 막자\" 애국 테마주 또 급등…모나미, 3거래일 연속 상승",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-34",
+          "title": "[단독] 신한투자증권, 美 운용사 파산보호로 2800억원 회수 불투명",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-35",
+          "title": "신한투자증권, \"RIA, 청산 아닌 기업회생…2800억 전액 손실 아냐\"",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-36",
+          "title": "하나증권, 전부문 성장에 2분기 순익 1700억…ROE 개선",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-37",
+          "title": "영광의 IMA, 하지만 상당한 왕관의 무게...한국금융지주 주주 챙기기 쟁점",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-38",
+          "title": "[제약공시 책갈피] 7월 4주차 - 삼성바이오로직스·유한양행外",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-39",
+          "title": "서천특화시장 재건축 '엎친 데 덮친 격'… 시공사 부도 이어 '축소 설계' 논란",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-40",
+          "title": "[공시] 엔젠바이오·휴림에이텍 '투자경고', SK이터닉스·벨로크 '투자주의'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-41",
+          "title": "AI 투자정보·상품·자산관리 \"올 서비스\"...증권업계, MTS 경쟁 '확전'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-42",
+          "title": "SK에코플랜트, 회사채 1000억→2000억 '증액 확정'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-43",
+          "title": "파산 문턱 홈플러스 vs 흑자 부활 남양유업… 사모펀드가 가른 '극과 극'",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-44",
+          "title": "치솟는 유가에 관련 ETN, 이달 수익률 상위권 싹쓸이",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-45",
+          "title": "1분기 어닝서프라이즈 가스공사 2분기에도 이어질 듯",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-46",
+          "title": "'매출 3조ʼ 육박 넷마블, 이익잉여금은 40% 줄어 [Z-스코어 기업가치 ...",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-47",
+          "title": "모비어스, 중복상장 문턱서 상장 철회…SJG세종 투자 부담 부메랑[IPO 엑...",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-48",
+          "title": "다시 직면한 '고유가-고금리' 위험",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-49",
+          "title": "거래정지 풀리고 70% 뛴 효성화학…2분기 반전 쓸까",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-50",
+          "title": "일정실업, K-OTC 상장폐지지정기업부 신규 지정…29일 거래 시작",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-51",
+          "title": "檢, 김광일 MBK파트너스 부회장 재소환…경영진 조사 속도",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-52",
+          "title": "한국거래소, 지난해 경영평가 B등급…전산장애 영향에 두 단계 하락",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-53",
+          "title": "하나금융 \"연말까지 NPL 커버리지 비율, 100% 위로 끌어올릴 것\"",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-54",
+          "title": "스토리지랩스, 미국 파산법 11장 절차 신청",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-55",
+          "title": "유럽 배터리 산업 붕괴 조짐...노스볼트 이어 바르타 파산 가능성",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-56",
+          "title": "KB금융, 호실적 뒤엔 충당금 감소 한몫…상반기 대손비용 23%↓",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-57",
+          "title": "박은영, 'JTBC 재정난'에 유튜브도 중단…\"제작비의 어려움, 슬퍼\"",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-58",
+          "title": "[더벨][상장폐지 카운트다운] 온타이드, 제이에스코퍼레이션 오너 2세 경...",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-59",
+          "title": "이번엔 기관주의…KB증권, 가중 제제 리스크 노출",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-60",
+          "title": "금융위의 삼성증권 봐주기?...중징계 감경될 듯",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-61",
+          "title": "키움증권, 300억 IT 추가 투자 발표 뒤 또 전산사고…입금했는데 '반대매매'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-62",
+          "title": "젠토신 파산…산업은행·하나은행 손실",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-63",
+          "title": "감사원 “HUG, PF보증 부실심사로 ‘거절 대상’ 3820억 사업장까지 보증”",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-64",
+          "title": "주택도시보증공사 부실심사 도마…감사원 주의 통보",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-65",
+          "title": "국정감사서 신용보증기금 보증사고율 급등 질타",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-66",
+          "title": "캠코, 부실채권 인수 심사 허술…내부통제 미비 지적",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-67",
+          "title": "[단독] 기술보증기금, 보증심사 부실로 수백억 손실 우려",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-68",
+          "title": "“23조 부실 털자”…지역농협 NPL펀드 셀프투자 허용",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-69",
+          "title": "금융위, 증권사 부동산PF 익스포저 한도 규제 완화",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-70",
+          "title": "금감원, 부실채권 매각 규제 개선…처리 속도 빨라진다",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-71",
+          "title": "당국, 저축은행 PF 대출 만기연장 요건 완화 허용",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-72",
+          "title": "“30조 연체” 카드사 대손상각 기준 완화 인가",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-73",
+          "title": "한국투자증권 IT투자액 1762억 '톱'…KB·신한·NH·하나증권도",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-74",
+          "title": "'출산 휴가' 한민용, JTBC '뉴스룸' 떠나는 직원에 인사",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-75",
+          "title": "샘킴, 얼마나 이기고 싶으면 정호영 배신하고 에스파 춤췄다..카리나 깜짝",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-76",
+          "title": "JTBC '사기꾼들', 재정비 돌입 8월 중 방송 재개",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-77",
+          "title": "신동국 회장, 한미약품 경영권 승기 놓쳤다…엑시트 키 쥔 '4자연합'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-78",
+          "title": "금양, 삼성SDI부터 에코프로까지 … K-배터리 유상증자 잔혹사 [N-경제포커스]",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-79",
+          "title": "도쿄전력, 후쿠시마 오염수 처리비용 눈덩이…적자 확대",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-80",
+          "title": "김미경, 회사 부도 위기·빚 수십억",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-81",
+          "title": "[속보] 필에너지, 712억 공급계약 체결",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-82",
+          "title": "[미국발 고금리] 불안한 빚투…코스피 뇌관 되나",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-83",
+          "title": "빚투 잔고 26조 돌파, 삼성전자 쏠림",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-84",
+          "title": "[기자수첩] '포모'가 부추긴 빚투 경고음",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-85",
+          "title": "코스피 8%대 폭락에 사상 최대 빚투 비상…대규모 반대매매 강제청산",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-86",
+          "title": "태영건설 PF 천안 20년 악몽",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-87",
+          "title": "이원컴포텍, 액면병합 주권 변경상장→매매거래 정지 해제",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-88",
+          "title": "이오플로우, 상폐 결정 연기…인슐렛 항소심 승",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-89",
+          "title": "[공시] 한국제13호스팩, 상장폐지 따른 청산 절차 안내",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-90",
+          "title": "다시 떠오른 사모신용 리스크…블랙스톤, 사모대출펀드 환매 제한",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-91",
+          "title": "가상자산 핵심 알트코인 솔라나, 벼랑 끝 기술적 분석",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-92",
+          "title": "메모리값 폭등에 액션캠 강자 고프로 휘청… 반도체 호황 그늘",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-93",
+          "title": "200만원 넘던 주가 5개월만에…\"도대체 바닥이 어디냐\" 눈물",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-94",
+          "title": "콘텐트리중앙 하한가…롯데시네마·메가박스 합병 무산 후폭풍 [이런국장]",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-95",
+          "title": "CMG제약, 외형 성장 이면의 수익성 둔화...현금흐름 '적신호'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-96",
+          "title": "'중앙그룹 위기'에 떠는 콘텐츠 업계···개봉도 배급도 제작도 '움츠'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-97",
+          "title": "홈플러스 회생기로 '운명의 날'…연장·폐지 갈림길",
+          "expected": false,
+          "baseline": true,
+          "candidate": false
+        },
+        {
+          "case_id": "noise-98",
+          "title": "키움證, 빗썸 지분 인수 추진…잦은 전산사고는 '부담'",
+          "expected": false,
+          "baseline": false,
+          "candidate": false
+        },
+        {
+          "case_id": "tp-2",
+          "title": "제이알글로벌리츠 400억 채무불이행, 법원에 회생 신청",
+          "expected": true,
+          "baseline": true,
+          "candidate": false
+        }
+      ],
+      "baseline": {
+        "selected": [
+          "noise-13",
+          "noise-15",
+          "noise-21",
+          "noise-24",
+          "noise-43",
+          "noise-50",
+          "noise-57",
+          "noise-86",
+          "noise-88",
+          "noise-94",
+          "noise-97",
+          "tp-2"
+        ],
+        "stats": {
+          "llm": {
+            "claude-haiku-4-5|filter_fallback": {
+              "calls": 1,
+              "in": 4359,
+              "out": 3635,
+              "cache_read": 12727,
+              "cache_write": 0
+            }
+          }
+        }
+      },
+      "candidate": {
+        "error": "RuntimeError",
+        "stats": {
+          "llm": {
+            "claude-haiku-4-5|filter_fallback": {
+              "calls": 2,
+              "in": 8802,
+              "out": 5289,
+              "cache_read": 25367,
+              "cache_write": 0
+            }
+          },
+          "filter_seen_detail": [
+            {
+              "batch": 2,
+              "expected": 100,
+              "reported": 100,
+              "returned": 4,
+              "complete": false,
+              "mode": "sparse"
+            },
+            {
+              "batch": 2,
+              "expected": 100,
+              "reported": 100,
+              "returned": 94,
+              "complete": false,
+              "mode": "full"
+            }
+          ],
+          "filter_seen_mismatch": 2,
+          "filter_seen_retry": 1
+        }
+      }
+    }
+  ],
+  "new_misses": [
+    {
+      "batch": "history-0",
+      "case_id": "tp-0",
+      "title": "금양, 상장폐지 효력정지 가처분 신청",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "history-0",
+      "case_id": "tp-1",
+      "title": "한국투자증권 전산사고 과태료 1억 제재",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "history-0",
+      "case_id": "tp-2",
+      "title": "제이알글로벌리츠 400억 채무불이행, 법원에 회생 신청",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "history-0",
+      "case_id": "tp-3",
+      "title": "금감원, 증권사 PF 브릿지론 현장검사 착수",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "history-0",
+      "case_id": "tp-5",
+      "title": "한국투자증권 MTS 접속 장애, 매매 1시간 중단",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "history-1",
+      "case_id": "tp-7",
+      "title": "다원시스, 불성실공시법인 지정예고→상장적격성 실질심사 가능성",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "history-2",
+      "case_id": "tp-13",
+      "title": "마이크론, 나스닥 상장폐지 확정",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "history-2",
+      "case_id": "tp-15",
+      "title": "제이티비씨 채무불이행→콘텐트리중앙·메가박스중앙 회생절차 신청",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "history-3",
+      "case_id": "tp-19",
+      "title": "NH투자증권 직원이 DI동일 주가조작 가담 적발",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "history-3",
+      "case_id": "tp-20",
+      "title": "대호에이엘 임시주총 또 연기…매각·상폐 심사 변수",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "history-3",
+      "case_id": "tp-22",
+      "title": "인텔 '깜짝 실적'에도 7.89%↓ SK하이닉스 ADR 8.81%↓",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "history-3",
+      "case_id": "tp-23",
+      "title": "마이크론 주가 한 달 새 25% 급락…'역대급 실적'에도 무너진 이유",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "history-4",
+      "case_id": "tp-26",
+      "title": "엘앤에프 테슬라 계약 정정 공시 논란, 금융당국 압수수색 착수",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "history-4",
+      "case_id": "tp-29",
+      "title": "한국투자증권의 황당한 오류 '논란'…연도 하나 틀려 8천700명 '복지 재심사'",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "history-5",
+      "case_id": "tp-30",
+      "title": "해성에어로보틱스, 인천지법 접수 파산신청 공시",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "history-5",
+      "case_id": "tp-31",
+      "title": "'거래정지' 진원생명과학 \"주요 사업 중단 아냐…해소 최선\"",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "history-5",
+      "case_id": "tp-33",
+      "title": "골프존홀딩스 상장폐지 제동…터톤 캐피탈, 금감원에 진정 제기",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "sparse-first",
+      "case_id": "tp-2",
+      "title": "제이알글로벌리츠 400억 채무불이행, 법원에 회생 신청",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    },
+    {
+      "batch": "sparse-last-offset",
+      "case_id": "tp-2",
+      "title": "제이알글로벌리츠 400억 채무불이행, 법원에 회생 신청",
+      "expected": true,
+      "baseline": true,
+      "candidate": false
+    }
+  ],
+  "errors": [
+    {
+      "batch": "history-0",
+      "mode": "candidate",
+      "type": "RuntimeError"
+    },
+    {
+      "batch": "history-2",
+      "mode": "candidate",
+      "type": "RuntimeError"
+    },
+    {
+      "batch": "history-3",
+      "mode": "candidate",
+      "type": "RuntimeError"
+    },
+    {
+      "batch": "history-4",
+      "mode": "candidate",
+      "type": "RuntimeError"
+    },
+    {
+      "batch": "history-5",
+      "mode": "candidate",
+      "type": "RuntimeError"
+    },
+    {
+      "batch": "sparse-first",
+      "mode": "candidate",
+      "type": "RuntimeError"
+    },
+    {
+      "batch": "sparse-last-offset",
+      "mode": "candidate",
+      "type": "RuntimeError"
+    }
+  ],
+  "price_as_of": "2026-09-26",
+  "history_summary": {
+    "baseline": {
+      "tp": 18,
+      "fn": 18,
+      "fp": 10,
+      "tn": 63
+    },
+    "candidate": {
+      "tp": 3,
+      "fn": 33,
+      "fp": 1,
+      "tn": 72
+    }
+  },
+  "requires_review": true,
+  "passed": false
+}
