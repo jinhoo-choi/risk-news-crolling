@@ -5,6 +5,17 @@
 
 ---
 
+## 검증 브랜치의 사건 정보 갱신
+
+PR #1의 보완 후보는 `known_cases.json`의 `as_of`(공시 기준일),
+`verified_at`(확인일), `sources`(HTTPS 원문/공식 IR 링크)가 있는 기록만 사용한다.
+기준일 이후 30일을 넘기면 프롬프트와 자동 강등 seed에서 제외한다.
+확인하지 않은 법원 결정이나 사건 종결을 추정해 갱신하지 않는다.
+원본 별칭 매핑과 실제 발송 이력에 따른 중복제거는 별도로 유지된다.
+
+1차 분류에는 기사에 등장한 보유 종목명·CSV 기준일만 제공한다. 미매칭은 보유 미확인이다.
+고객정보·잔고액을 추가하지 말고, 과거 기사 평가에는 당시 보유 스냅샷을 확보해야 한다.
+
 ## 1. 시스템 개요 (30초)
 
 | 항목 | 내용 |
@@ -46,6 +57,7 @@
    · KeyError: 'EMAIL_SENDER' 등 → GitHub Secrets 누락/만료
    · SMTP 인증 실패 → Gmail 앱 비밀번호 만료
    · 429/quota → Anthropic 호출 한도·크레딧 확인
+   · 1차 필터 완전성 확인 실패 → 누락/형식 오류로 재판정까지 실패. 결과 없음으로 간주하지 말고 Actions 로그와 filter_seen_detail 확인
 ```
 
 ---
@@ -112,14 +124,17 @@ PY_STATS
 
 | 필드 | 의미 |
 |---|---|
-| `filter_model` / `verify_model` | 1차/2차 모델 설정. 미호출 단계의 비용은 `llm`으로 확인 |
+| `filter_model` / `verify_model` | 실제 1차/2차 모델 |
 | `llm` | 모델·단계별 호출수, 일반 입력/출력/캐시 읽기/쓰기 토큰 |
 | `filter_input_count` | 하드룰 이후 실제 LLM 투입량. 중복률 분모 |
+| `filter_seen_detail` | 배치별 expected/reported/returned/complete/mode |
+| `filter_seen_retry` | 불완전 응답을 전건 명시 방식으로 재판정한 배치수 |
 | `scope` / `is_test` | 최종 발송 범위 / 강제 본인한정 테스트 여부 |
 | `run_id` / `commit` | Actions 실행과 코드 버전 추적 |
 
-필터 생략 최적화와 실제 API 비교 도구는 PR #1의 검증 브랜치에 있으며 품질 기준 미달로 병합 보류 중이다.
-비교 결과·원본 JSON과 운영 반영 범위는 `docs/REVIEW_2026-09-26.md`를 확인한다.
+`seen`은 모델의 자체 보고이므로 일치해도 미탐 0을 증명하지 않는다.
+API 품질 비교는 `test_filter_protocol.py --live-ab --base-ref <비교할 커밋>`으로 수행한다.
+실제 API 비용이 발생하지만 메일·뉴스 수집·운영 seen 파일은 사용하지 않는다.
 비용은 정규 회차와 테스트를 구분하고 일반 입력·캐시 토큰의 중복 합산 없이 계산한다.
 과거 Gemini 필드가 있는 행은 이전 스키마이며 삭제하거나 0원으로 간주하지 않는다.
 
@@ -146,7 +161,7 @@ PY_STATS
 ## 5. 코드 수정 시
 
 ```bash
-bash run_tests.sh      # 7개 테스트 + 컴파일. '전체 통과'가 아니면 커밋 금지
+bash run_tests.sh      # 8개 테스트 + 컴파일. '전체 통과'가 아니면 커밋 금지
 ```
 
 상세 절차·오탐 대응은 `VERIFY.md`.

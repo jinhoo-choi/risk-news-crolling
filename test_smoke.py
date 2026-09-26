@@ -118,6 +118,9 @@ def _fake_post(url, *a, **k):
     # (프롬프트 본문 어휘는 서로 겹쳐서 오분기가 난다 — 실측 확인)
     prompt = json.dumps(body, ensure_ascii=False)
     if "relevant" in prompt:                    # 1차 필터(Claude fallback)
+        import re
+        dynamic = body["messages"][0]["content"][-1]["text"]
+        ids = [int(n) for n in re.findall(r"^(\d+)\. ", dynamic, re.M)]
         txt = json.dumps([
             {"id": 1, "relevant": True, "grade": "긴급", "reason": "부도 확정",
              "confidence": 0.95, "action": "확인", "entity": "A사",
@@ -125,7 +128,7 @@ def _fake_post(url, *a, **k):
             {"id": 2, "relevant": True, "grade": "참고", "reason": "급락",
              "confidence": 0.6, "action": None, "entity": "삼성전자",
              "entities": ["삼성전자"], "event_type": "주가급락", "related_stocks": []},
-        ], ensure_ascii=False)
+        ] + [{"id": 0, "seen": len(ids)}], ensure_ascii=False)
     elif "risk" in prompt and "judgment" in prompt:   # 2차 본문검증
         txt = json.dumps({"risk": True, "reason": "유지",
                           "judgment": {"핵심사건": "부도", "손실주체": "A사",
@@ -253,6 +256,7 @@ def main():
         if any(t in l for t in ["[발송판정]", "[2차 검증 모델", "[운영지표]",
                                 "[시장급락", "본인 한정", "전체 발송"]):
             print(f"    {l.strip()}")
+
     with open(_tmp_stats, encoding="utf-8") as stats_file:
         initial_stats = json.loads(stats_file.read().splitlines()[-1])
     if initial_stats["filter_input_count"] <= 0 or not initial_stats["is_test"]:

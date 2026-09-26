@@ -50,8 +50,10 @@ jobs:
           git checkout -- seen_news.json || true
           git add run_stats.jsonl || true
           git diff --cached --quiet || git commit -m "test: run_stats 기록 [skip ci]"
-          git pull --rebase origin main || true
-          git push || true
+          # 브랜치에서 실행할 때 origin main 으로 rebase 하면 push 가
+          # non-fast-forward 로 죽는데 || true 가 삼켜, 지표가 사라진다.
+          git pull --rebase origin "${{ github.ref_name }}" || true
+          git push origin "HEAD:${{ github.ref_name }}" || true
 
       # ※ seen_news.json은 커밋하지 않는다 — 테스트 실행이 정규 회차의
       #   dedup 상태를 오염시키지 않도록.

@@ -1,7 +1,7 @@
 name: 회귀 테스트 (PR)
 
 # PR에서 run_tests.sh 전체 회귀를 자동 검증한다.
-# 시크릿을 일절 쓰지 않으므로 외부 API 호출·비용이 발생하지 않는다.
+# 기본 회귀는 시크릿/API를 쓰지 않는다. 아래 A/B 작업만 지정된 내부 브랜치에서 실행한다.
 on:
   pull_request:
     branches: [main]
@@ -19,3 +19,35 @@ jobs:
       - run: pip install -r requirements.txt
       - run: bash run_tests.sh
       - run: python3 check_changes.py
+      - run: python3 sim_verify.py
+      - run: python3 sim_pipeline.py
+
+  filter-ab:
+    name: 실제 기사 필터 A/B (메일 발송 없음)
+    needs: tests
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'perf/filter-omit-negatives'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 기존 main과 후보의 동일 기사 비교
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BASE_REF: ${{ github.event.pull_request.base.sha }}
+        run: python3 test_filter_protocol.py --live-ab --base-ref "$BASE_REF" --output filter_ab_result.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: filter-ab-${{ github.run_id }}
+          path: filter_ab_result.json
+          retention-days: 30
+          if-no-files-found: error
