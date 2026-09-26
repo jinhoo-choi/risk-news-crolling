@@ -3187,10 +3187,17 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                     grade_map[_gid] = g
             # false 기사를 배열에서 생략시켰으므로, 응답이 잘려도 '전부 false'와
             # 구분이 안 된다. 모델이 보고한 판단 건수로 그 구분을 만든다.
+            # 불일치가 '무해한 오보고'인지 '실제 누락(미탐)'인지 구분하려면
+            # 보고값 자체가 필요하다. 집계만으로는 판단이 안 된다.
+            _RUN_STATS.setdefault("filter_seen_detail", []).append(
+                {"batch": offset // batch_size_hint() + 1,
+                 "expected": len(batch), "reported": _seen,
+                 "returned": len(grade_map)})
             if _seen != len(batch):
                 _RUN_STATS["filter_seen_mismatch"] = \
                     _RUN_STATS.get("filter_seen_mismatch", 0) + 1
                 print(f"  [seen 불일치] 목록 {len(batch)}건 / 모델 보고 {_seen} "
+                      f"/ relevant 반환 {len(grade_map)}건 "
                       f"(배치 {offset//batch_size_hint()+1})")
             result = []
             for i, article in enumerate(batch):
@@ -4765,6 +4772,7 @@ def save_run_stats(collected: int, selected: int, verify_model: str,
         # 금액은 단가 변동 때문에 기록하지 않는다(토큰 × 당시 단가로 계산).
         "pre_llm_dup": _RUN_STATS.get("pre_llm_dup", 0),
         "filter_seen_mismatch": _RUN_STATS.get("filter_seen_mismatch", 0),
+        "filter_seen_detail": _RUN_STATS.get("filter_seen_detail", []),
         "llm_calls": sum(v["calls"] for v in _RUN_STATS.get("llm", {}).values()),
         "llm": _RUN_STATS.get("llm", {}),
     }
