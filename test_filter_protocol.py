@@ -14,7 +14,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from datetime import date
+from unittest.mock import mock_open, patch
 
 for key in ("EMAIL_SENDER", "EMAIL_PASSWORD", "EMAIL_RECEIVER",
             "ANTHROPIC_API_KEY", "NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET"):
@@ -100,7 +101,7 @@ class FilterProtocolTests(unittest.TestCase):
         self.assertNotIn("grade", batch[0])
 
     def test_initial_failure_recovers_with_full_response(self):
-        def classify(batch, offset=0, full_response=False):
+        def classify(batch, offset=0, full_response=False, exposure_data=None):
             if not full_response:
                 return None
             M._RUN_STATS.setdefault("filter_seen_detail", []).append({"complete": True})
@@ -144,6 +145,55 @@ class FilterProtocolTests(unittest.TestCase):
         with patch.object(M.requests, "post", return_value=Response([positive(1), {"id": 0, "seen": 2}])):
             M.ai_filter_batch(articles(), full_response=True)
         self.assertFalse(M._RUN_STATS["filter_seen_detail"][-1]["complete"])
+        self.assertIn("missing_full_response_ids", M._RUN_STATS["filter_seen_detail"][-1]["issues"])
+
+    def test_known_cases_require_recent_dated_sources(self):
+        valid = {"entity": "검증기업", "as_of": "2026-09-16", "verified_at": "2026-09-26",
+                 "sources": ["https://example.com/disclosure"], "event": "신규 결정", "stage": "결과 미확인"}
+        invalid = [dict(valid, sources=[]), dict(valid, sources="https://example.com"),
+                   dict(valid, sources=[123]), dict(valid, as_of="2026-08-01"),
+                   dict(valid, as_of="2026-09-27"), dict(valid, verified_at="2026-09-27"),
+                   dict(valid, verified_at="2026-09-15"), dict(valid, as_of="2026-02-30"),
+                   {"entity": "기존기업", "stage": "이미 종결 확정"}]
+        with patch("builtins.open", mock_open(read_data=json.dumps([valid] + invalid))):
+            self.assertEqual(M.load_verified_known_cases(date(2026, 9, 26)), [valid])
+            rendered = M.render_known_cases(date(2026, 9, 26))
+            self.assertIn("2026-09-16 공시 기준", rendered)
+            self.assertNotIn("이미 종결", rendered)
+            self.assertEqual(M.load_verified_known_cases(date(2026, 10, 17)), [])
+        with patch.object(M, "load_verified_known_cases", return_value=[valid]):
+            self.assertEqual(M.load_known_case_entities(), {"검증기업"})
+        with patch("builtins.open", side_effect=OSError):
+            self.assertEqual(M.render_known_cases(), M._KNOWN_CASES_FALLBACK)
+            self.assertEqual(M.load_known_case_entities(), set())
+
+    def test_exposure_hints_are_bound_to_article_and_hide_customer_data(self):
+        rows = [{"잔고(억)": "10", "기준일": "2026-09-22", "고객명": "PRIVATE_CUSTOMER"}]
+        expo = {name: rows for name in ("테슬라", "마이크론", "삼성전자", "에이치엘만도", "SK하이닉스",
+                                       "ACE SK하이닉스단일종목레버리지")}
+        expo["무잔고기업"] = [{"잔고(억)": "0", "기준일": "2026-09-22"}]
+        batch = [{"title": "테슬라는 하루 8% 급락", "desc": "마이크론 하락"},
+                 {"title": "하나마이크론·삼성전자우·무잔고기업 급락", "entity": "테슬라"},
+                 {"title": "HL만도와 ACE SK하이닉스 단일종목레버리지 점검"}]
+        hints = M.filter_exposure_context(batch, expo)
+        self.assertEqual({r["종목"] for r in hints[0]}, {"테슬라", "마이크론"})
+        self.assertEqual(hints[1], [])  # 정답 entity와 다른 종목의 부분문자열을 사용하지 않는다.
+        self.assertEqual({r["종목"] for r in hints[2]}, {"에이치엘만도", "ACE SK하이닉스단일종목레버리지"})
+        self.assertNotIn("PRIVATE_CUSTOMER", json.dumps(hints))
+        self.assertNotIn("잔고(억)", json.dumps(hints, ensure_ascii=False))
+        with patch.object(M.requests, "post", return_value=Response([{"id": 0, "seen": 3}])) as post:
+            M.filter_batch_complete(batch, exposure_data=expo)
+        dynamic = post.call_args.kwargs["json"]["messages"][0]["content"][1]["text"]
+        self.assertIn("2026-09-22", dynamic)
+        self.assertIn("기사일: 미제공", dynamic)
+        self.assertNotIn("PRIVATE_CUSTOMER", dynamic)
+
+    def test_filter_pipeline_passes_holdings_to_classifier(self):
+        expo = {"테슬라": [{"잔고(억)": "10"}]}
+        with patch.object(M, "filter_batch_complete", return_value=[]) as classify, \
+                patch.object(M, "regrade_by_score", return_value=[]):
+            self.assertEqual(M.ai_filter_and_grade(articles(), exposure_data=expo), [])
+        self.assertIs(classify.call_args.kwargs["exposure_data"], expo)
 
     def test_truncation_and_malformed_json_are_not_repaired(self):
         for response in (Response([positive(1)], "max_tokens"), Response('[{"id":1,')):
@@ -216,6 +266,19 @@ def live_ab(base_ref, output):
     report = {"base_ref": base_ref, "candidate_sha": os.getenv("GITHUB_SHA", "local"),
               "model": M.CLAUDE_FILTER_MODEL, "batches": [], "new_misses": [],
               "errors": [], "price_as_of": "2026-09-26"}
+    exposure = M.load_exposure_data()
+    report["evaluation_scope"] = {
+        "kind": "title_only_historical_stress_test",
+        "original_labels_preserved": True,
+        "history_count": len(positives) + len(negatives),
+        "history_with_description": sum(bool(x.get("desc")) for x in positives + negatives),
+        "history_with_article_date": sum(bool(x.get("pubDate")) for x in positives + negatives),
+        "candidate_holdings": "latest CSV; historical holdings unknown; title/description matches only",
+        "holdings_dates": sorted({r.get("기준일", "") for rows in exposure.values() for r in rows}),
+        "hard_rule_projection": "output masking only; not a live prefilter/batch or end-to-end replay",
+        "known_cases": [{k: c.get(k) for k in ("entity", "as_of", "verified_at", "sources")}
+                        for c in M.load_verified_known_cases()],
+    }
     with tempfile.TemporaryDirectory() as folder:
         root = Path(folder)
         for name in ("naver_news_monitor.py", "filter_prompt.txt", "known_cases.json", "group_map.json", "ticker_map.json"):
@@ -232,11 +295,15 @@ def live_ab(base_ref, output):
                 module._RUN_STATS.clear()
                 try:
                     fn = module.ai_filter_batch if name == "baseline" else module.filter_batch_complete
-                    selected = fn(copy.deepcopy(batch), offset=offset)
+                    kwargs = {"exposure_data": exposure} if name == "candidate" else {}
+                    selected = fn(copy.deepcopy(batch), offset=offset, **kwargs)
                     if selected is None:
                         raise RuntimeError("API/파싱 실패")
                     results[name] = {x["case_id"] for x in selected}
-                    record[name] = {"selected": sorted(results[name]), "stats": copy.deepcopy(module._RUN_STATS)}
+                    record[name] = {"selected": sorted(results[name]), "stats": copy.deepcopy(module._RUN_STATS),
+                                    "decisions": [{k: a.get(k) for k in
+                                                   ("case_id", "grade", "reason", "entity", "event_type", "_ai_confidence")}
+                                                  for a in selected]}
                 except Exception as exc:
                     report["errors"].append({"batch": label, "mode": name, "type": type(exc).__name__})
                     results[name] = set()
@@ -245,6 +312,8 @@ def live_ab(base_ref, output):
                 row = {"case_id": case["case_id"], "title": case["title"], "expected": case["expected"],
                        "baseline": case["case_id"] in results["baseline"],
                        "candidate": case["case_id"] in results["candidate"]}
+                excluded, reason = M.is_hard_excluded(case["title"], case.get("desc", ""), "")
+                row.update(hard_excluded=excluded, hard_rule=reason)
                 record["cases"].append(row)
                 if row["expected"] and row["baseline"] and not row["candidate"]:
                     report["new_misses"].append({"batch": label, **row})
@@ -258,6 +327,11 @@ def live_ab(base_ref, output):
                                        "tn": sum(not x["expected"] and not x[mode] for x in history)}
                                  for mode in ("baseline", "candidate")}
     report["requires_review"] = ab_needs_review(report["batches"])
+    report["hard_rule_projection_summary"] = {
+        mode: {"tp": sum(x["expected"] and x[mode] and not x["hard_excluded"] for x in history),
+               "fn": sum(x["expected"] and (not x[mode] or x["hard_excluded"]) for x in history),
+               "fp": sum(not x["expected"] and x[mode] and not x["hard_excluded"] for x in history)}
+        for mode in ("baseline", "candidate")}
     # 회귀셋의 일부는 합성/경계 사례다. 기존도 놓친 경우를 포함해 수동 검토가
     # 필요한 결과를 자동 합격으로 만들지 않는다. 프롬프트의 사건 중복정책도 확인한다.
     report["passed"] = not report["new_misses"] and not report["errors"] and not report["requires_review"]

@@ -257,6 +257,11 @@ def main():
                                 "[시장급락", "본인 한정", "전체 발송"]):
             print(f"    {l.strip()}")
 
+    with open(_tmp_stats, encoding="utf-8") as stats_file:
+        initial_stats = json.loads(stats_file.read().splitlines()[-1])
+    if initial_stats["filter_input_count"] <= 0 or not initial_stats["is_test"]:
+        print("  FAIL 실제 LLM 투입량/테스트 구분 지표가 기록되지 않음")
+        return 1
     # 뉴스 0건인데 가격경보로 전체발송한 회차의 scope가 self로 잘못 기록되던
     # 계측 오류를 실제 main 경로로 고정한다. SMTP/HTTP는 위 모의 객체 그대로다.
     nm.ai_filter_and_grade = lambda *a, **k: []
