@@ -13,7 +13,7 @@
 | 실행 주기 | 매일(주말 포함) **07 / 14 / 21시 KST** 3회 |
 | 트리거 | **cron-job.org**(외부 서비스)가 GitHub Actions를 호출 — 레포에 cron 스케줄 없음 |
 | 수신자 | `risk_aigent@googlegroups.com`, `risk_aigent_pb@googlegroups.com` + 발신자 본인 |
-| 핵심 파일 | `naver_news_monitor.py`(본체), `exposure_data.csv`(익스포저), `filter_prompt*.txt`(AI 규칙) |
+| 핵심 파일 | `naver_news_monitor.py`(본체), `exposure_data.csv`(익스포저), `filter_prompt.txt`(AI 규칙) |
 
 ---
 
@@ -45,7 +45,8 @@
 2) 자주 나는 원인:
    · KeyError: 'EMAIL_SENDER' 등 → GitHub Secrets 누락/만료
    · SMTP 인증 실패 → Gmail 앱 비밀번호 만료
-   · 429/quota → Gemini 무료 한도 초과 (Claude fallback으로 동작하나 비용 증가)
+   · 429/quota → Anthropic 호출 한도·크레딧 확인
+   · 1차 필터 완전성 확인 실패 → 누락/형식 오류로 재판정까지 실패. 결과 없음으로 간주하지 말고 Actions 로그와 filter_seen_detail 확인
 ```
 
 ---
@@ -98,24 +99,33 @@ Actions 로그는 외부망에서 내려받기 어렵고 90일 뒤 삭제되므�
 필요한 최소 지표를 레포에 누적한다.
 
 ```bash
-git pull && tail -20 run_stats.jsonl | python3 -c "
-import sys,json
-for l in sys.stdin:
-    d=json.loads(l); t=d['gemini_ok']+d['gemini_fail']
-    print(f\"{d['ts']} 수집{d['collected']:>5} 선별{d['selected']:>2} \"
-          f\"Gemini {d['gemini_ok']}/{t} (fallback {d['gemini_fail']/max(t,1)*100:.0f}%) \"
-          f\"{d['scope']} {d['verify_model']}\")"
+git pull
+python3 - <<'PY_STATS'
+import json
+from pathlib import Path
+for line in Path("run_stats.jsonl").read_text().splitlines()[-20:]:
+    row = json.loads(line)
+    print(row["ts"], "수집", row["collected"], "LLM투입", row.get("filter_input_count", "과거기록 없음"),
+          "선별", row["selected"], row.get("filter_model", "과거 Gemini/Claude 혼합"),
+          row["scope"], "테스트", row.get("is_test", "과거기록 미구분"))
+PY_STATS
 ```
 
 | 필드 | 의미 |
 |---|---|
-| `gemini_ok` / `gemini_fail` | 1차 필터 성공/Claude fallback 횟수 |
-| `gemini_model` | 그 회차에 쓴 Gemini 모델 |
-| `verify_model` | 2차 검증에 쓴 Claude 모델(전체발송 시 Opus) |
-| `scope` | `full`(전체발송) / `self`(본인한정) |
+| `filter_model` / `verify_model` | 실제 1차/2차 모델 |
+| `llm` | 모델·단계별 호출수, 일반 입력/출력/캐시 읽기/쓰기 토큰 |
+| `filter_input_count` | 하드룰 이후 실제 LLM 투입량. 중복률 분모 |
+| `filter_seen_detail` | 배치별 expected/reported/returned/complete/mode |
+| `filter_seen_retry` | 불완전 응답을 전건 명시 방식으로 재판정한 배치수 |
+| `scope` / `is_test` | 최종 발송 범위 / 강제 본인한정 테스트 여부 |
+| `run_id` / `commit` | Actions 실행과 코드 버전 추적 |
 
-**fallback 비율이 높으면** Gemini 무료 티어 RPM 초과를 의심한다.
-대응: 배치 크기 확대(요청 수 감소) 또는 배치 간격 확대.
+`seen`은 모델의 자체 보고이므로 일치해도 미탐 0을 증명하지 않는다.
+API 품질 비교는 `test_filter_protocol.py --live-ab --base-ref <비교할 커밋>`으로 수행한다.
+실제 API 비용이 발생하지만 메일·뉴스 수집·운영 seen 파일은 사용하지 않는다.
+비용은 정규 회차와 테스트를 구분하고 일반 입력·캐시 토큰의 중복 합산 없이 계산한다.
+과거 Gemini 필드가 있는 행은 이전 스키마이며 삭제하거나 0원으로 간주하지 않는다.
 
 ## 4. GitHub Secrets 목록 (초기 셋업/재구성용)
 
@@ -124,13 +134,13 @@ for l in sys.stdin:
 | `EMAIL_SENDER` | 발신 Gmail 주소 | 즉시 실패 |
 | `EMAIL_PASSWORD` | Gmail 앱 비밀번호 | 즉시 실패 |
 | `EMAIL_RECEIVER` | 수신 그룹(쉼표 구분) | 즉시 실패 |
-| `ANTHROPIC_API_KEY` | Claude(2차 검증·등급조정·action) | 즉시 실패 |
+| `ANTHROPIC_API_KEY` | Claude 전 단계 | 즉시 실패 |
 | `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` | 뉴스 수집 | 즉시 실패 |
-| `GOOGLE_API_KEY` | Gemini 1차 필터 | 없으면 Claude fallback(비용↑) |
+| `GOOGLE_API_KEY` | 과거 Gemini 복원용으로만 보관 | 현재 실행에 영향 없음 |
 | `EMAIL_CC` | 참조 수신자 | 없어도 동작 |
 | `NO_RESULT_RECEIVER` | 결과없음 메일 수신자 | 없으면 발신자에게 |
 
-**튜닝용(선택)** — 값만 넣으면 재배포 없이 조정된다. 기본값은 `VERIFY.md` 참조.
+**튜닝용 환경변수(선택)** — Secrets 등록만으로는 적용되지 않는다. 해당 워크플로의 `env`에 명시적으로 연결해야 한다. 기본값은 `naver_news_monitor.py`를 기준으로 확인한다.
 
 `SELF_ONLY_MAX_SCORE` · `STRONG_CAUTION_MIN_EXPOSURE` · `REF_FULLSEND_MIN_EXPOSURE` ·
 `MARKET_CRASH_STOCK_THRESHOLD` · `MARKET_CRASH_RBAL_THRESHOLD`
@@ -140,7 +150,7 @@ for l in sys.stdin:
 ## 5. 코드 수정 시
 
 ```bash
-bash run_tests.sh      # 5개 테스트 + 컴파일. '전체 통과'가 아니면 커밋 금지
+bash run_tests.sh      # 8개 테스트 + 컴파일. '전체 통과'가 아니면 커밋 금지
 ```
 
 상세 절차·오탐 대응은 `VERIFY.md`.

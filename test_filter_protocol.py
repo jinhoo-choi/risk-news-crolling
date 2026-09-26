@@ -66,6 +66,11 @@ class FilterProtocolTests(unittest.TestCase):
         self.assertTrue(M._RUN_STATS["filter_seen_detail"][-1]["complete"])
         self.assertEqual(M._RUN_STATS["filter_seen_detail"][-1]["batch"], 2)
 
+    def test_empty_batch_does_not_call_api(self):
+        with patch.object(M.requests, "post") as post:
+            self.assertEqual(M.filter_batch_complete([]), [])
+        post.assert_not_called()
+
     def test_equal_length_results_union(self):
         first = Response([positive(1)])  # sentinel 없음: 최초 후보는 보존
         second = Response([{"id": 1, "relevant": False}, positive(2), {"id": 0, "seen": 2}])
@@ -134,11 +139,22 @@ class FilterProtocolTests(unittest.TestCase):
                 self.assertIsNone(M.ai_filter_batch(articles()))
 
     def test_duplicate_id_retains_positive_candidate(self):
-        rows = [{"id": 1, "relevant": False}, positive(1), {"id": 0, "seen": 2}]
-        with patch.object(M.requests, "post", return_value=Response(rows)):
-            result = M.ai_filter_batch(articles())
-        self.assertEqual(result[0]["_filter_id"], 1)
-        self.assertFalse(M._RUN_STATS["filter_seen_detail"][-1]["complete"])
+        negative = {"id": 1, "relevant": False, "grade": "긴급"}
+        for pair in ([negative, positive(1)], [positive(1), negative]):
+            with self.subTest(pair=pair), patch.object(M.requests, "post", return_value=Response(
+                    pair + [{"id": 0, "seen": 2}])):
+                result = M.ai_filter_batch(articles())
+            self.assertEqual(result[0]["_filter_id"], 1)
+            self.assertEqual(result[0]["grade"], "주의")
+            self.assertFalse(M._RUN_STATS["filter_seen_detail"][-1]["complete"])
+
+    def test_ab_catches_shared_miss_in_sparse_batch(self):
+        found = {"expected": True, "baseline": True, "candidate": True}
+        missed = {"expected": True, "baseline": False, "candidate": False}
+        self.assertFalse(ab_needs_review([{"name": "history-0", "cases": [found]}]))
+        self.assertTrue(ab_needs_review([
+            {"name": "history-0", "cases": [found]},
+            {"name": "sparse-last-offset", "cases": [missed]}]))
 
     def test_protocol_and_metrics_are_connected(self):
         with patch.object(M.requests, "post", return_value=Response([
@@ -157,6 +173,18 @@ class FilterProtocolTests(unittest.TestCase):
         self.assertIn("is_test", row)
 
 
+def ab_needs_review(batches):
+    """기존 모델도 놓친 정탐과 저빈도 배치의 오탐 증가를 포함한다."""
+    for batch in batches:
+        rows = batch["cases"]
+        if any(row["expected"] and not row["candidate"] for row in rows):
+            return True
+        if (sum(not row["expected"] and row["candidate"] for row in rows) >
+                sum(not row["expected"] and row["baseline"] for row in rows)):
+            return True
+    return False
+
+
 def live_ab(base_ref, output):
     """API 비교 결과를 파일에 남긴다. 후보 누락/오류는 종료코드 1로 병합을 막는다."""
     if os.environ.get("ANTHROPIC_API_KEY") == "offline-test":
@@ -171,8 +199,8 @@ def live_ab(base_ref, output):
         batches.append((f"history-{i}", 0, positives[i*6:i*6+6] + negatives[i*13:i*13+13]))
     # 실제 회귀 기사의 저빈도 positive를 배치 양 끝·100 이후 id에서도 확인.
     noise = [dict(negatives[i % len(negatives)], case_id=f"noise-{i}") for i in range(99)]
-    batches += [("sparse-first", 0, positives[:1] + noise),
-                ("sparse-last-offset", 100, noise + positives[:1])]
+    batches += [("sparse-first", 0, positives[2:3] + noise),
+                ("sparse-last-offset", 100, noise + positives[2:3])]
     report = {"base_ref": base_ref, "candidate_sha": os.getenv("GITHUB_SHA", "local"),
               "model": M.CLAUDE_FILTER_MODEL, "batches": [], "new_misses": [],
               "errors": [], "price_as_of": "2026-09-26"}
@@ -217,7 +245,10 @@ def live_ab(base_ref, output):
                                        "fp": sum(not x["expected"] and x[mode] for x in history),
                                        "tn": sum(not x["expected"] and not x[mode] for x in history)}
                                  for mode in ("baseline", "candidate")}
-    report["passed"] = not report["new_misses"] and not report["errors"]
+    report["requires_review"] = ab_needs_review(report["batches"])
+    # 회귀셋의 일부는 합성/경계 사례다. 기존도 놓친 경우를 포함해 수동 검토가
+    # 필요한 결과를 자동 합격으로 만들지 않는다. 프롬프트의 사건 중복정책도 확인한다.
+    report["passed"] = not report["new_misses"] and not report["errors"] and not report["requires_review"]
     Path(output).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps({k: report[k] for k in ("history_summary", "new_misses", "errors", "passed")}, ensure_ascii=False))
     return 0 if report["passed"] else 1

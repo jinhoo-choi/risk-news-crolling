@@ -3106,8 +3106,9 @@ def ai_filter_batch(batch: list, offset: int = 0, *, full_response: bool = False
         for i, a in enumerate(batch)
     ])
 
-    _fp_tpl = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-        "filter_prompt.txt"), encoding="utf-8").read()
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "filter_prompt.txt"), encoding="utf-8") as prompt_file:
+        _fp_tpl = prompt_file.read()
     _fp_tpl    = _fp_tpl.replace("__KNOWN_CASES__", render_known_cases())
     _contract = (
         '- 모든 기사 id를 정확히 한 번씩 반환하라. false도 '
@@ -3202,7 +3203,9 @@ def ai_filter_batch(batch: list, offset: int = 0, *, full_response: bool = False
                     _valid = False
                     previous = grade_map[_gid]
                     rank = {"참고": 0, "주의": 1, "긴급": 2}
-                    if rank.get(previous.get("grade"), -1) >= rank.get(g.get("grade"), -1):
+                    previous_rank = (previous["relevant"], rank.get(previous.get("grade"), -1))
+                    current_rank = (g["relevant"], rank.get(g.get("grade"), -1))
+                    if previous_rank >= current_rank:
                         continue
                 grade_map[_gid] = g
             if full_response and set(grade_map) != _expected:
@@ -3260,6 +3263,8 @@ def ai_filter_batch(batch: list, offset: int = 0, *, full_response: bool = False
 
 def filter_batch_complete(batch: list, offset: int = 0) -> list:
     """불완전 응답은 전건 명시 방식으로 재판정하고 후보 합집합을 보존한다."""
+    if not batch:
+        return []
     def call(full_response):
         before = len(_RUN_STATS.get("filter_seen_detail", []))
         result = ai_filter_batch(batch, offset=offset, full_response=full_response)
@@ -6060,21 +6065,8 @@ def main():
 
     if not filtered:
         now = datetime.now(timezone(timedelta(hours=9)))
-        # 여신잔고 위험고객 여부 확인 — 있으면 전체 발송
-        # [설계 참고] 이 분기(뉴스 0건)는 위험고객 보유 -3%↓ 종목이 1개만 있어도
-        # 전체 발송한다. 뉴스가 있는 경우의 시장급락 안전장치(10개 이상, main 하단
-        # _MARKET_CRASH_STOCK_THRESHOLD)와 기준이 다른 것은 의도된 설계:
-        # 여기서는 메일 콘텐츠가 여신잔고 현황 그 자체라 1개라도 알릴 가치가 있고,
-        # 뉴스가 있는 경우엔 저등급 뉴스+소수 종목 하락만으로 전사 발송을 막기 위함.
+        # 뉴스 0건도 가격경보 15종목 AND 150억 기준으로 범위를 판정한다.
         _price_section = build_price_alert_section(exposure_data, "")
-        # 뉴스 0건 시 전체발송 기준 (2026-07-25 조정)
-        # 기존: 경보 종목이 1개라도 있으면 전체발송 → 위험고객 보유 종목이
-        # 303개라 그중 1개만 -3% 하락해도 발동, 평상시에도 거의 매일
-        # 전사 메일이 나가 임원 신뢰도를 떨어뜨릴 수 있었음.
-        # 변경: 5종목 이상 OR 리스크잔고 합계 50억 이상.
-        # 잔고 조건을 병행하는 이유 — 실측상 단일 종목 최대 95억,
-        # 상위 3종목이 전체의 45%를 차지해 '적은 종목 수 + 큰 잔고' 상황을
-        # 종목 수만으로는 놓치기 때문.
         # ★2026-07-29 룰 통일: 뉴스 0건 경로도 '뉴스 있을 때'와 동일 기준을 쓴다.
         #   기존엔 5종목 OR 50억(느슨)이라, 뉴스가 '없을수록' 더 쉽게 전사
         #   발송되는 모순이 있었다(5개 시나리오 중 4개 불일치 실측).
@@ -6112,7 +6104,8 @@ def main():
         save_seen_urls(seen_urls)
         save_filter_log(raw_articles, hard_excluded_articles, ai_filtered_articles, filtered)
         save_run_stats(total_count, 0,
-                       globals().get("_LAST_VERIFY_MODEL") or CLAUDE_MODEL, True)
+                       globals().get("_LAST_VERIFY_MODEL") or CLAUDE_MODEL,
+                       (not _nr_full) or FORCE_SELF_ONLY)
         return
 
     print("  본문 크롤링 중... (전체 등급 — 2차 정밀검수용)")

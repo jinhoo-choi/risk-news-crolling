@@ -256,6 +256,29 @@ def main():
         if any(t in l for t in ["[발송판정]", "[2차 검증 모델", "[운영지표]",
                                 "[시장급락", "본인 한정", "전체 발송"]):
             print(f"    {l.strip()}")
+
+    # 뉴스 0건인데 가격경보로 전체발송한 회차의 scope가 self로 잘못 기록되던
+    # 계측 오류를 실제 main 경로로 고정한다. SMTP/HTTP는 위 모의 객체 그대로다.
+    nm.ai_filter_and_grade = lambda *a, **k: []
+    nm.load_seen_urls = lambda: set()
+    for force_self, expected_scope in [(False, "full"), (True, "self")]:
+        nm.FORCE_SELF_ONLY = force_self
+        nm._RUN_STATS.clear()
+        _SENT.clear()
+        with contextlib.redirect_stdout(io.StringIO()):
+            nm.main()
+        with open(_tmp_stats, encoding="utf-8") as stats_file:
+            rec = json.loads(stats_file.read().splitlines()[-1])
+        if rec["scope"] != expected_scope or rec["selected"] != 0:
+            print(f"  FAIL 뉴스 0건 scope: {rec['scope']} / 기대 {expected_scope}")
+            return 1
+        if force_self and any(r != "me@test.com" for r in _SENT):
+            print("  FAIL 뉴스 0건 테스트 모드 수신자")
+            return 1
+        if not force_self and "grp@test.com" not in _SENT:
+            print("  FAIL 뉴스 0건 전체발송 모의 경로 미도달")
+            return 1
+        print(f"  OK   뉴스 0건 가격경보 — 실제 발송 범위와 scope={expected_scope} 일치")
     return 0
 
 
