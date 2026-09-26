@@ -4034,6 +4034,7 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
     # (Gemini 제거 전에는 _used_gemini 가 이 역할을 했다. 1차를 저가 모델로
     #  내린 이상 게이트가 사라지면 안 되므로 모델 비교로 대체한다.)
     _need_regrade = CLAUDE_FILTER_MODEL != CLAUDE_MODEL
+    _mm_before = _RUN_STATS.get("filter_seen_mismatch", 0)
     for i in range(0, len(articles), batch_size):
         if ai_fail_count >= MAX_AI_FAILS:
             print(f"  ❗ AI 연속 {MAX_AI_FAILS}회 실패 — circuit breaker 작동, 필터링 중단")
@@ -4041,6 +4042,17 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
         batch = articles[i:i+batch_size]
         print(f"  배치 {i//batch_size+1}/{-(-len(articles)//batch_size)} 처리 중... ({len(batch)}건)")
         batch_result = ai_filter_batch(batch, offset=i)
+        # false 기사를 생략시킨 뒤로는 '모델이 건너뛴 기사'와 'false 판정'이
+        # 출력상 구분되지 않는다. seen 이 목록 건수와 다르면 그 배치는
+        # 판단이 덜 된 것으로 보고 1회만 다시 돌린다. 미탐을 비용보다 우선한다.
+        if _RUN_STATS.get("filter_seen_mismatch", 0) > _mm_before:
+            print(f"  [재시도] seen 불일치 배치 {i//batch_size+1} 재실행")
+            _RUN_STATS["filter_seen_retry"] = _RUN_STATS.get("filter_seen_retry", 0) + 1
+            _retry = ai_filter_batch(batch, offset=i)
+            # 재시도가 더 많이 건졌으면 그쪽을 쓴다(둘 중 안전한 쪽).
+            if len(_retry) > len(batch_result):
+                batch_result = _retry
+        _mm_before = _RUN_STATS.get("filter_seen_mismatch", 0)
         if batch_result is None:
             ai_fail_count += 1
             print(f"  배치 실패 ({ai_fail_count}/{MAX_AI_FAILS})")
@@ -4773,6 +4785,7 @@ def save_run_stats(collected: int, selected: int, verify_model: str,
         "pre_llm_dup": _RUN_STATS.get("pre_llm_dup", 0),
         "filter_seen_mismatch": _RUN_STATS.get("filter_seen_mismatch", 0),
         "filter_seen_detail": _RUN_STATS.get("filter_seen_detail", []),
+        "filter_seen_retry": _RUN_STATS.get("filter_seen_retry", 0),
         "llm_calls": sum(v["calls"] for v in _RUN_STATS.get("llm", {}).values()),
         "llm": _RUN_STATS.get("llm", {}),
     }
