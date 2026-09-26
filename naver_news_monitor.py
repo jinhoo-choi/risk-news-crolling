@@ -4658,6 +4658,39 @@ def _price_badge(a: dict) -> str:
 _RUN_STATS = {}
 
 
+def select_action_blocks(static_text: str, ctx: str, is_overseas: bool,
+                         has_credit: bool) -> str:
+    """대응방안 프롬프트의 조건부 블록을 골라 남긴다.
+
+    지시문 10개 카테고리 중 기사 1건에 해당하는 것은 보통 1개인데, 지금까지는
+    매 호출마다 전부 보냈다(정적부 약 9,900토큰). 문구는 그대로 두고 해당
+    블록만 남긴다.
+
+    안전장치: 카테고리가 하나도 매칭되지 않으면 카테고리 블록을 전부 남긴다
+    (fail-open). 매칭 실패가 지시 누락으로 이어지지 않게 한다.
+    """
+    blocks = re.findall(r"<<<OPT ([^>]+)>>>\n(.*?)\n<<<ENDOPT>>>", static_text, re.S)
+    cat_hit = any(k.startswith("cat:") and
+                  any(w and w in ctx for w in k[4:].split(","))
+                  for k, _ in blocks)
+
+    def keep(key: str) -> bool:
+        if key == "overseas":
+            return is_overseas
+        if key == "nocredit":
+            return not has_credit
+        if key.startswith("cat:"):
+            if not cat_hit:
+                return True          # fail-open
+            return any(w and w in ctx for w in key[4:].split(","))
+        return True
+
+    def sub(m):
+        return m.group(2) if keep(m.group(1)) else ""
+    out = re.sub(r"<<<OPT ([^>]+)>>>\n(.*?)\n<<<ENDOPT>>>", sub, static_text, flags=re.S)
+    return re.sub(r"\n{3,}", "\n\n", out)
+
+
 def _track_llm(model: str, purpose: str, usage) -> None:
     """LLM 호출 수·토큰을 (모델|용도) 단위로 누적.
 
@@ -6474,6 +6507,12 @@ JSON만 출력:
         _action_prompt_raw = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                    "action_prompt.txt"), encoding="utf-8").read()
         _act_static, _act_dynamic_tpl = _action_prompt_raw.split("<<<DYNAMIC_SPLIT>>>", 1)
+        # 이 기사에 해당하는 지시 블록만 남긴다 (문구는 불변, 전송량만 감소)
+        _act_static = select_action_blocks(
+            _act_static,
+            ctx=f"{keyword} {article.get('event_type','')} {article.get('title','')}",
+            is_overseas=is_overseas,
+            has_credit=(_yeosin_bal > 0))
         _act_dynamic = (
             _act_dynamic_tpl
             .replace("__KW__", keyword)
