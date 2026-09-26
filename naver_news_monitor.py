@@ -3177,10 +3177,21 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             if grades and not all(isinstance(g, dict) for g in grades):
                 raise ValueError(f"grades 요소가 dict가 아님 (markdown 응답 가능성): {type(grades[0])}")
             grade_map = {}
+            _seen = None
             for g in grades:
                 _gid = g.get("id", g.get("news_id"))
+                if _gid == 0:                      # 처리건수 sentinel
+                    _seen = g.get("seen")
+                    continue
                 if _gid is not None:
                     grade_map[_gid] = g
+            # false 기사를 배열에서 생략시켰으므로, 응답이 잘려도 '전부 false'와
+            # 구분이 안 된다. 모델이 보고한 판단 건수로 그 구분을 만든다.
+            if _seen != len(batch):
+                _RUN_STATS["filter_seen_mismatch"] = \
+                    _RUN_STATS.get("filter_seen_mismatch", 0) + 1
+                print(f"  [seen 불일치] 목록 {len(batch)}건 / 모델 보고 {_seen} "
+                      f"(배치 {offset//batch_size_hint()+1})")
             result = []
             for i, article in enumerate(batch):
                 info = grade_map.get(i + offset + 1, {})
@@ -4691,6 +4702,11 @@ def select_action_blocks(static_text: str, ctx: str, is_overseas: bool,
     return re.sub(r"\n{3,}", "\n\n", out)
 
 
+def batch_size_hint() -> int:
+    """로그의 배치 번호 표기용 — 실제 배치 크기와 같게 유지한다."""
+    return 100
+
+
 def _track_llm(model: str, purpose: str, usage) -> None:
     """LLM 호출 수·토큰을 (모델|용도) 단위로 누적.
 
@@ -4748,6 +4764,7 @@ def save_run_stats(collected: int, selected: int, verify_model: str,
         # (모델|용도) 단위로 남겨, 어느 단계가 비용을 쓰는지 사후 분해한다.
         # 금액은 단가 변동 때문에 기록하지 않는다(토큰 × 당시 단가로 계산).
         "pre_llm_dup": _RUN_STATS.get("pre_llm_dup", 0),
+        "filter_seen_mismatch": _RUN_STATS.get("filter_seen_mismatch", 0),
         "llm_calls": sum(v["calls"] for v in _RUN_STATS.get("llm", {}).values()),
         "llm": _RUN_STATS.get("llm", {}),
     }
