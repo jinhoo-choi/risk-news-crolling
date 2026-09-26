@@ -253,6 +253,7 @@ CLAUDE_ACTION_MODEL = os.environ.get("CLAUDE_ACTION_MODEL", "claude-sonnet-4-6")
 # 비용이 올랐다. 필터는 정형 분류라 하위 모델로 내릴 여지가 있어 재검증용
 # CLAUDE_MODEL과 분리한다. 미지정 시 기존과 동일하게 동작한다.
 CLAUDE_FILTER_MODEL = os.environ.get("CLAUDE_FILTER_MODEL", "claude-haiku-4-5")
+FILTER_BATCH_SIZE = 100
 # 전체 발송이 예상될 때 2차 본문검증에 쓰는 상위 모델.
 # 임원 전사 발송은 오탐 비용이 가장 크므로 마지막 관문만 승급한다.
 # ★단계를 늘리지 않고 '모델만 교체'하는 이유: 검증 단계를 추가하면 단계 간
@@ -3095,8 +3096,8 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     return False, None
 
 
-def ai_filter_batch(batch: list, offset: int = 0) -> list:
-    """50건씩 배치로 AI 필터링"""
+def ai_filter_batch(batch: list, offset: int = 0, *, full_response: bool = False) -> list:
+    """1차 분류. 불완전 응답의 유효 후보는 보존하고 완전성은 별도 기록한다."""
     if not batch:
         return []
 
@@ -3108,9 +3109,16 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
     _fp_tpl = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
         "filter_prompt.txt"), encoding="utf-8").read()
     _fp_tpl    = _fp_tpl.replace("__KNOWN_CASES__", render_known_cases())
+    _contract = (
+        '- 모든 기사 id를 정확히 한 번씩 반환하라. false도 '
+        '{"id":기사번호,"relevant":false,"confidence":확신도}로 포함하라.'
+        if full_response else
+        '- relevant:false 기사는 배열에서 생략하라. true 기사는 빠짐없이 반환하라.'
+    )
+    _fp_tpl = _fp_tpl.replace("__FILTER_RESPONSE_CONTRACT__", _contract)
     _fp_static = _fp_tpl.replace("{numbered}", "")  # 캐싱용 고정 부분
-    _fp_dynamic = numbered                            # 가변 뉴스 목록
-    prompt = _fp_tpl.replace("{numbered}", numbered)  # 기존 호환용
+    _fp_dynamic = (f"이번 배치는 {len(batch)}건, id {offset+1}~{offset+len(batch)}이다. "
+                   "seen은 판단한 건수이며 마지막 id가 아니다.\n" + numbered)
     for attempt in range(3):
         try:
             _t0 = time.time()
@@ -3126,7 +3134,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                     "model": CLAUDE_FILTER_MODEL,
                     "max_tokens": 8000,
                     "temperature": 0.0,
-                    "system": "당신은 JSON API입니다. 설명·요약·표·마크다운 없이 JSON 배열만 출력하세요. 출력은 반드시 [ 로 시작하고 ] 로 끝나야 합니다. 코드블록(```)도 사용하지 마세요. 각 객체의 식별자 키는 반드시 \"id\"여야 하며 \"news_id\" 등 다른 이름을 사용하지 마세요. 필드명은 정확히 id, relevant, grade, reason, confidence, action, entity, entities, event_type 만 사용하세요.",
+                    "system": "당신은 JSON API입니다. 설명·요약·표·마크다운 없이 JSON 배열만 출력하세요. 출력은 반드시 [ 로 시작하고 ] 로 끝나야 합니다. 코드블록(```)도 사용하지 마세요. 기사 객체의 키는 id, relevant, grade, reason, confidence, action, entity, entities, event_type, related_stocks입니다. 마지막 원소는 별도의 완료표시 {\"id\":0,\"seen\":판단건수}입니다. id는 정수이며 seen은 마지막 기사번호가 아닙니다.",
                     "messages": [{"role": "user", "content": [
                         {"type": "text", "text": _fp_static,
                          "cache_control": {"type": "ephemeral"}},
@@ -3135,7 +3143,7 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 },
                 timeout=60,
             )
-            print(f"  [AI] 배치 {offset//50+1} 응답 {time.time()-_t0:.1f}초")
+            print(f"  [AI] 배치 {offset//FILTER_BATCH_SIZE+1} 응답 {time.time()-_t0:.1f}초")
             if res.status_code == 429:
                 wait = 60 * (attempt + 1)
                 print(f"  Rate limit 429 — {wait}초 대기 후 재시도 ({attempt+1}/3)")
@@ -3145,8 +3153,8 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             payload = res.json()
             _track_llm(CLAUDE_FILTER_MODEL, "filter_fallback", payload.get("usage"))
             stop_reason = payload.get("stop_reason", "")
-            if stop_reason == "max_tokens":
-                raise ValueError(f"응답 max_tokens 초과로 잘림 (배치 {offset//50+1}) — max_tokens 증가 필요")
+            if stop_reason != "end_turn":
+                raise ValueError(f"필터 응답 비정상 종료: {stop_reason or '없음'}")
             content = payload.get("content", [])
             if not content:
                 raise ValueError("Claude 응답 content 비어있음")
@@ -3162,48 +3170,61 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             if _start == -1 or _end == -1 or _end <= _start:
                 raise ValueError("JSON 배열을 찾을 수 없음 (rfind 불일치)")
             raw = raw[_start:_end + 1]
-            try:
-                try:
-                    grades = json.loads(raw)
-                except json.JSONDecodeError:
-                    from json_repair import repair_json
-                    repaired = repair_json(raw)
-                    grades = json.loads(repaired)
-                    print(f"  JSON repair 적용됨 (배치 {offset//50+1})")
-            except json.JSONDecodeError as je:
-                raise ValueError(f"JSON 파싱 실패: {je}") from je
+            # 분류 응답을 임의 복구하면 누락된 객체가 정상 false로 오인될 수 있다.
+            grades = json.loads(raw)
             if not isinstance(grades, list):
                 raise ValueError(f"grades가 list가 아님: {type(grades)}")
             if grades and not all(isinstance(g, dict) for g in grades):
                 raise ValueError(f"grades 요소가 dict가 아님 (markdown 응답 가능성): {type(grades[0])}")
             grade_map = {}
-            _seen = None
+            _expected = set(range(offset + 1, offset + len(batch) + 1))
+            _sentinels = [g for g in grades if type(g.get("id")) is int and g["id"] == 0]
+            _seen = _sentinels[0].get("seen") if len(_sentinels) == 1 else None
+            _valid = (bool(grades) and len(_sentinels) == 1 and
+                      grades[-1] is _sentinels[0] and type(_seen) is int and
+                      _seen == len(batch))
             for g in grades:
-                _gid = g.get("id", g.get("news_id"))
-                if _gid == 0:                      # 처리건수 sentinel
-                    _seen = g.get("seen")
+                _gid = g.get("id")
+                if type(_gid) is int and _gid == 0:
                     continue
-                if _gid is not None:
-                    grade_map[_gid] = g
-            # false 기사를 배열에서 생략시켰으므로, 응답이 잘려도 '전부 false'와
-            # 구분이 안 된다. 모델이 보고한 판단 건수로 그 구분을 만든다.
-            # 불일치가 '무해한 오보고'인지 '실제 누락(미탐)'인지 구분하려면
-            # 보고값 자체가 필요하다. 집계만으로는 판단이 안 된다.
+                if (type(_gid) is not int or _gid not in _expected or
+                        type(g.get("relevant")) is not bool):
+                    _valid = False
+                    continue
+                if g["relevant"] and (
+                        g.get("grade") not in ("긴급", "주의", "참고") or
+                        not isinstance(g.get("entity"), str) or not g["entity"].strip() or
+                        not isinstance(g.get("entities", []), list) or
+                        any(not isinstance(e, str) for e in g.get("entities", []))):
+                    _valid = False
+                    continue
+                if _gid in grade_map:
+                    _valid = False
+                    previous = grade_map[_gid]
+                    rank = {"참고": 0, "주의": 1, "긴급": 2}
+                    if rank.get(previous.get("grade"), -1) >= rank.get(g.get("grade"), -1):
+                        continue
+                grade_map[_gid] = g
+            if full_response and set(grade_map) != _expected:
+                _valid = False
             _RUN_STATS.setdefault("filter_seen_detail", []).append(
-                {"batch": offset // batch_size_hint() + 1,
+                {"batch": offset // FILTER_BATCH_SIZE + 1,
                  "expected": len(batch), "reported": _seen,
-                 "returned": len(grade_map)})
-            if _seen != len(batch):
+                 "returned": len(grade_map), "complete": _valid,
+                 "mode": "full" if full_response else "sparse"})
+            if not _valid:
                 _RUN_STATS["filter_seen_mismatch"] = \
                     _RUN_STATS.get("filter_seen_mismatch", 0) + 1
                 print(f"  [seen 불일치] 목록 {len(batch)}건 / 모델 보고 {_seen} "
                       f"/ relevant 반환 {len(grade_map)}건 "
-                      f"(배치 {offset//batch_size_hint()+1})")
+                      f"(배치 {offset//FILTER_BATCH_SIZE+1})")
             result = []
-            for i, article in enumerate(batch):
+            for i, original in enumerate(batch):
+                article = dict(original)  # 재시도가 최초 후보의 등급·근거를 덮어쓰지 않게 한다.
                 info = grade_map.get(i + offset + 1, {})
                 article["_ai_confidence"] = info.get("confidence", None)
                 if info.get("relevant") and info.get("grade"):
+                    article["_filter_id"] = i + offset + 1
                     if not (info.get("entity") or "").strip():
                         print(f"  [entity 빈값] relevant 무효화: {article.get('title','')[:30]}")
                         continue
@@ -3235,6 +3256,35 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 continue
             return None  # 실패 (빈 결과 []와 구분)
     return None  # 3회 실패
+
+
+def filter_batch_complete(batch: list, offset: int = 0) -> list:
+    """불완전 응답은 전건 명시 방식으로 재판정하고 후보 합집합을 보존한다."""
+    def call(full_response):
+        before = len(_RUN_STATS.get("filter_seen_detail", []))
+        result = ai_filter_batch(batch, offset=offset, full_response=full_response)
+        details = _RUN_STATS.get("filter_seen_detail", [])
+        complete = (result is not None and len(details) > before and
+                    details[-1].get("complete", False))
+        return result, complete
+
+    first, complete = call(False)
+    if complete:
+        return first
+    _RUN_STATS["filter_seen_retry"] = _RUN_STATS.get("filter_seen_retry", 0) + 1
+    print(f"  [재시도] 배치 {offset//FILTER_BATCH_SIZE+1} 전건 명시 방식 재실행")
+    retry, complete = call(True)
+    if not complete:
+        # API 실패/판단 누락을 '리스크 0건'으로 발송하거나 seen에 저장하지 않는다.
+        raise RuntimeError(f"1차 필터 완전성 확인 실패: id {offset+1}~{offset+len(batch)}")
+    merged = {}
+    rank = {"참고": 0, "주의": 1, "긴급": 2}
+    for article in (first or []) + (retry or []):
+        article_id = article["_filter_id"]
+        previous = merged.get(article_id)
+        if previous is None or rank[article["grade"]] > rank[previous["grade"]]:
+            merged[article_id] = article
+    return [merged[k] for k in sorted(merged)]
 
 try:
     from rapidfuzz import fuzz as _fuzz
@@ -4020,45 +4070,23 @@ def _verify_high_risk_by_claude(articles: list):
 
 
 def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
-    """전체 기사를 50건씩 배치로 나눠 AI 필터링 후 중복 제거"""
+    """전체 기사를 100건씩 배치로 나눠 AI 필터링 후 중복 제거"""
     if not articles:
         return []
     result = []
     # 50 → 100 (2026-09-24). 배치를 키우면 호출 수가 절반이 되고,
     # 호출마다 재전송되는 고정 프리픽스(약 10.8K 토큰)와 캐시 쓰기도 절반이 된다.
     # 출력은 100건이어도 max_tokens 8000에 크게 못 미친다(건당 12~30토큰).
-    batch_size = 100
-    ai_fail_count = 0
-    MAX_AI_FAILS = 3
+    batch_size = FILTER_BATCH_SIZE
+    _RUN_STATS["filter_input_count"] = len(articles)
     # 1차 필터가 재검증용 모델보다 하위면 등급 재검증을 건다.
     # (Gemini 제거 전에는 _used_gemini 가 이 역할을 했다. 1차를 저가 모델로
     #  내린 이상 게이트가 사라지면 안 되므로 모델 비교로 대체한다.)
     _need_regrade = CLAUDE_FILTER_MODEL != CLAUDE_MODEL
-    _mm_before = _RUN_STATS.get("filter_seen_mismatch", 0)
     for i in range(0, len(articles), batch_size):
-        if ai_fail_count >= MAX_AI_FAILS:
-            print(f"  ❗ AI 연속 {MAX_AI_FAILS}회 실패 — circuit breaker 작동, 필터링 중단")
-            break
         batch = articles[i:i+batch_size]
         print(f"  배치 {i//batch_size+1}/{-(-len(articles)//batch_size)} 처리 중... ({len(batch)}건)")
-        batch_result = ai_filter_batch(batch, offset=i)
-        # false 기사를 생략시킨 뒤로는 '모델이 건너뛴 기사'와 'false 판정'이
-        # 출력상 구분되지 않는다. seen 이 목록 건수와 다르면 그 배치는
-        # 판단이 덜 된 것으로 보고 1회만 다시 돌린다. 미탐을 비용보다 우선한다.
-        if _RUN_STATS.get("filter_seen_mismatch", 0) > _mm_before:
-            print(f"  [재시도] seen 불일치 배치 {i//batch_size+1} 재실행")
-            _RUN_STATS["filter_seen_retry"] = _RUN_STATS.get("filter_seen_retry", 0) + 1
-            _retry = ai_filter_batch(batch, offset=i)
-            # 재시도가 더 많이 건졌으면 그쪽을 쓴다(둘 중 안전한 쪽).
-            if len(_retry) > len(batch_result):
-                batch_result = _retry
-        _mm_before = _RUN_STATS.get("filter_seen_mismatch", 0)
-        if batch_result is None:
-            ai_fail_count += 1
-            print(f"  배치 실패 ({ai_fail_count}/{MAX_AI_FAILS})")
-        else:
-            ai_fail_count = 0
-            result.extend(batch_result)
+        result.extend(filter_batch_complete(batch, offset=i))
         if i + batch_size < len(articles):
             time.sleep(1)
 
@@ -4721,11 +4749,6 @@ def select_action_blocks(static_text: str, ctx: str, is_overseas: bool,
     return re.sub(r"\n{3,}", "\n\n", out)
 
 
-def batch_size_hint() -> int:
-    """로그의 배치 번호 표기용 — 실제 배치 크기와 같게 유지한다."""
-    return 100
-
-
 def _track_llm(model: str, purpose: str, usage) -> None:
     """LLM 호출 수·토큰을 (모델|용도) 단위로 누적.
 
@@ -4783,6 +4806,10 @@ def save_run_stats(collected: int, selected: int, verify_model: str,
         # (모델|용도) 단위로 남겨, 어느 단계가 비용을 쓰는지 사후 분해한다.
         # 금액은 단가 변동 때문에 기록하지 않는다(토큰 × 당시 단가로 계산).
         "pre_llm_dup": _RUN_STATS.get("pre_llm_dup", 0),
+        "filter_input_count": _RUN_STATS.get("filter_input_count", 0),
+        "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+        "commit": os.environ.get("GITHUB_SHA", ""),
+        "is_test": FORCE_SELF_ONLY,
         "filter_seen_mismatch": _RUN_STATS.get("filter_seen_mismatch", 0),
         "filter_seen_detail": _RUN_STATS.get("filter_seen_detail", []),
         "filter_seen_retry": _RUN_STATS.get("filter_seen_retry", 0),
