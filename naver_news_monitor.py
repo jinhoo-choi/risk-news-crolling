@@ -3713,6 +3713,34 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
         a["grade"] = "주의"
         a["_grade_locked"] = True
 
+    # ── 상폐 계열 기사 주식잔고 등급 상한 (2026-09-28 신설) ──────────────
+    # 관리종목 지정·상폐사유·실질심사·상폐 결정은 사건 자체는 '확정'이라 AI가
+    # 긴급을 주지만, 당사 보유 규모가 작으면 임원 눈에 과탐으로 보인다.
+    #   실사례(9/28 14시 프롬바이오): 시총 미달 관리종목 지정 → 긴급 8.3,
+    #   주식잔고 뱅4억+영2억=6억.
+    # 뱅+영 주식잔고(주식·해외주식) 기준 상한: 100억↑ 긴급 / 10억↑ 주의 / 미만 참고.
+    # 강등 전용(격상 없음). 익스포저 없음·entity 없음은 기존 게이트가 처리.
+    _DELIST_RE = re.compile(r'상장\s*폐지|상폐|관리\s*종목|상장\s*적격성|실질\s*심사')
+    _GRADE_RANK = {"참고": 0, "주의": 1, "긴급": 2}
+    for a in articles:
+        if a.get("_force_urgent") or a.get("grade") not in ("긴급", "주의"):
+            continue
+        _t = a.get("title", "")
+        _e = (a.get("entity") or "").strip()
+        if not _e or not _DELIST_RE.search(_t):
+            continue
+        _rows = find_exposure(_e, exposure_data or {})
+        if not _rows:
+            continue
+        _stk = sum(_num(r.get("잔고(억)")) for r in _rows
+                   if r.get("종목유형") in ("주식", "해외주식"))
+        _cap = "긴급" if _stk >= 100 else "주의" if _stk >= 10 else "참고"
+        if _GRADE_RANK[a["grade"]] > _GRADE_RANK[_cap]:
+            print(f"  [상폐 주식잔고 상한] {_e} {_stk:.0f}억 {a['grade']}→{_cap}: {_t[:30]}")
+            a["grade"] = _cap
+            a["customer_notice"] = None
+            a["_grade_locked"] = True
+
     for a in articles:
         a["_risk_score"] = calc_risk_score(a, exposure_data)
 
