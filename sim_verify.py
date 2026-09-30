@@ -34,8 +34,9 @@ a1, f1 = M.sanitize_customer_notice(
     "마지막 거래 가능일(5월 18일)까지 매도 여부를 검토하시기 바랍니다.", [], src_etf)
 check("창작된 '5월' 제거, 일자 보존", "5월" not in a1 and "19일" in a1 and "18일" in a1, a1)
 
-a2, _ = M.sanitize_customer_notice("8월 19일 상장폐지 예정입니다.", [], src_etf)
-check("현재월(8월)은 오차단 없음", "8월 19일" in a2, a2)
+_cm = __import__("datetime").datetime.now().month
+a2, _ = M.sanitize_customer_notice(f"{_cm}월 19일 상장폐지 예정입니다.", [], src_etf)
+check("현재월은 오차단 없음", f"{_cm}월 19일" in a2, a2)
 
 src_m = "회사는 3월 19일 상장폐지 결정을 받았다."
 a3, _ = M.sanitize_customer_notice("3월 19일 상장폐지 결정을 받았습니다.", [], src_m)

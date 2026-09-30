@@ -294,6 +294,9 @@ for _n, _e, _t, _g, _exp, _lock in [
     ("해외 150억 긴급 유지", "사아해외", "사아해외 나스닥 상장폐지 확정", "긴급", "긴급", False),
     ("여신만 → 주식0 참고", "자차여신", "자차여신 상폐 결정", "긴급", "참고", True),
     ("비상폐 기사 미적용", "가나소액", "가나소액 회생절차 개시 결정", "긴급", "긴급", False),
+    ("6억 유증철회·감사의견 긴급→참고", "가나소액", "가나소액, 유상증자 철회…감사의견 거절로 거래정지 지속", "긴급", "참고", True),
+    ("6억 회생계획 인가·유증 긴급→참고", "가나소액", "가나소액, 회생계획 인가…3자배정 100억 유증", "긴급", "참고", True),
+    ("150억 거래정지 긴급 유지", "마바대액", "마바대액 감사의견 거절로 거래정지", "긴급", "긴급", False),
 ]:
     _r = _rg_fx(_e, _t, _g)
     chk("상폐잔고", _n, _r["grade"] == _exp and bool(_r.get("_grade_locked")) == _lock,
@@ -379,8 +382,9 @@ DIRTY = [
 for n, t, bad in DIRTY:
     o, f = nm.sanitize_customer_notice(t, exp)
     chk("문구", f"제거 {n}", bad not in o, o[:44])
-o, f = nm.sanitize_customer_notice("E사는 2025년 8월 10일 상장 폐지 예정입니다.", exp)
-chk("문구", "과거 연도 제거", "2025년" not in o and "8월 10일" in o, o[:44])
+_cm = __import__("datetime").datetime.now().month  # 현재월 기준(하드코딩 8월 → 월 넘김 시 실패하던 문제)
+o, f = nm.sanitize_customer_notice(f"E사는 2025년 {_cm}월 10일 상장 폐지 예정입니다.", exp)
+chk("문구", "과거 연도 제거", "2025년" not in o and f"{_cm}월 10일" in o, o[:44])
 o, f = nm.sanitize_customer_notice("F사는 2026년 8월 10일 상장 폐지 예정입니다.", exp)
 chk("문구", "당해 연도 보존", "2026년" in o, o[:44])
 o, f = nm.sanitize_customer_notice("G사는 2027년 만기 도래 예정입니다.", exp)

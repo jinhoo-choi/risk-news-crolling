@@ -3720,7 +3720,9 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     #   주식잔고 뱅4억+영2억=6억.
     # 뱅+영 주식잔고(주식·해외주식) 기준 상한: 100억↑ 긴급 / 10억↑ 주의 / 미만 참고.
     # 강등 전용(격상 없음). 익스포저 없음·entity 없음은 기존 게이트가 처리.
-    _DELIST_RE = re.compile(r'상장\s*폐지|상폐|관리\s*종목|상장\s*적격성|실질\s*심사')
+    # 10-01 확장: 상폐 트랙 후속(감사의견·거래정지·유증·회생계획). 9/30 케이이엠텍(5억)·10/1 삼영이엔씨(6억) 긴급 과탐
+    _DELIST_RE = re.compile(r'상장\s*폐지|상폐|관리\s*종목|상장\s*적격성|실질\s*심사'
+                            r'|감사\s*의견|거래\s*정지|매매\s*정지|유상\s*증자|유증|회생\s*계획')
     _GRADE_RANK = {"참고": 0, "주의": 1, "긴급": 2}
     for a in articles:
         if a.get("_force_urgent") or a.get("grade") not in ("긴급", "주의"):
