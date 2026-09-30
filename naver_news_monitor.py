@@ -2608,13 +2608,36 @@ _STILL_ADVERSE_KW = ("정리매매", "상폐 확정", "상장폐지 확정", "�
                      "회생절차 개시", "부도", "디폴트", "채무불이행", "감사의견 거절",
                      "상장폐지 결정", "퇴출 확정")
 
+# (2026-10-01) 감사의견 거절→적정 전환 — '감사의견 거절'(_STILL_ADVERSE)보다 먼저 본다.
+#   실사례 9/30 07시 이오플로우 "감사의견 '거절→적정'" 참고.
+_UNLISTED_DISTRESS_RE = re.compile(r'회생|부도|파산|법정관리|워크아웃|청산')
+_AUDIT_CURED_RE = re.compile(
+    r'(?:거절|한정|부적정)\W{0,2}\s*(?:→|->|➝|에서)\s*\W{0,2}적정'
+    r'|적정\s*(?:의견)?\s*(?:으로)?\s*(?:정정|번복)|재감사\s*(?:결과\s*)?[\'"‘’]?적정')
+
 def is_risk_resolved(title: str) -> bool:
     """제목이 '리스크 절차의 중단·철회·해제' 국면인지. 참고 강등 판정용."""
     if not title:
         return False
+    if _AUDIT_CURED_RE.search(title):
+        return True
     if _kw_hit(title, _STILL_ADVERSE_KW):
         return False
     return bool(_RESOLVED_RE.search(title.replace(" ", " ")))
+
+_RUMOR_RE = re.compile(
+    r'(?:중복\s*상장|상장|매각|인수|합병|부도|위기|퇴출|폐지|사임|경질|철수|교체|'
+    r'자금난|유동성\s*위기|파산|회생|워크아웃|디폴트|분할|퇴진|결별)설'
+    r'(?=[에로이은는도만과을]|\s|[\'"‘’“”…·,.!?]|$)')
+_QUESTION_END_RE = re.compile(
+    r'(?:\?|될까|할까|일까|을까|볼까|날까|갈까|잡혔나|했나|됐나|되나|꺼지나|끝나나|'
+    r'있나|없나|는가|법은|해법은|향방은|운명은|어디로|어디까지|왜)$')
+# ※ '인가'는 제외 — '회생계획 인가'(법원 결정) 명사와 충돌한다.
+_OUTLOOK_TOPIC_RE = re.compile(r'시험대|기로에|분수령|갈림길')
+_CONFIRMED_EVT_RE = re.compile(
+    r'결정|확정|통보|신청|지정|개시|선고|발생|부도|정지|중단|하한가|디폴트|미상환|연체|'
+    r'반대매매|강제\s*청산|쇼크|적발|기소|구속|제재|과징금|장애|의견\s*거절|'
+    r'중처법|중대재해|사고|사망|수사|압수수색|고발|리콜')
 
 def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
     """하드 제외 패턴 매칭 — (excluded: bool, reason: str) 반환
@@ -2698,6 +2721,19 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
                    "엄격", "부담 전가", "손실보전", "인수 의무")
     if _EASE_RE.search(title) and not _kw_hit(title, _TIGHTEN_KW):
         return True, "규제 완화·허용(대상 기관 호재)"
+
+    # ── 풍문(○○설)·질문형/전망형 제목 차단 (2026-10-01 신설) ──────────
+    # 실사례: 9/29 07시 "SK하닉 ADR 5% 급락…'중복상장설'에 발목 잡혔나" 주의,
+    #   9/30 14시 "삼부토건, 새 경영진 출범 앞두고 상장 유지 시험대" 주의,
+    #   9/28 21시 "신라에스지, '이전상장 1호' 될까" 주의 — 모두 AI 판정 통과.
+    # 확정 사건 표지(_CONFIRMED_EVT_RE)가 있으면 질문형이어도 통과시킨다
+    # ("관리종목 지정 임박…타개법은", "실적 쇼크…버블 꺼지나" 등 미탐 방지).
+    if (_RUMOR_RE.search(title) and not _kw_hit(title, ("조회공시", "공시 요구"))):
+        return True, "풍문·루머(○○설)"
+    _t_end = re.sub(r'[\s\'"‘’“”…·.,!]+$', '', title)
+    if ((_QUESTION_END_RE.search(_t_end) or _OUTLOOK_TOPIC_RE.search(title))
+            and not _CONFIRMED_EVT_RE.search(title)):
+        return True, "질문형·전망형 제목(확정 사건 없음)"
 
     # 적대적 M&A·경영권 분쟁은 실질 리스크 — 기존 '매수'(응원매수용) 등
     # 일반 패턴에 걸려 조기 차단되지 않도록 AI 판단으로 우선 통과시킨다.
@@ -3293,6 +3329,7 @@ def dedup_deterministic(articles: list) -> list:
         "가처분","효력정지","집행정지","이의신청","항고","판결","인용",
         "파산선고","청산","폐업","법정관리","회생인가","회생계획",
         "변제","채무조정","추가제재","과징금","검찰고발","수사착수",
+        "상장폐지 기준","상폐 기준","상장폐지 사유","상폐 사유","의견거절","감사의견 거절",
     }
     _RESOLVE_KW_DET = ("기각","취하","철회","각하","거래재개","거래 재개",
                        "상장유지","재상장","정상화","해제","졸업")
@@ -3858,6 +3895,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     # ── 익스포저 없음 등급 강등 ──────────────────────────────────────
     # 당사직접 이슈(_force_urgent) 및 entity 없는 시장전체 이슈는 면제
     # 긴급 → 주의, 주의 → 참고 (한 단계씩)
+    _known_ents = load_known_case_entities()
     for a in result:
         entity_val = (a.get("entity") or "").strip()
         if a.get("_force_urgent"):
@@ -3895,6 +3933,14 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
         #   방증: 8/12 07시에 주의가 4건 나갔는데 GRADE_LIMITS["주의"]는 3이다.
         #   상한은 이 함수 안에서 걸리므로, 초과분은 함수 이후에 승급된 것이다.
         a["_grade_locked"] = True   # AI 재검증이 되돌리지 못하게 잠금
+        # (2026-10-01) 비상장 추정 회생·부도·파산 — 채권 포함 익스포저 0이면 참고로도
+        #   남길 실익 없음(9/30 07시 삼정기업 회생계획 인가 참고). 기지 사건 종목은
+        #   파산선고 등 격상 대상이라 제외(홈플러스 = 비상장·익스포저 없음).
+        if (_UNLISTED_DISTRESS_RE.search(a.get("title", ""))
+                and entity_val not in _known_ents):
+            print(f"  [익스포저없음·회생부도 완전배제] {entity_val}: {a.get('title','')[:35]}")
+            a["_excluded"] = True
+            continue
         # 익스포저 없음 → 참고로 직행 (긴급/주의 불문)
         if a.get("grade") in ("긴급", "주의"):
             prev_grade = a["grade"]
@@ -3902,6 +3948,8 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
             a["customer_notice"] = None
             print(f"  [익스포저없음 강등] {prev_grade}→참고: {a['title'][:40]}")
     # ─────────────────────────────────────────────────────────────────
+
+    result = [a for a in result if not a.get("_excluded")]
 
     # ── 최종 등급 기준 confidence 상한 정합 (점수-등급 괴리 방지) ──────
     # 모든 강등(confidence·LIMITS·익스포저없음·주가보정) 완료 후 일괄 적용.
@@ -4671,9 +4719,12 @@ def _event_type_supported(a: dict) -> bool:
     # 셋 다 제목만 놓고 보면 정상적으로 걸러진다. 기사 전문 어딘가의 단어가
     # 통과시킨 것이다. 기사의 사건은 제목과 리드에 드러나므로 거기까지만 본다.
     # reason은 AI 생성물이라 근거로 쓰면 순환논증이 되어 계속 제외한다.
-    src = " ".join(str(a.get(k) or "") for k in ("title", "desc"))
+    # (2026-10-01) 제목만 본다. 리드(desc)는 배경 서술("지난해 감사의견 거절")이 섞여
+    #   무관 배지가 붙었다 — 9/30 삼부토건 '감사의견 거절', 코스모로보틱스 '횡령·배임',
+    #   9/28 신라에스지 '상장폐지'.
+    src = str(a.get("title") or "")
     # 판정할 원문이 사실상 없으면 손대지 않는다(제목까지 비는 비정상 상황).
-    if len(src.strip()) < 10:
+    if len(src.strip()) < 6:
         return True
     return bool(re.search(pat, src))
 
@@ -5795,6 +5846,8 @@ def main():
         "추가 계열사", "신규 회생", "추가 부도",
         "상폐 확정", "상장폐지 확정", "상장폐지 결정",
         "검찰 기소", "구속 영장", "구속 기소",
+        # (2026-10-01) 기지 사건 종목의 상폐 사유 발생 — 9/30 제이알글로벌리츠 과소등급
+        "상장폐지 기준", "상폐 기준", "상장폐지 사유", "상폐 사유", "의견거절", "감사의견 거절",
     ]
 
     # 과거 사건을 되짚는 배경 서술 표현 (2026-09-03 신설)
@@ -5848,7 +5901,8 @@ def main():
                        "워크아웃 개시", "워크아웃 신청", "워크아웃 확정",
                        "추가 계열사", "신규 회생", "추가 부도",
                        "상폐 확정", "상장폐지 확정", "상장폐지 결정",
-                       "검찰 기소", "구속 영장", "구속 기소", "법정관리")
+                       "검찰 기소", "구속 영장", "구속 기소", "법정관리",
+                       "상장폐지 기준", "상폐 기준", "상장폐지 사유", "상폐 사유")
         _t = (title or "") + " " + (desc or "")
         hits = _stage_hits(title, desc)
         if any(rk in _t for rk in _RESOLVE_KW):
