@@ -200,3 +200,26 @@ min(case when mgge_mntn_rt >= 1.4 and mgge_mntn_rt < 1.5
 awk -F',' 'NR>1 && $12!="" && $12+0<140' exposure_data.csv | wc -l   # 뱅
 awk -F',' 'NR>1 && $20!="" && $20+0<140' exposure_data.csv | wc -l   # 영
 ```
+
+## 경쟁사 공지 수집 상태 (2026-10-07)
+
+- 공지 수집은 `broker_notices.py`. KB·신한·키움 URL 및 공통 파서, CSV `date,company,title,url`, `(company,title)` 중복 제거, 30일 보관은 유지한다. `date`는 기존처럼 수집일이다.
+- **1개 이상 소스의 HTTP/연결/응답 구조/CSV 저장 오류 → `degraded`, exit 1.** 모든 소스를 시도한 뒤 판정한다. 정상 수집분은 저장한다.
+- `broker_notices_status.json`: KST 확인시각, 전체 상태, 실패 소스 수, 소스별 HTTP/최종 URL/상태/수집건수/오류. Actions Summary에도 표로 기록한다. `broker-notices-status-{run_id}` artifact로 7일 보관한다. JSON은 CSV 수집 폴더 밖에 둔다.
+- `ok`: 1건 이상 파싱. `empty`: HTTP 성공·0건. KB·신한·키움의 기존 공통 파서는 목록 완전성을 검증하지 않으며 `legacy_generic`으로 구분한다. 기존 키움 0건이 실제 무공지라는 의미는 아니다.
+- 공지 작업의 `continue-on-error`는 제거했다. 실패하더라도 artifact 업로드와 정상 CSV 커밋 단계는 `always()`로 수행한다. 본 뉴스 작업은 기존 `needs` 및 `if: always()`를 유지하므로 공지 오류 때문에 중단되지 않는다.
+
+### 공개 응답 확인
+
+2026-10-07 06:21 KST 전후 로컬 읽기 전용 GET에서 수정 코드로 확인. 운영 워크플로·AI 필터·메일·CSV 저장은 실행하지 않았다. 첫 페이지 범위이며 과거 전수 수집은 아니다.
+
+| 소스 | 공개 목록 | 실제 구조 | HTTP / 파싱 건수 |
+|---|---|---|---|
+| 미래에셋 | `https://securities.miraeasset.com/bbs/board/message/list.do?categoryId=66&listType=1&curPage=1` | `table.bbs_linetype2 .subject a`, `javascript:view(messageId, …)` → `view.do` | 200 / 10 |
+| 삼성 | `https://www.samsungpop.com/mbw/customer/noticeEvent.do?cmd=noticeList`의 공개 `getNoticeList` 요청 | `totalCount`, `fixlist` + `list`, `ntcTitle1`, `menuSeqNo` → `noticeView` | 200 / 10 |
+| NH | `https://www.nhsec.com/wooriwmBoard/boardList.action?sBoard_Id=1&sType_Cd=0000000002` | `table.tblType`, `onclick=viewUp(…)` → `boardView.action` | 200 / 12 (고정 2 + 일반 10) |
+| 토스 | `https://corp.tossinvest.com/ko/notice`의 공개 `https://docs-api.tossinvest.com/api/v1/post/search?type=NOTICE&page=0&size=20` | `result.list`, `pagingParam`, `id`, `category.id`; `NOTICE`/`notice` 혼용 → `/ko/post` | 200 / 20 |
+
+삼성 요청의 `ntcSect=3`, `siteGubun=P`, `sortColumn=ProcDTime2` 등은 공개 목록 페이지의 요청 형식이다. 토스 경로는 공지 페이지 JS의 `DOCS` base 및 `/api/v1/post/search`에서 확인했다. 미래에셋·NH는 EUC-KR HTML, 삼성·토스는 JSON이다. HTML에 메뉴만 있거나 JSON 오류/총건수와 빈 목록이 불일치하면 수집 실패로 기록한다.
+
+`tests/fixtures/broker_notices/`는 위 실제 응답에서 목록 테이블/파서 필드만 추출한 UTF-8 fixture다. 본문·메뉴·개인정보는 넣지 않았다. `python test_broker_notices.py`는 13개 오프라인 회귀(4곳 파서, 링크, 인코딩, 고정글, 타입 혼용, 404/timeout/구조 변경, 4곳 실패 degraded, 부분 성공 보존, 정상 0건, 기존 경로/CSV 중복 제거)를 검증한다. `bash run_tests.sh` 및 `python check_changes.py`에도 포함한다.

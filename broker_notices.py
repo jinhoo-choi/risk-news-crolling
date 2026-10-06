@@ -7,9 +7,12 @@ data/ 폴더에 증권사별 CSV 저장
 import requests
 from bs4 import BeautifulSoup
 import csv
+import json
 import os
+import re
 import time
 from datetime import datetime, timezone, timedelta
+from urllib.parse import urlencode, urljoin
 
 KST = timezone(timedelta(hours=9))
 DATA_DIR = "data"
@@ -20,17 +23,17 @@ DATA_DIR = "data"
 BROKERS = [
     {
         "company": "미래에셋증권",
-        "url": "https://www.miraeasset.com/cs/noti/getNotiList.do",
+        "url": "https://securities.miraeasset.com/bbs/board/message/list.do?categoryId=66&listType=1&curPage=1",
         "type": "miraeasset",
     },
     {
         "company": "삼성증권",
-        "url": "https://www.samsungsecurities.com/common/bbs/list.do?bbsId=notice",
+        "url": "https://www.samsungpop.com/mbw/customer/noticeEvent.do?cmd=getNoticeList&currentPage=1&rowsPerPage=10&listRow=10&ntcSect=3&siteGubun=P&sortColumn=ProcDTime2&sortType=DESC&searchType=0&Search=1&SearchText=",
         "type": "samsung",
     },
     {
         "company": "NH투자증권",
-        "url": "https://www.nhqv.com/cs/notice/noticeList.do",
+        "url": "https://www.nhsec.com/wooriwmBoard/boardList.action?sBoard_Id=1&sType_Cd=0000000002",
         "type": "nhqv",
     },
     {
@@ -50,7 +53,7 @@ BROKERS = [
     },
     {
         "company": "토스증권",
-        "url": "https://tossinvest.com/notices",
+        "url": "https://docs-api.tossinvest.com/api/v1/post/search?type=NOTICE&page=0&size=20",
         "type": "toss",
     },
 ]
@@ -98,17 +101,98 @@ def parse_generic(html: str, base_url: str, company: str) -> list:
     return results
 
 
-def crawl_broker(broker: dict) -> list:
+def parse_notices(res, broker: dict) -> list:
+    """수정한 4개 소스의 실제 목록만 파싱. 구조 불일치는 성공으로 숨기지 않는다."""
+    kind, company = broker["type"], broker["company"]
+    today = datetime.now(KST).strftime("%Y-%m-%d")
+    results = []
+    if kind in ("samsung", "toss"):
+        data = res.json()
+        if kind == "toss":
+            data = data["result"]
+        total = data["pagingParam"]["totalRowSize"] if kind == "toss" else data["totalCount"]
+        if not isinstance(total, int) or total < 0:
+            raise ValueError("공지 총건수 구조 불일치")
+        rows = data["list"]
+        if not isinstance(rows, list):
+            raise ValueError("공지 list가 배열이 아님")
+        if kind == "samsung":
+            fixed = data["fixlist"]
+            if not isinstance(fixed, list):
+                raise ValueError("공지 fixlist가 배열이 아님")
+            rows = fixed + rows
+        if not rows and total:
+            raise ValueError("공지 총건수와 빈 목록 불일치")
+        seen = set()
+        for row in rows:
+            if kind == "samsung":
+                title, post_id = row["ntcTitle1"], row["menuSeqNo"]
+                link = "https://www.samsungpop.com/mbw/customer/noticeEvent.do?" + urlencode(
+                    {"cmd": "noticeView", "MenuSeqNo": post_id})
+            else:
+                if str(row["type"]).upper() != "NOTICE":
+                    raise ValueError("NOTICE 이외의 응답")
+                title, post_id = row["title"], row["id"]
+                link = "https://corp.tossinvest.com/ko/post?" + urlencode(
+                    {"type": "notice", "id": post_id, "category": row["category"]["id"]})
+            if not isinstance(title, str) or not title.strip() or not str(post_id).isdigit():
+                raise ValueError("공지 제목/ID가 올바르지 않음")
+            if link not in seen:
+                results.append({"date": today, "company": company, "title": title.strip(), "url": link})
+                seen.add(link)
+        return results
+
+    if kind not in ("miraeasset", "nhqv"):
+        return parse_generic(res.text, broker["url"], company)
+    # 두 사이트는 EUC-KR. requests의 ISO-8859-1 기본 추측에 의존하지 않는다.
+    soup = BeautifulSoup(res.content, "html.parser", from_encoding="euc-kr")
+    selector = "table.bbs_linetype2 .subject a" if kind == "miraeasset" else "table.tblType a[onclick]"
+    for a in soup.select(selector):
+        if kind == "miraeasset":
+            match = re.fullmatch(r"javascript:view\('(\d+)'\s*,\s*'\d+'\)", a.get("href", ""), re.I)
+            if not match:
+                raise ValueError("미래에셋 공지 링크 구조 불일치")
+            link = urljoin(broker["url"], "view.do") + "?" + urlencode(
+                {"categoryId": 66, "messageId": match[1]})
+        else:
+            match = re.search(r"viewUp\(\s*'\d+'\s*,\s*'(\d+)'\s*,\s*'(\d+)'\s*,\s*'(\d+)'\s*,\s*'(\d+)'\s*,\s*'(\d+)'\s*,\s*'view'\s*\)", a["onclick"])
+            if not match:
+                raise ValueError("NH 공지 링크 구조 불일치")
+            type_cd, board_id, main_no, sub_no, answer_lvl = match.groups()
+            link = urljoin(broker["url"], "boardView.action") + "?" + urlencode(
+                {"type_cd": type_cd, "board_id": board_id, "main_no": main_no,
+                 "sub_no": sub_no, "answer_lvl": answer_lvl, "check": "view",
+                 "sBoard_Id": board_id, "sType_Cd": type_cd})
+        title = a.get_text(strip=True)
+        if not title:
+            raise ValueError("공지 제목 누락")
+        results.append({"date": today, "company": company, "title": title, "url": link})
+    if not results:
+        table = soup.select_one("table.bbs_linetype2" if kind == "miraeasset" else "table.tblType")
+        if table is None or not re.search(r"(검색|조회|등록).*없습니다", table.get_text()):
+            raise ValueError("공지 목록 구조 불일치 또는 미확인 빈 응답")
+    return results
+
+
+def crawl_broker(broker: dict, status=None) -> list:
     """단일 증권사 공지 크롤링"""
     company = broker["company"]
     url     = broker["url"]
+    if status is None:
+        status = {}
+    status.update(company=company, url=url, status="error", count=0, http_status=None)
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
+        status.update(http_status=res.status_code, response_url=res.url)
         res.raise_for_status()
-        items = parse_generic(res.text, url, company)
+        items = parse_notices(res, broker)
+        status.update(status="ok" if items else "empty", count=len(items))
+        if broker["type"] in ("kb", "shinhan", "kiwoom"):
+            status["parser"] = "legacy_generic"
         print(f"  [{company}] {len(items)}건 수집")
         return items
     except Exception as e:
+        status.update(error_type=type(e).__name__, error=str(e))
         print(f"  [{company}] 크롤링 실패: {e}")
         return []
 
@@ -154,13 +238,37 @@ def save_csv(company: str, items: list):
 
 def main():
     print(f"[{datetime.now(KST).strftime('%Y-%m-%d %H:%M')}] 경쟁사 공지 크롤링 시작")
+    statuses = []
     for broker in BROKERS:
-        items = crawl_broker(broker)
+        status = {}
+        items = crawl_broker(broker, status)
         if items:
-            save_csv(broker["company"], items)
+            try:
+                save_csv(broker["company"], items)
+            except Exception as e:
+                status.update(status="error", error_type=type(e).__name__, error=str(e))
+        statuses.append(status)
         time.sleep(1)
-    print("경쟁사 공지 크롤링 완료")
+    failed = sum(s["status"] == "error" for s in statuses)
+    state = "degraded" if failed else "success"
+    report = {"checked_at": datetime.now(KST).isoformat(), "status": state,
+              "failed_sources": failed, "total_sources": len(statuses), "sources": statuses}
+    with open("broker_notices_status.json", "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    summary = [f"### 경쟁사 공지: {state} ({failed}/{len(statuses)} 소스 실패)",
+               "| 소스 | 상태 | HTTP | 건수 | 오류 |", "|---|---|---|---|---|"]
+    for s in statuses:
+        error = s.get("error", "").replace("|", "\\|").replace("\n", " ")
+        summary.append(f"| {s['company']} | {s['status']} | {s['http_status']} | {s['count']} | {error} |")
+    summary.append("KB·신한·키움은 기존 공통 파서 유지. empty는 HTTP 성공·0건이며 목록 완전성 보증은 아닙니다.")
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+            f.write("\n".join(summary) + "\n")
+    print(f"경쟁사 공지 크롤링 완료: {state} ({failed}/{len(statuses)} 소스 실패)")
+    if failed:
+        print(f"::error::경쟁사 공지 degraded — {failed}개 소스 실패")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
