@@ -33,9 +33,18 @@ jobs:
 
       - name: 경쟁사 공지사항 크롤링
         run: python broker_notices.py
-        continue-on-error: true
+
+      - name: 소스별 수집 상태 저장
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: broker-notices-status-${{ github.run_id }}
+          path: broker_notices_status.json
+          retention-days: 7
+          if-no-files-found: error
 
       - name: CSV 커밋 & 푸시
+        if: always()  # 일부 소스 실패 시에도 정상 수집분은 보존
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
