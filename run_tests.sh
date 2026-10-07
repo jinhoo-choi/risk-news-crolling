@@ -9,10 +9,10 @@ echo "════════════════════════�
 echo " 리스크봇 검증 스위트"
 echo "════════════════════════════════════════════════════════════"
 
-python3 -m py_compile naver_news_monitor.py manual_send.py convert_exposure.py 2>/dev/null \
+python3 -m py_compile naver_news_monitor.py quote_prices.py manual_send.py convert_exposure.py 2>/dev/null \
   && echo "  OK   컴파일" || { echo "  FAIL 컴파일"; FAILED=1; }
 
-for t in test_broker_notices test_variants test_new_gates test_send_decision test_regrade test_scoring test_html test_smoke sim_verify sim_pipeline; do
+for t in test_quote_prices test_broker_notices test_variants test_new_gates test_send_decision test_regrade test_scoring test_html test_smoke sim_verify sim_pipeline; do
   if python3 "$t.py" >/tmp/_t.log 2>&1; then
     echo "  OK   $t"
   else

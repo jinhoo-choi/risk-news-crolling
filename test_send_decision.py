@@ -18,6 +18,7 @@ _CRASH = {"on": False}
 
 class _FakeTicker:
     def __init__(self, tk):
+        assert tk in {code + ".KS" for code in _TEST_MARKETS}, tk
         self.tk = tk
 
     def history(self, period=None, interval=None, auto_adjust=None):
@@ -48,6 +49,18 @@ except SystemExit:
 
 with contextlib.redirect_stdout(io.StringIO()):
     EXPO = nm.load_exposure_data()
+
+
+# Synthetic price-watch universe independent of private/ever-changing holdings.
+# Existing article exposure fixtures remain unchanged for the scoring gates.
+import quote_prices
+_TEST_MARKETS = {f"99{i:04d}": ".KS" for i in range(20)}
+quote_prices.get_market_catalog = lambda: _TEST_MARKETS
+for i, code in enumerate(_TEST_MARKETS):
+    name = f"가격회귀가상종목{i}"
+    EXPO[name] = [{"종목명": name, "종목코드": code, "종목유형": "여신",
+                   "리스크종목": "Y", "잔고(억)": "100", "고객수": "10",
+                   "리스크고객수": "2", "리스크잔고(억)": "10"}]
 
 
 def _exposure(entity):

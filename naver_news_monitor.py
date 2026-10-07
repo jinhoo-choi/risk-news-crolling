@@ -105,6 +105,8 @@ RELATED_STOCK_MAP = {
 }
 
 import requests
+from collections import Counter
+from quote_prices import resolve_symbol, fetch_quote, format_price, STATUS_LABELS
 import re
 import random
 from html import escape as _html_escape
@@ -392,95 +394,15 @@ def get_price_change(entity: str) -> float | None:
 
 
 def get_entity_price_drop(entity: str, exposure_data: dict) -> float | None:
-    """dedup 우회 판정용 — 종목의 당일 등락률 조회 (국내·해외 겸용).
-
-    build_price_alert_section()의 가격 조회는 이메일 렌더링 단계에서 일어나
-    dedup 판정 시점에는 쓸 수 없으므로, 여기서 종목코드 기준으로 단건 조회한다.
-    exposure_data에서 종목코드를 찾아 국내는 .KS 티커로 변환, 없으면 해외
-    티커(get_price_change)로 폴백.
-
-    반환: 등락률(예: -12.6) 또는 조회 실패 시 None
-    """
+    """dedup 우회용 가격. 보고서와 같은 심볼·당일 데이터 검증을 사용한다."""
     try:
-        # find_exposure() 사용 — 직접 dict 조회는 법인명 표기차이·영문 별칭을
-        # 못 잡아 종목코드를 찾지 못하고 조용히 None을 반환한다.
         rows = find_exposure(entity, exposure_data) or []
-        # 국내 6자리 숫자 코드를 우선 선택. rows에는 채권(951F26 등 비숫자)·
-        # 해외주식(NVDA 등)이 섞여 있어, 단순히 첫 행의 코드를 쓰면 주식 코드가
-        # 있는데도 채권 코드를 집어 가격 조회에 실패한다.
-        code = ""
-        for r in rows:
-            c = (r.get("종목코드") or "").strip()
-            if c.isdigit() and len(c.zfill(6)) == 6:
-                code = c
-                break
-        if code and code.isdigit():
-            import yfinance as yf
-            from datetime import datetime as _dt
-            ticker = code.zfill(6) + ".KS"
-            hist = yf.Ticker(ticker).history(period="5d", auto_adjust=False)
-            if len(hist) < 2:
-                return None
-            kst = timezone(timedelta(hours=9))
-            last_date = hist.index[-1]
-            try:
-                if last_date.tzinfo is not None:
-                    last_kst = last_date.tz_convert("Asia/Seoul")
-                else:
-                    last_kst = last_date
-                # 오늘 데이터가 아니면(휴장 등) 판정하지 않음
-                if last_kst.strftime("%Y-%m-%d") != datetime.now(kst).strftime("%Y-%m-%d"):
-                    return None
-            except Exception:
-                pass
-            curr = float(hist["Close"].iloc[-1])
-            prev = float(hist["Close"].iloc[-2])
-            if prev > 0:
-                return round((curr - prev) / prev * 100, 2)
-        # ── 해외 종목 폴백 ──
-        # exposure_data의 해외주식·해외대출은 종목코드/종목명이 이미 티커
-        # (TSLA, NVDA, QQQ 등)로 저장돼 있다. get_price_change()는 한글명을
-        # 티커로 역변환하는 함수라 이 경우 매핑에 실패한다(실측: 해외 고유
-        # 종목 2,224개 중 한글명 매핑 성공 25.4%, 미매핑 잔고 17.2조).
-        # 따라서 rows에서 티커 형태 코드를 직접 찾아 조회하고, 그래도 없으면
-        # entity 자체가 티커인지 확인한 뒤, 마지막으로 한글명 역변환을 시도한다.
-        import re as _re
-
-        def _is_ticker(s: str) -> bool:
-            # 미국 상장 티커: 영문 대문자 1~5자.
-            # 클래스 구분은 소스마다 표기가 다름 — CSV는 'BRK/B' 슬래시 형태,
-            # yfinance는 'BRK-B' 하이픈 형태를 쓴다(_norm_ticker에서 변환).
-            return bool(_re.fullmatch(r"[A-Z]{1,5}([./][A-Z])?", s or ""))
-
-        def _norm_ticker(s: str) -> str:
-            """CSV 표기(BRK/B)를 yfinance 표기(BRK-B)로 변환."""
-            return (s or "").replace("/", "-").replace(".", "-")
-
-        _ov_ticker = ""
-        for r in rows:
-            if r.get("종목유형") in ("해외주식", "해외대출"):
-                for _cand in ((r.get("종목코드") or "").strip(),
-                              (r.get("종목명") or "").strip()):
-                    if _is_ticker(_cand):
-                        _ov_ticker = _cand
-                        break
-            if _ov_ticker:
-                break
-        if not _ov_ticker and _is_ticker(entity.strip()):
-            _ov_ticker = entity.strip()
-
-        if _ov_ticker:
-            import yfinance as yf
-            hist = yf.Ticker(_norm_ticker(_ov_ticker)).history(period="5d", auto_adjust=False)
-            if len(hist) >= 2:
-                curr = float(hist["Close"].iloc[-1])
-                prev = float(hist["Close"].iloc[-2])
-                if prev > 0:
-                    return round((curr - prev) / prev * 100, 2)
-            return None
-
-        # 한글명으로 저장된 해외 종목은 기존 역변환 경로 사용
-        return get_price_change(entity)
+        fallback = NAME_TO_TICKER.get(entity) or next(
+            (t for t, n in TICKER_MAP_RUNTIME.items() if n == entity), "")
+        if not rows and re.fullmatch(r"[A-Z]{1,5}([./-][A-Z])?", entity.strip()):
+            fallback = entity.strip()
+        quote = fetch_quote(resolve_symbol(rows, fallback))
+        return quote.change if quote.status == "ok" else None
     except Exception:
         return None
 
@@ -490,7 +412,7 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
     - 리스크종목 = Y + 종목유형 = 신용 행 추출 → 신용잔고 합산
     - yfinance 당일 등락률 조회 → PRICE_DROP_THRESHOLD 이하 종목만 표시
     - 위험고객(리스크고객수 > 0) 컬럼 별도 표시
-    - 탐지 종목 없으면 빈 문자열 반환
+    - 탐지 종목이 없어도 가격 감시 범위·미조회 사유 표시
     - 모바일: 6컬럼 → font-size 10px + padding 축소로 대응
 
     ★결과 캐싱(2026-07-29): 이 함수는 한 회차에 3번 호출된다.
@@ -502,15 +424,9 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
       판정이 흔들리면 안 되므로, 첫 호출 결과를 재사용한다.
       집계값(last_alerted_*)도 함께 보존해 판정 일관성을 보장한다.
     """
-    try:
-        import yfinance as yf
-    except ImportError:
-        _build_price_alert_section_uncached.last_alerted_count = 0
-        _build_price_alert_section_uncached.last_alerted_rbal = 0
-        return ''
-
     _build_price_alert_section_uncached.last_alerted_count = 0
     _build_price_alert_section_uncached.last_alerted_rbal = 0
+    _build_price_alert_section_uncached.last_coverage = {}
     # 2026-09-26: -3% → -5% 재환원(PRICE_DROP_THRESHOLD). 뉴스 필터는 -5%인데
     # 여기만 -3%라 -3~-5% 구간이 가격경보에는 뜨고 기사는 걸리는 불일치가 있었다.
     # ※ 이 값은 시장급락 강제발송 집계(alerted_count/alerted_rbal)의 입력이기도
@@ -550,10 +466,10 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
             bal, cust  = _pf(r.get('잔고(억)', 0)), int(_pf(r.get('고객수', 0)))
             rcust, rbal = int(_pf(r.get('리스크고객수', 0))), _pf(r.get('리스크잔고(억)', 0))
             if name not in credit_map:
-                code = str(r.get('종목코드', '')).strip()
-                credit_map[name] = {'bal': 0.0, 'cust': 0, 'rcust': 0, 'rbal': 0.0, 'code': code,
+                credit_map[name] = {'bal': 0.0, 'cust': 0, 'rcust': 0, 'rbal': 0.0,
                                     'top_rbal': 0.0, 'top_cust': '', 'top_ratio': '',
-                                    'ch': None}
+                                    'ch': None, 'rows': []}
+            credit_map[name]['rows'].append(r)
             credit_map[name]['bal']   += bal
             credit_map[name]['cust']  += cust
             credit_map[name]['rcust'] += rcust
@@ -590,93 +506,54 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
 
     total_count = len(credit_map)
 
-    # ticker 매핑 — CSV 종목코드 우선, 없으면 TICKER_MAP_RUNTIME 역방향
+    # 종목유형·공식 상장시장 마스터로 티커 해석
     stock_list = []
     for name, info in sorted(credit_map.items(), key=lambda x: x[1]['bal'], reverse=True):
-        # CSV row에서 종목코드 직접 추출
-        raw_code = info.get('code', '')  # credit_map에 code 저장
-        ticker = None
-        if raw_code:
-            if raw_code.isdigit():
-                ticker = raw_code.zfill(6) + '.KS'  # 국내: 000660 → 000660.KS
-            else:
-                ticker = raw_code  # 해외: 이미 TSLA 등
-        if not ticker:
-            # fallback: TICKER_MAP_RUNTIME 역방향
-            ticker = NAME_TO_TICKER.get(name)
-            if not ticker:
-                for t, n in TICKER_MAP_RUNTIME.items():
-                    if n == name:
-                        ticker = t
-                        break
-            # 해외 ticker .KS 미부착 확인
-            if ticker and not ticker.endswith('.KS') and ticker.isdigit():
-                ticker += '.KS'
+        # Resolve the original typed rows; never reinterpret domestic alpha codes
+        # or bonds as foreign tickers, and never guess the Korean exchange.
+        ticker = resolve_symbol(info['rows'])
         stock_list.append((name, info['bal'], info['cust'], info['rcust'], info['rbal'], ticker,
                            info.get('top_rbal',''), info.get('top_cust',''), info.get('top_ratio',''),
                            info.get('ch')))
 
-    valid_tickers = [s[5] for s in stock_list if s[5]]
-    if not valid_tickers:
-        return ''
-
-    # yfinance history — KST 기준 최근 거래일 데이터 사용
-    # 날짜 일치 대신 '2거래일 이내' 조건 — 장중/장전/주말 모두 대응
-    from datetime import datetime as _dt2, timezone as _tz2, timedelta as _td2
-    import pytz as _pytz
-    _kst = _pytz.timezone('Asia/Seoul')
-    _now_kst = _dt2.now(_kst)
-    _today_str = _now_kst.strftime('%Y-%m-%d')
-
     def _fetch_price(item):
-        """단일 종목 yfinance 조회 — (name, result_dict or None) 반환"""
-        _n, _bal, _cu, _rc, _rb, _tk, _tr, _tc, _trat, _ch = item
-        if not _tk:
-            return _n, None
-        try:
-            hist = yf.Ticker(_tk).history(period='5d', interval='1d', auto_adjust=False)
-            if hist is None or len(hist) < 2:
-                return _n, None
-            hist = hist.dropna(subset=['Close'])
-            if len(hist) < 2:
-                return _n, None
-            # 마지막 거래일 KST 변환
-            last_date = hist.index[-1]
-            try:
-                if last_date.tzinfo is None:
-                    last_dt_kst = last_date.tz_localize('UTC').tz_convert('Asia/Seoul')
-                else:
-                    last_dt_kst = last_date.tz_convert('Asia/Seoul')
-            except Exception:
-                last_dt_kst = _now_kst  # 변환 실패 시 오늘로 가정
-            # 오늘(KST) 데이터가 아니면 표시하지 않음 (주말·휴장일 등)
-            if last_dt_kst.strftime('%Y-%m-%d') != _today_str:
-                return _n, None
-            curr = float(hist['Close'].iloc[-1])
-            prev = float(hist['Close'].iloc[-2])
-            if prev > 0:
-                chg = round((curr - prev) / prev * 100, 2)
-                return _n, {'chg': chg, 'curr': curr, 'ticker': _tk,
-                            'top_rbal': _tr, 'top_cust': _tc, 'top_ratio': _trat}
-        except Exception:
-            pass
-        return _n, None
+        return item[0], fetch_quote(item[5])
 
-    # ThreadPoolExecutor 병렬 조회 (순차 최대 90초 → 5~8초)
     price_map = {}
-    _valid_items = [s for s in stock_list if s[5]]
+    outcomes = {}
     with ThreadPoolExecutor(max_workers=10) as _pex:
-        _pfuts = {_pex.submit(_fetch_price, s): s for s in _valid_items}
+        _pfuts = {_pex.submit(_fetch_price, item): item for item in stock_list}
         for _pf in as_completed(_pfuts):
+            item = _pfuts[_pf]
             try:
-                _pname, _pres = _pf.result()
-                if _pres is not None:
-                    price_map[_pname] = _pres
+                name, quote = _pf.result()
+                outcomes[name] = quote.status
+                if quote.status == 'ok':
+                    price_map[name] = {'chg': quote.change, 'curr': quote.current,
+                                       'ticker': quote.ticker,
+                                       'top_rbal': item[6], 'top_cust': item[7],
+                                       'top_ratio': item[8]}
             except Exception:
-                continue
-    if not price_map:
-        print(f'  [price_alert] yfinance 조회 실패 또는 오늘 데이터 없음')
-        return ''
+                outcomes[item[0]] = 'provider_error'
+
+    failures = Counter(status for status in outcomes.values() if status != 'ok')
+    risk_names = {name for name, info in credit_map.items() if info['rcust'] > 0}
+    coverage = {'total': total_count, 'priced': len(price_map),
+                'missing': total_count - len(price_map),
+                'risk_total': len(risk_names), 'risk_priced': len(risk_names & price_map.keys()),
+                'failures': dict(failures)}
+    assert coverage['priced'] + sum(failures.values()) == total_count
+    _build_price_alert_section_uncached.last_coverage = coverage
+    # Counts/statuses only: never print customer names, balances or raw errors.
+    print(f"  [price_alert] coverage={coverage['priced']}/{total_count} "
+          f"unknown={coverage['missing']} reasons={dict(sorted(failures.items()))}")
+    reasons = ' · '.join(f'{STATUS_LABELS.get(status, "조회 오류")} {count}개'
+                         for status, count in sorted(failures.items()))
+    coverage_html = f'''<div style="margin-top:12px;padding:10px 14px;border:1px solid #e2e8f0;font-size:12px;color:#475569;">
+      <b>가격 감시 범위</b>: 당일 가격 확인 {coverage['priced']}/{total_count}종목 · 미조회 {coverage['missing']}종목<br>
+      위험고객 보유 종목: 가격 확인 {coverage['risk_priced']}/{coverage['risk_total']}종목
+      {('<br>' + reasons + '<br>미조회 종목은 하락 없음이 아닌 미확인 상태이며, 급락 종목 수·시장급락 판정에 포함되지 않습니다.') if failures else ''}
+      </div>'''
 
     # PRICE_DROP_THRESHOLD 이하 필터
     alerted_raw = [
@@ -689,7 +566,7 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
     ]
 
     if not alerted_raw:
-        return ''
+        return coverage_html
 
     # 위험고객 있는 종목만 — 없으면 표시 불필요
     # 정렬: ① 리스크잔고 내림차순 ② 리스크고객수 내림차순
@@ -707,15 +584,10 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
     _build_price_alert_section_uncached.last_alerted_rbal = sum(
         (a[4] or 0) for a in alerted_sorted)
     if not alerted_sorted:
-        return ''
+        return coverage_html
     MAX_DISPLAY = 3
     display_alerted = alerted_sorted[:MAX_DISPLAY]
     extra_alerted   = alerted_sorted[MAX_DISPLAY:]
-
-    def _fmt_price(curr, ticker):
-        if not ticker.endswith('.KS'):
-            return f'${curr:,.2f}'
-        return f'{int(curr):,}원' if curr >= 1000 else f'{curr:.2f}원'
 
     # 채널 식별 컬러 — 라인 전체 착색 + ● 마커 (단어 반복 제거)
     _C_BANK   = '#2563eb'  # 뱅키스
@@ -806,7 +678,7 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
             <tr style="background:{bg};border-bottom:1px solid #f1f5f9;">
               <td class="price-alert-td" style="padding:8px 3px;text-align:center;white-space:nowrap;">
                 <div style="font-size:13px;font-weight:600;color:#1e293b;">{name}</div>
-                <div style="font-size:10px;font-weight:700;color:#2563eb;margin-top:2px;">▼{abs(chg):.1f}%</div>
+                <div style="font-size:10px;font-weight:700;color:#2563eb;margin-top:2px;">{format_price(curr, ticker)} · ▼{abs(chg):.1f}%</div>
               </td>
               {_cust_bal_cell(cust, bal, ch)}
               {_risk_cell(rcust, rbal, ch)}
@@ -817,7 +689,7 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
     _legend = (f'<span style="color:{_C_BANK};">●</span><span style="color:#ffffff;font-weight:700;"> 뱅키스</span>'
                f' &nbsp;<span style="color:{_C_BRANCH};">●</span><span style="color:#ffffff;font-weight:700;"> 영업점</span>') if _has_channel else ''
 
-    return f'''
+    return coverage_html + f'''
     <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;border:1px solid #e2e8f0;border-top:3px solid #475569;">
       <tr>
         <td bgcolor="#1e293b" style="padding:10px 14px;background:#1e293b;">
@@ -882,6 +754,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     if _c and _c.get("key") == _ck:
         build_price_alert_section.last_alerted_count = _c["count"]
         build_price_alert_section.last_alerted_rbal = _c["rbal"]
+        build_price_alert_section.last_coverage = _c["coverage"]
         return _c["html"]
 
     html = _build_price_alert_section_uncached(exposure_data, ref_date)
@@ -889,8 +762,10 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     rbal = getattr(_build_price_alert_section_uncached, "last_alerted_rbal", 0)
     build_price_alert_section.last_alerted_count = cnt
     build_price_alert_section.last_alerted_rbal = rbal
+    coverage = getattr(_build_price_alert_section_uncached, "last_coverage", {})
+    build_price_alert_section.last_coverage = coverage
     build_price_alert_section._cache = {"key": _ck, "html": html,
-                                        "count": cnt, "rbal": rbal}
+                                        "count": cnt, "rbal": rbal, "coverage": coverage}
     return html
 
 
@@ -904,6 +779,7 @@ def clear_price_alert_cache():
     for _f in (build_price_alert_section, _build_price_alert_section_uncached):
         _f.last_alerted_count = 0
         _f.last_alerted_rbal = 0
+        _f.last_coverage = {}
 
 
 def normalize_ticker(name: str) -> str:
@@ -6116,7 +5992,8 @@ def main():
         # _MARKET_CRASH_STOCK_THRESHOLD)와 기준이 다른 것은 의도된 설계:
         # 여기서는 메일 콘텐츠가 여신잔고 현황 그 자체라 1개라도 알릴 가치가 있고,
         # 뉴스가 있는 경우엔 저등급 뉴스+소수 종목 하락만으로 전사 발송을 막기 위함.
-        _price_section = build_price_alert_section(exposure_data, "")
+        _ref_date = next(iter(exposure_data.values()))[0].get("기준일", "") if exposure_data else ""
+        _price_section = build_price_alert_section(exposure_data, _ref_date)
         # 뉴스 0건 시 전체발송 기준 (2026-07-25 조정)
         # 기존: 경보 종목이 1개라도 있으면 전체발송 → 위험고객 보유 종목이
         # 303개라 그중 1개만 급락해도 발동, 평상시에도 거의 매일
@@ -6141,7 +6018,7 @@ def main():
             print(f"  [뉴스 0건 발송판정] 경보 {_nr_cnt}종목 / 리스크잔고 {_nr_rbal:,.0f}억 "
                   f"/ 기준 {_NR_STOCK_TH}종목 AND {_NR_RBAL_TH:,.0f}억 → "
                   f"{'충족(전체발송)' if _nr_full else '미달(본인한정)'}")
-        if _price_section:
+        if _nr_cnt > 0:
             # 경보가 있으면 내용은 동일하게 만들고 '발송 범위'만 기준으로 가른다.
             # 기준 미달이어도 본인에게는 보내 정보가 사라지지 않게 한다.
             subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 여신잔고 위험고객 탐지"
@@ -6158,7 +6035,10 @@ def main():
         else:
             print("AI 필터링 결과 없음 — 결과 없음 메일 발송 (특정인만)")
             subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 해당 뉴스 없음"
-            send_email_no_result(subject, build_empty_html(now))
+            # Coverage-only content must not change the no-result audience or
+            # claim risk customers were detected. Keep the existing route.
+            empty_html = build_empty_html(now).replace("</body>", _price_section + "</body>")
+            send_email_no_result(subject, empty_html)
         save_seen_urls(seen_urls)
         save_filter_log(raw_articles, hard_excluded_articles, ai_filtered_articles, filtered)
         save_run_stats(total_count, 0,
