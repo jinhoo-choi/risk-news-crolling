@@ -171,6 +171,8 @@ class _FakeSMTP:
 
 
 requests.get = _fake_get
+# 기사 본문은 Session.get을 사용하므로 이 경로도 외부 요청 없이 모의한다.
+requests.sessions.Session.get = lambda self, url, *a, **k: _fake_get(url, *a, **k)
 requests.post = _fake_post
 smtplib.SMTP_SSL = _FakeSMTP
 

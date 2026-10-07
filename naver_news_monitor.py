@@ -107,6 +107,7 @@ RELATED_STOCK_MAP = {
 import requests
 from collections import Counter
 from quote_prices import resolve_symbol, fetch_quote, format_price, STATUS_LABELS
+from notice_filter import matches_notice_title
 import re
 import random
 from html import escape as _html_escape
@@ -1615,13 +1616,7 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
     return results
 
 def load_competitor_notices() -> list:
-    """경쟁사 공지사항 CSV에서 당일 신용·대출 관련 공지 로드"""
-    CREDIT_KEYWORDS = [
-        "신용한도", "신용융자", "신용공여", "신용거래",
-        "증거금률", "증거금 변경", "반대매매 급증",
-        "대출한도", "신용대출", "신용 중단", "한도 축소",
-        "신용 재개", "신용거래 제한"
-    ]
+    """기존 최근 2일 범위에서 제목에 신용·대출·오류가 포함된 공지 로드."""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     valid_dates = {(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(2)}
@@ -1645,7 +1640,7 @@ def load_competitor_notices() -> list:
                     company = row.get("company", "")
                     if date not in valid_dates:
                         continue
-                    if _kw_hit(title, CREDIT_KEYWORDS):
+                    if matches_notice_title(title):
                         result.append({
                             "company": company,
                             "title": title,
@@ -1664,7 +1659,7 @@ def load_competitor_notices() -> list:
             deduped.append(item)
     return deduped
 def build_competitor_html(notices: list, today_str: str) -> str:
-    """경쟁사 신용·대출 특이사항 HTML — 없으면 빈 문자열"""
+    """경쟁사 신용·대출·오류 공지 HTML — 없으면 빈 문자열"""
     if not notices:
         return ""
     rows_html = ""
@@ -1682,7 +1677,7 @@ def build_competitor_html(notices: list, today_str: str) -> str:
         <td style="padding:14px 22px 4px 22px;">
           <table width="100%" cellpadding="0" cellspacing="0" border="0">
             <tr>
-              <td><span style="font-size:15px;font-weight:bold;color:#3b5491;">경쟁사 신용·대출 특이사항</span></td>
+              <td><span style="font-size:15px;font-weight:bold;color:#3b5491;">경쟁사 신용·대출·오류 공지</span></td>
               <td align="right"><span style="font-size:12px;color:#94a3b8;">{today_str} 당일 기준</span></td>
             </tr>
           </table>
@@ -6651,9 +6646,9 @@ JSON만 출력:
     today_str = now.strftime("%m월 %d일")
     competitor_notices = load_competitor_notices()
     if competitor_notices:
-        print(f"  경쟁사 신용·대출 특이사항 {len(competitor_notices)}건 발견")
+        print(f"  경쟁사 신용·대출·오류 공지 {len(competitor_notices)}건 발견")
     else:
-        print("  경쟁사 신용·대출 특이사항 없음")
+        print("  경쟁사 신용·대출·오류 공지 없음")
     if exposure_data:
         ref_date = next(iter(exposure_data.values()))[0].get("기준일", "")
         print(f"  익스포저 데이터 로드 완료 ({len(exposure_data)}건, 기준일: {ref_date})")
@@ -6698,7 +6693,7 @@ JSON만 출력:
     # 경쟁사 공지 요약 추가
     if competitor_notices:
         competitor_summary = "\n".join([f"- [경쟁사] {n['company']}: {n['title']}" for n in competitor_notices[:3]])
-        filtered_titles += f"\n\n[경쟁사 신용·대출 특이사항]\n{competitor_summary}"
+        filtered_titles += f"\n\n[경쟁사 신용·대출·오류 공지]\n{competitor_summary}"
 
     try:
         sum_res = requests.post(

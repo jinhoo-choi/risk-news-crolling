@@ -205,8 +205,8 @@ awk -F',' 'NR>1 && $20!="" && $20+0<140' exposure_data.csv | wc -l   # 영
 
 - 공지 수집은 `broker_notices.py`. KB·신한·키움 URL 및 공통 파서, CSV `date,company,title,url`, `(company,title)` 중복 제거, 30일 보관은 유지한다. `date`는 기존처럼 수집일이다.
 - **1개 이상 소스의 HTTP/연결/응답 구조/CSV 저장 오류 → `degraded`, exit 1.** 모든 소스를 시도한 뒤 판정한다. 정상 수집분은 저장한다.
-- `broker_notices_status.json`: KST 확인시각, 전체 상태, 실패 소스 수, 소스별 HTTP/최종 URL/상태/수집건수/오류. Actions Summary에도 표로 기록한다. `broker-notices-status-{run_id}` artifact로 7일 보관한다. JSON은 CSV 수집 폴더 밖에 둔다.
-- `ok`: 1건 이상 파싱. `empty`: HTTP 성공·0건. KB·신한·키움의 기존 공통 파서는 목록 완전성을 검증하지 않으며 `legacy_generic`으로 구분한다. 기존 키움 0건이 실제 무공지라는 의미는 아니다.
+- `broker_notices_status.json`: KST 확인시각, 전체 상태, 실패 소스 수, 소스별 HTTP/최종 URL/상태/원본 파싱 건수(`count`)/필터 일치 건수(`retained_count`)/오류. Actions Summary에도 표로 기록한다. `broker-notices-status-{run_id}` artifact로 7일 보관한다. JSON은 CSV 수집 폴더 밖에 둔다.
+- `ok`: 필터 전 1건 이상 파싱(키워드 일치 0건이어도 정상). `empty`: HTTP 성공·필터 전 0건. KB·신한·키움의 기존 공통 파서는 목록 완전성을 검증하지 않으며 `legacy_generic`으로 구분한다. 기존 키움 0건이 실제 무공지라는 의미는 아니다.
 - 공지 작업의 `continue-on-error`는 제거했다. 실패하더라도 artifact 업로드와 정상 CSV 커밋 단계는 `always()`로 수행한다. 본 뉴스 작업은 기존 `needs` 및 `if: always()`를 유지하므로 공지 오류 때문에 중단되지 않는다.
 
 ### 공개 응답 확인
@@ -222,4 +222,13 @@ awk -F',' 'NR>1 && $20!="" && $20+0<140' exposure_data.csv | wc -l   # 영
 
 삼성 요청의 `ntcSect=3`, `siteGubun=P`, `sortColumn=ProcDTime2` 등은 공개 목록 페이지의 요청 형식이다. 토스 경로는 공지 페이지 JS의 `DOCS` base 및 `/api/v1/post/search`에서 확인했다. 미래에셋·NH는 EUC-KR HTML, 삼성·토스는 JSON이다. HTML에 메뉴만 있거나 JSON 오류/총건수와 빈 목록이 불일치하면 수집 실패로 기록한다.
 
-`tests/fixtures/broker_notices/`는 위 실제 응답에서 목록 테이블/파서 필드만 추출한 UTF-8 fixture다. 본문·메뉴·개인정보는 넣지 않았다. `python test_broker_notices.py`는 13개 오프라인 회귀(4곳 파서, 링크, 인코딩, 고정글, 타입 혼용, 404/timeout/구조 변경, 4곳 실패 degraded, 부분 성공 보존, 정상 0건, 기존 경로/CSV 중복 제거)를 검증한다. `bash run_tests.sh` 및 `python check_changes.py`에도 포함한다.
+`tests/fixtures/broker_notices/`는 위 실제 응답에서 목록 테이블/파서 필드만 추출한 UTF-8 fixture다. 본문·메뉴·개인정보는 넣지 않았다. `python test_broker_notices.py`는 오프라인 회귀(4곳 파서, 링크, 인코딩, 고정글, 타입 혼용, 404/timeout/구조 변경, 4곳 실패 degraded, 부분 성공 보존, 정상 0건, 기존 경로/CSV 중복 제거)를 검증한다. `bash run_tests.sh` 및 `python check_changes.py`에도 포함한다.
+
+### 공지 키워드 필터 (2026-10-08)
+
+- 7개 소스 모두 **목록의 제목에 `신용`, `대출`, `오류` 중 하나라도 포함**된 공지만 CSV에 저장한다. 상세 본문, URL, 회사명으로는 판정하지 않으며 상세 페이지를 추가 수집하지 않는다.
+- `notice_filter.matches_notice_title`을 수집 결과·CSV 저장·메일용 CSV 로더에서 공유한다. HTML 목록 파서가 먼저 태그를 제거하며, 공통 필터는 HTML entity를 디코딩하고 기존 출력 필터처럼 공백을 무시하는 부분문자열 OR 비교를 한다. `신용융자`, `담보대출`, `주문오류`는 포함하지만, `담보`, `장애`, `증거금률`만 있는 제목은 포함하지 않는다. JSON 파서의 누락/null 제목 검증은 유지한다.
+- 기존 CSV의 무관한 행은 다음 정상 자연 수집 때 같은 필터로 정리한다. 새 일치 공지가 없어도 정리하며, 일치하는 기존 행은 기존 30일 보관 범위에서 유지한다. 수집 실패 소스의 CSV는 건드리지 않으며 기존 CSV 읽기 실패도 덮어쓰지 않고 오류로 기록한다. 이 변경 PR에서 데이터 CSV를 직접 수정하지 않는다.
+- 메일 로더도 같은 필터로 기존 CSV를 읽으므로 과거의 넓은 키워드(`증거금률`, `한도 축소` 등)만 포함한 공지는 출력하지 않는다. 최근 2일 범위와 `(company,title)` 중복 제거는 유지한다.
+- 로그와 Actions Summary는 원본 파싱 건수/키워드 일치 건수를 분리한다. `count`는 이전과 같은 필터 전 건수, `retained_count`는 이번 수집 중 필터 일치 건수이며 CSV 전체 행 수나 신규 추가 건수가 아니다. 키워드 일치 0건은 crawler 실패가 아니다.
+- 고정 공개 fixture의 원본/일치 건수: 미래에셋 10/3, 삼성 10/1, NH 12/1, 토스 20/1. 현재 운영 수집량을 뜻하지 않는다. 오프라인 회귀에서 7개 소스 OR 필터, 본문만 일치하는 공지 제외, 공백/entity/HTML 제목 처리, null 제목, 혼합 목록, 건강한 0건, 기존 CSV 정리·실패 시 보존, 메일 로더 동일 필터를 검사한다.
