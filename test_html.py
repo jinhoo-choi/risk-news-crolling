@@ -36,6 +36,9 @@ try:
 except SystemExit:
     pass
 
+import quote_prices
+quote_prices.get_market_catalog = lambda: {}  # No live master downloads in HTML tests.
+
 with contextlib.redirect_stdout(io.StringIO()):
     EXPO = nm.load_exposure_data()
 
@@ -131,7 +134,7 @@ print("[3] 여신잔고 표 열 순서 — 종목명 → 전체 여신 → 위�
 print("=" * 74)
 with contextlib.redirect_stdout(io.StringIO()):
     ph = nm.build_price_alert_section(EXPO, "2026-07-27")
-if ph:
+if "<th " in ph:
     ths = re.findall(r'<th[^>]*>([^<]+)</th>', ph)
     expect = ["종목명", "전체 여신", "⚠ 위험고객", "최고 리스크"]
     check(f"헤더 {ths}", ths == expect, f"기대 {expect}")

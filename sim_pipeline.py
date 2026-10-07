@@ -29,6 +29,8 @@ for _k in ("EMAIL_SENDER", "EMAIL_PASSWORD", "EMAIL_RECEIVER",
 
 from datetime import datetime, timezone, timedelta
 import naver_news_monitor as M
+import quote_prices
+quote_prices.get_market_catalog = lambda: {}  # No live master downloads in simulations.
 
 KST = timezone(timedelta(hours=9))
 now = datetime.now(KST)

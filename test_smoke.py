@@ -17,6 +17,7 @@ _SENT = []
 
 class _FakeTicker:
     def __init__(self, tk):
+        assert tk in {code + ".KS" for code in _TEST_MARKETS}, tk
         self.tk = tk
 
     def history(self, **k):
@@ -38,6 +39,9 @@ for _k, _v in [("EMAIL_SENDER", "me@test.com"), ("EMAIL_PASSWORD", "x"),
 os.environ["FORCE_SELF_ONLY"] = "1"      # 혹시라도 실제 발송 경로를 타지 않도록
 
 import requests
+import quote_prices
+_TEST_MARKETS = {f"99{i:04d}": ".KS" for i in range(20)}
+quote_prices.get_market_catalog = lambda: _TEST_MARKETS
 import smtplib
 
 
@@ -203,6 +207,19 @@ def main():
     except SystemExit:
         pass
 
+    # Synthetic crash loans exercise price-only mail routing without assuming
+    # the exchange or quote availability of real exposure data.
+    _load_exposure = nm.load_exposure_data
+    def _with_test_loans():
+        data = _load_exposure()
+        for i, code in enumerate(_TEST_MARKETS):
+            name = f"가격회귀가상종목{i}"
+            data[name] = [{"종목명": name, "종목코드": code, "종목유형": "여신",
+                           "리스크종목": "Y", "잔고(억)": "100", "고객수": "10",
+                           "리스크고객수": "2", "리스크잔고(억)": "10"}]
+        return data
+    nm.load_exposure_data = _with_test_loans
+
     # 지표 기록을 임시 경로로 우회 — 운영 파일(run_stats.jsonl) 보호
     _orig_save = nm.save_run_stats
     _tmp_stats = os.path.join(_tmp, "run_stats.jsonl")
@@ -280,6 +297,25 @@ def main():
             print("  FAIL 뉴스 0건 전체발송 모의 경로 미도달")
             return 1
         print(f"  OK   뉴스 0건 가격경보 — 실제 발송 범위와 scope={expected_scope} 일치")
+    # A nonempty coverage panel is not a price alert. Keep the original
+    # no-result sender/audience and subject for all-unknown and no-drop runs.
+    routed = []
+    nm.send_email = lambda subject, body, **kw: routed.append(("risk", subject, body))
+    nm.send_email_no_result = lambda subject, body: routed.append(("no_result", subject, body))
+    for catalog, label in [({}, "all unknown"), (_TEST_MARKETS, "no decline")]:
+        quote_prices.get_market_catalog = lambda: catalog
+        _FakeTicker.history = lambda self, **kw: pd.DataFrame(
+            {"Close": [100, 100]},
+            index=pd.date_range(end=pd.Timestamp.now(tz="Asia/Seoul").normalize(), periods=2))
+        nm.clear_price_alert_cache()
+        routed.clear()
+        with contextlib.redirect_stdout(io.StringIO()):
+            nm.main()
+        if (len(routed) != 1 or routed[0][0] != "no_result" or
+                "해당 뉴스 없음" not in routed[0][1] or "가격 감시 범위" not in routed[0][2]):
+            print(f"  FAIL coverage-only routing: {label}")
+            return 1
+        print(f"  OK   coverage-only keeps no-result route: {label}")
     return 0
 
 
