@@ -264,6 +264,8 @@ PRICE_RESEND_THRESHOLD = -8.0
 # 메일 안내 문구·로그·시장급락 집계가 모두 이 값을 참조한다
 # (2026-09-26: 문구만 -3% 로 남아 수신자에게 잘못 안내되던 사례가 있었다).
 PRICE_DROP_THRESHOLD = -5.0
+# 개별종목 기사 긴급·주의 최소 익스포저(억, 뱅+영 전 유형 합산). 미만은 참고 (2026-10-12)
+EXPOSURE_FLOOR_EOK = 100
 EXPOSURE_FILE = "exposure_data.csv"
 CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL",        "claude-sonnet-4-6")  # Gemini fallback·재검증용
 CLAUDE_ACTION_MODEL = os.environ.get("CLAUDE_ACTION_MODEL", "claude-sonnet-4-6")  # action 생성 전용
@@ -3654,6 +3656,28 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
         if _GRADE_RANK[a["grade"]] > _GRADE_RANK[_cap]:
             print(f"  [상폐 주식잔고 상한] {_e} {_stk:.0f}억 {a['grade']}→{_cap}: {_t[:30]}")
             a["grade"] = _cap
+            a["customer_notice"] = None
+            a["_grade_locked"] = True
+
+    # ── 개별종목 익스포저 하한 (2026-10-12 신설) ─────────────────────────
+    # 개별종목 이슈 메일이 잦다는 운영 피드백. 뱅+영 전체 잔고(주식·해외주식·채권·
+    # 여신·해외대출 합산)가 EXPOSURE_FLOOR_EOK 미만이면 사건 유형과 무관하게 참고.
+    # 강등 전용·잠금. 당사 직접(제목 '한국투자증권')·entity 없음(시장 전체)·
+    # 익스포저 행 없음(별도 '익스포저 없음 → 참고' 게이트)은 대상 아님.
+    for a in articles:
+        if a.get("_force_urgent") or a.get("grade") not in ("긴급", "주의"):
+            continue
+        _t = a.get("title", "")
+        _e = (a.get("entity") or "").strip()
+        if not _e or DIRECT_COMPANY_KW in _t:
+            continue
+        _rows = find_exposure(_e, exposure_data or {})
+        if not _rows:
+            continue
+        _tot = sum(_num(r.get("잔고(억)")) for r in _rows)
+        if _tot < EXPOSURE_FLOOR_EOK:
+            print(f"  [익스포저 하한] {_e} {_tot:.0f}억 {a['grade']}→참고: {_t[:30]}")
+            a["grade"] = "참고"
             a["customer_notice"] = None
             a["_grade_locked"] = True
 
