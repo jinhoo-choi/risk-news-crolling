@@ -35,6 +35,9 @@ _FAMILIES = {
 
 # Stage patterns express an action/outcome, not a background noun such as
 # '가처분 계류' or '2년 연속 감사의견 거절로 상폐 문턱에 선'.
+_COURT = (r"(?:법원|대법원|(?:서울|수원|대전|대구|부산|광주|울산|인천|춘천|청주|전주|창원|제주|의정부)"
+          r"(?:중앙|동부|서부|남부|북부)?(?:지방법원|고등법원|회생법원|지법|고법))")
+_OPENING_REQUEST = r"(?:결정)?[를을]?(?:" + _COURT + r"에)?(?:신청|요청)"
 _STAGES = [
     ("listing", "가처분기각", r"(?:가처분|효력정지|집행정지|이의신청|항고).{0,18}?(?:기각|각하)"),
     ("listing", "가처분신청", r"(?:가처분|효력정지|집행정지).{0,10}?신청"),
@@ -44,9 +47,9 @@ _STAGES = [
     ("listing", "거래정지", r"(?:매매)?거래정지(?:결정|통보|시행|돌입|조치)?"),
     ("listing", "감사의견거절", r"(?:감사의견|의견)[\"'‘’“”]*(?:거절|부적정)"),
     ("insolvency", "파산선고", r"파산선고|부도(?:처리|발생|확정)|디폴트(?:발생|선언)"),
-    ("insolvency", "회생신청", r"(?:기업)?회생(?:절차)?(?:개시(?:결정)?)?[를을]?(?:신청|요청)|법정관리신청"),
-    ("insolvency", "회생개시", r"회생(?:절차)?.{0,5}?개시(?!(?:결정)?[를을]?(?:신청|요청))"),
-    ("insolvency", "회생기각", r"회생(?:절차)?(?:개시(?:결정)?)?[를을]?(?:(?:신청|요청).{0,12}?)?(?:기각|각하)"),
+    ("insolvency", "회생신청", r"(?:기업)?회생(?:절차)?(?:개시" + _OPENING_REQUEST + r"|[를을]?(?:신청|요청))|법정관리신청"),
+    ("insolvency", "회생개시", r"회생(?:절차)?.{0,5}?개시(?!" + _OPENING_REQUEST + r")"),
+    ("insolvency", "회생기각", r"회생(?:절차)?(?:개시(?:결정)?)?[를을]?(?:(?:" + _COURT + r"에)?(?:신청|요청).{0,12}?)?(?:기각|각하)"),
     ("insolvency", "회생폐지", r"회생(?:절차)?.{0,5}?폐지(?!(?:결정)?[를을]?(?:신청|요청))"),
     ("insolvency", "회생인가", r"회생계획.{0,5}?인가|회생인가"),
     ("insolvency", "청산절차", r"청산(?:절차|신청)|폐업(?:결정|신고)"),
@@ -205,13 +208,23 @@ def _event_clauses(text):
             # A second event date starts its own action scope, even without
             # punctuation: "6월 신청했고 오늘 개시 결정" is two events.
             start = 0
+            rehabilitation = False
             for marker in re.finditer(_DATE.pattern + "|" + _RELATIVE_DATE.pattern, src):
                 before = src[start:marker.start()]
                 prior_time = _DATE.search(before) or _RELATIVE_DATE.search(before) or _OLD_PERIOD.search(before)
                 if prior_time and any(re.search(pattern, before) for _, _, pattern in _STAGES):
                     yield before, raw[positions[start]:positions[marker.start()-1]+1]
+                    rehabilitation = bool(re.search(r"회생(?:절차)?.{0,5}?개시", before))
                     start = marker.start()
-            yield src[start:], raw[positions[start]:]
+            tail = src[start:]
+            # Same-sentence "old rehabilitation filing, today court ordered
+            # opening" can omit the repeated noun. Require the court's explicit
+            # order; another company's action or hearing does not inherit it.
+            if rehabilitation and re.match(
+                    r"(?:" + _DATE.pattern + "|" + _RELATIVE_DATE.pattern + r")" +
+                    _COURT + r"(?:은|이|가)개시(?!" + _OPENING_REQUEST + r")[를을]?(?:결정|명령|선고)", tail):
+                tail = tail.replace("개시", "회생절차개시", 1)
+            yield tail, raw[positions[start]:]
             prefix = ""
 
 

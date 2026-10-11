@@ -453,6 +453,42 @@ class DatedEventGateTests(unittest.TestCase):
         # A rejected request to terminate proceedings is not an actual end.
         self.assertEqual(material_facts("중앙그룹 회생절차 폐지신청 기각", now=self.AS_OF), [])
 
+    def test_court_between_opening_and_request_is_still_only_application(self):
+        for court in ("법원", "서울회생법원", "서울중앙지법"):
+            history = EventHistory(now=self.AS_OF)
+            history.record("중앙그룹", f"중앙그룹 {court}에 회생 신청")
+            for action in ("개시를", "개시 결정을"):
+                for verb in ("신청했다", "요청했다"):
+                    title = f"중앙그룹 회생절차 {action} {court}에 {verb}"
+                    with self.subTest(title=title):
+                        self.assertEqual([f["stage"] for f in material_facts(title, now=self.AS_OF)],
+                                         ["회생신청"])
+                        self.assertFalse(history.new_material("중앙그룹", title))
+                        self.assertEqual(self.gate(title, history=history, legacy=True), [])
+            # The court's own order still opens a separate legal stage.
+            title = f"중앙그룹 오늘 {court} 회생절차 개시 결정"
+            self.assertEqual(self.gate(title, history=history, legacy=True)[0]["grade"], "긴급")
+            title = f"중앙그룹 오늘 회생절차 개시 결정 후 {court}에 신청서 제출"
+            self.assertIn("회생개시", [f["stage"] for f in material_facts(title, now=self.AS_OF)])
+            title = f"중앙그룹 오늘 회생절차 개시를 {court}에 신청했으나 기각"
+            self.assertEqual([f["stage"] for f in material_facts(title, now=self.AS_OF)], ["회생기각"])
+            self.assertEqual(self.gate(title, history=history, legacy=True)[0]["grade"], "긴급")
+
+    def test_same_sentence_court_order_can_omit_repeated_rehabilitation_noun(self):
+        for old in ("2026년6월15일", "지난달"):
+            desc = f"중앙그룹은 {old} 회생절차 개시를 신청했고 오늘 법원은 개시 결정을 내렸다."
+            facts = material_facts("중앙그룹 회생 경과", desc, now=self.AS_OF)
+            self.assertEqual([f["stage"] for f in facts], ["회생개시"])
+            self.assertEqual(facts[0]["dates"], ["2026-10-11"])
+            self.assertEqual(self.gate("중앙그룹 회생 경과", desc, legacy=True)[0]["grade"], "긴급")
+        for desc in (
+            "중앙그룹은 6월15일 회생절차 개시를 신청했고 오늘 법원은 개시 결정을 요청했다.",
+            "중앙그룹은 6월15일 회생절차 개시를 신청했고 오늘 법원은 개시 결정을 서울회생법원에 요청했다.",
+            "중앙그룹은 6월15일 회생절차 개시를 신청했고 오늘 다른회사는 영업 개시 결정을 내렸다.",
+            "중앙그룹은 6월15일 회생절차 개시를 신청했다. 오늘 법원은 심리를 개시했다.",
+        ):
+            self.assertEqual(material_facts("중앙그룹 회생 경과", desc, now=self.AS_OF), [])
+
     def test_deadline_date_order_and_distinct_company_names_fail_open(self):
         for clause in ("6월15일을 납부기한으로 하는", "6월15일까지 납부해야 하는", "6월15일이 만기인",
                        "6월15일 기준일 자료에 나온", "만기가 6월15일인", "기준일이 6월15일인"):
