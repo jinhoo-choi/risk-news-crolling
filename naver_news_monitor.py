@@ -105,6 +105,7 @@ RELATED_STOCK_MAP = {
 }
 
 import requests
+from event_history import EventHistory, HISTORY_KEY, is_background_recap, material_facts
 from collections import Counter
 from quote_prices import resolve_symbol, fetch_quote, format_price, STATUS_LABELS
 from notice_filter import matches_notice_title
@@ -1701,11 +1702,7 @@ def build_competitor_html(notices: list, today_str: str) -> str:
     </table>"""
 
 def load_seen_urls() -> set:
-    """최근 3일 키(YYYY-MM-DD HH) 기준 seen URL 로드 — 오래된 키 자동 제거
-    (2026-07 패치: 24시간→7일로 확대. load_seen_stages()와 보존기간을 맞춰,
-    known_cases 진행 중 사건의 파생기사가 3일 이상 지나 URL이 바뀌면 dedup을
-    빠져나가 참고 등급으로 매일 재노출되던 문제 해결. 저장(save_seen_urls)은
-    이미 7일 보존이라 조회만 좁았던 불일치를 바로잡음.)"""
+    """최근 72시간 기사 URL 캐시. 장기 사건 이력은 load_event_history로 분리."""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     valid_keys = {
@@ -1836,12 +1833,18 @@ def load_seen_entities_today() -> set:
     return entities
 
 
+def load_event_history() -> EventHistory:
+    """Bounded event ledger, kept separately from the 72h article slots."""
+    try:
+        with open(SEEN_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return EventHistory(data.get(HISTORY_KEY)) if isinstance(data, dict) else EventHistory()
+    except (OSError, ValueError, TypeError):
+        return EventHistory()
+
+
 def load_known_entities() -> dict:
-    """최근 3일 seen_news에서 entity별 최초 발송일(days_ago) 계산
-    반환: {entity: days_ago}  — days_ago=0: 오늘, 1: 어제, ...
-    강등 기준: days_ago >= 3 → 등급 1단계 강등
-    차단 기준: days_ago >= 7 → 완전 차단 (NEXT_STAGE 예외 유지)
-    """
+    """하위호환용 72시간 슬롯 나이. 장기 나이는 사건별 EventHistory가 담당."""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     # 최대 3일 = 72시간치 슬롯 로드
@@ -1870,14 +1873,14 @@ def load_known_entities() -> dict:
     return entity_first
 
 def save_seen_urls(seen: set, combos: set = None, title_norms: list = None, desc_norms: list = None,
-                   stages: set = None):
+                   stages: set = None, event_history: EventHistory = None):
     """현재 시각 키(YYYY-MM-DD HH)로 seen URL + 발송 조합 저장 — 최근 3일 키만 보존"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     current_key = now.strftime("%Y-%m-%d %H")
     valid_keys = {
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(SEEN_RETENTION_HOURS)  # 3일 = 72시간 보존 (강등·차단 이력 유지)
+        for i in range(SEEN_RETENTION_HOURS)  # 기사 캐시만 72시간 보존
     }
     existing = {}
     if os.path.exists(SEEN_FILE):
@@ -1886,6 +1889,9 @@ def save_seen_urls(seen: set, combos: set = None, title_norms: list = None, desc
                 raw = json.load(f)
             if isinstance(raw, dict):
                 existing = {k: v for k, v in raw.items() if k in valid_keys}
+                # Every save path, including no-news runs, preserves the ledger.
+                if HISTORY_KEY in raw:
+                    existing[HISTORY_KEY] = EventHistory(raw[HISTORY_KEY]).serialize()
             else:
                 existing = {}
         except Exception:
@@ -1921,6 +1927,8 @@ def save_seen_urls(seen: set, combos: set = None, title_norms: list = None, desc
         "desc_norms":  existing_descs,
         "stages":      [list(x) for x in existing_stages],
     }
+    if event_history is not None:
+        existing[HISTORY_KEY] = event_history.serialize()
     import tempfile as _tmpfile, os as _os
     fd, tmp_path = _tmpfile.mkstemp(prefix="seen_", suffix=".tmp",
                                     dir=_os.path.dirname(_os.path.abspath(SEEN_FILE)) or ".")
@@ -3204,18 +3212,8 @@ def dedup_deterministic(articles: list) -> list:
     seen_descs    = []
     result = []
 
-    _NEXT_STAGE = {
-        "가처분","효력정지","집행정지","이의신청","항고","판결","인용",
-        "파산선고","청산","폐업","법정관리","회생인가","회생계획",
-        "변제","채무조정","추가제재","과징금","검찰고발","수사착수",
-        "상장폐지 기준","상폐 기준","상장폐지 사유","상폐 사유","의견거절","감사의견 거절",
-    }
-    _RESOLVE_KW_DET = ("기각","취하","철회","각하","거래재개","거래 재개",
-                       "상장유지","재상장","정상화","해제","졸업")
     def _is_next_stage_det(title: str) -> bool:
-        if _kw_hit(title, _RESOLVE_KW_DET):
-            return False  # 해소 국면은 새 단계 아님
-        return _kw_hit(title, _NEXT_STAGE)
+        return bool(material_facts(title))
 
     seen_urls_local = set()
 
@@ -5570,7 +5568,7 @@ def send_email(subject: str, html_body: str, self_only: bool = False):
         if all_refused:
             print(f"  ⚠️ 본인한정 발송 실패: {all_refused}")
             raise RuntimeError(f"본인한정 메일 발송 실패: {all_refused}")
-        return
+        return True
 
     print(f"이메일 발송 완료 ({len(succeeded)}/{len(targets)}명 성공)"
           + (f", 실패 {len(all_refused)}명" if all_refused else ""))
@@ -5582,6 +5580,7 @@ def send_email(subject: str, html_body: str, self_only: bool = False):
     if len(all_refused) == len(targets):
         # 전원 실패 — "발송완료" 로그로 오인되지 않도록 무음 실패를 예외로 승격
         raise RuntimeError(f"SMTP 전원 거부(무음 실패 방지용 예외 승격): {all_refused}")
+    return not all_refused
 
 def main():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 뉴스 모니터링 시작")
@@ -5589,6 +5588,7 @@ def main():
     now_str_full    = now_kst.strftime("%m월 %d일 %H시")
     seen_urls           = load_seen_urls()
     seen_combos         = load_seen_combos()
+    event_history       = load_event_history()
     seen_stages         = load_seen_stages()   # (entity, stage_kw) 3일 — stage 기반 dedup
     new_stages_this_run = set()
     seen_context        = load_seen_context()
@@ -5708,92 +5708,25 @@ def main():
         t = _re2.sub(r"[^가-힣a-zA-Z0-9]", "", t)
         return t.strip()
 
-    # 새 법적 국면 진행 신호 — 동일 entity·사건이어도 새 단계면 재발송.
-    # ※ 리스크 '해소' 신호(기각·취하·철회·재개·재상장·상장유지·보류)는 제외.
-    #   해소 기사는 하드필터·프롬프트에서 이미 false 처리되며, 여기서 재발송
-    #   트리거로 삼으면 "해소됐다"는 알림이 반복돼 알림 피로만 유발한다.
-    NEXT_STAGE_KEYWORDS = [
-        "가처분", "효력정지", "집행정지", "이의신청", "항고", "재항고",
-        "인용", "판결",
-        "파산선고", "청산절차", "청산 절차", "청산신청", "청산 신청", "폐업", "법정관리",
-        "회생신청", "회생 신청", "회생인가", "회생계획",
-        "변제", "채무조정", "출자전환",
-        "추가제재", "과징금", "검찰고발", "수사착수",
-        "확정판결", "최종확정", "선고확정",
-        # 새 단계 진행 — 동일 entity여도 새 사건으로 탐지
-        "워크아웃 개시", "워크아웃 신청", "워크아웃 확정",
-        "추가 계열사", "신규 회생", "추가 부도",
-        "상폐 확정", "상장폐지 확정", "상장폐지 결정",
-        "검찰 기소", "구속 영장", "구속 기소",
-        # (2026-10-01) 기지 사건 종목의 상폐 사유 발생 — 9/30 제이알글로벌리츠 과소등급
-        "상장폐지 기준", "상폐 기준", "상장폐지 사유", "상폐 사유", "의견거절", "감사의견 거절",
-    ]
-
-    # 과거 사건을 되짚는 배경 서술 표현 (2026-09-03 신설)
-    # desc는 기사 리드라 "지난 5월 상장폐지를 결정했다", "가처분을 신청하면서
-    # 중단된 상태다"처럼 이미 지나간 국면을 설명하는 문장이 자주 섞인다.
-    _PAST_CONTEXT_KW = ("지난", "앞서", "바 있", "상태다", "상태로", "중단된",
-                        "계류", "이후", "당시", "그동안", "해왔", "된 바",
-                        "결정했다", "신청하면서", "신청한", "받은 바")
-
     def _stage_hits(title: str, desc: str) -> list:
-        """매칭된 stage 키워드 추출 — 제목 우선, desc는 제목 무매칭 시만 (우연 매칭 오기록 방지)
-
-        (2026-09-03) desc 폴백에 과거 배경 서술 가드를 추가했다.
-        실사례 — 금양이 9/2 21시부터 3회차 연속 발송된 원인:
-          제목 "금융위 '허위매출·자본 과대계상' 금양·대표 고발" → stage 키워드 없음
-          desc  "한국거래소는 지난 5월 20일 …상장폐지를 결정했다. …효력정지
-                 가처분을 신청하면서 잠정 중단된 상태다"
-                 → '가처분'·'효력정지'가 hits로 잡힘
-        금양은 known_cases 등록 종목이라 D+3 강등 대상인데, 이 hits 때문에
-        is_next_stage가 참이 되어 매 회차 강등을 면제받았다. seen_stages는 3일
-        보존이라 5월 기록이 만료돼 있어 늘 '새 조합'으로 통과했다.
-        금양 기사는 대부분의 매체가 배경으로 5월 건을 붙이므로 무한 반복된다.
-        → desc에서만 잡힌 hits는 과거 배경 표현이 함께 있으면 버린다.
-          제목에서 잡힌 hits는 그대로 둔다 — 진짜 신규 사건은 제목에 드러나고,
-          여기까지 막으면 미탐이 된다(9/2 21시 '검찰고발' 건은 정상 발송이었다).
-        """
-        hits = [kw for kw in NEXT_STAGE_KEYWORDS if kw in (title or "")]
-        if hits:
-            return hits
-        hits = [kw for kw in NEXT_STAGE_KEYWORDS if kw in (desc or "")]
-        if hits and any(pk in (desc or "") for pk in _PAST_CONTEXT_KW):
-            return []
-        return hits
+        # Shared source-evidence parser: background nouns are not new stages.
+        return [fact["stage"] for fact in material_facts(title, desc)]
 
     def is_next_stage(title: str, desc: str, entity: str = "") -> bool:
-        # 해소성 표현 가드 — '가처분 기각', '집행정지 인용'(=상폐 정지=해소),
-        # '미지급금 청산'(=완납) 등 악화가 아닌 리스크 완화 국면은 재발송
-        # 트리거로 보지 않는다.
-        # 단, 아래 _ALWAYS_NEW(확정적 신규 악화 이벤트)는 해소 표현이 같은
-        # 기사에 섞여 있어도 항상 새 국면으로 인정한다 — 복합 기사(예: "회생
-        # 신청, 미지급금은 청산 완료")에서 진짜 새 소식이 묻히는 것을 방지.
-        # ('가처분'처럼 그 자체가 기각/인용 여부에 따라 의미가 뒤집히는 키워드는
-        # _ALWAYS_NEW에 넣지 않는다 — 여기 넣으면 '가처분 기각'도 새 국면으로
-        # 오판하게 됨)
-        _RESOLVE_KW = ("기각", "취하", "철회", "각하", "거래재개", "거래 재개",
-                       "상장유지", "재상장", "정상화", "해제", "졸업",
-                       "전액 지급", "전액 청산", "미지급금 지급", "미지급금 청산",
-                       "완납", "완제")
-        _ALWAYS_NEW = ("회생신청", "회생 신청", "회생인가", "회생계획",
-                       "파산선고", "청산절차", "청산 절차", "청산신청", "청산 신청",
-                       "워크아웃 개시", "워크아웃 신청", "워크아웃 확정",
-                       "추가 계열사", "신규 회생", "추가 부도",
-                       "상폐 확정", "상장폐지 확정", "상장폐지 결정",
-                       "검찰 기소", "구속 영장", "구속 기소", "법정관리",
-                       "상장폐지 기준", "상폐 기준", "상장폐지 사유", "상폐 사유")
-        _t = (title or "") + " " + (desc or "")
-        hits = _stage_hits(title, desc)
-        if any(rk in _t for rk in _RESOLVE_KW):
-            hits = [h for h in hits if h in _ALWAYS_NEW]
-            if not hits:
-                return False
-        if not hits:
+        facts = material_facts(title, desc)
+        if not facts:
             return False
         if not entity:
-            return True  # entity 미지정 시 기존 동작 유지
-        # 매칭 키워드 전부가 이미 발송된 stage면 차단, 하나라도 새 키워드면 통과
-        return any((entity, kw) not in seen_stages for kw in hits)
+            return True
+        if event_history.matching(entity, {f["family"] for f in facts}, "full"):
+            return event_history.new_material(entity, title, desc)
+        # Compatibility for legacy 72h slots. New structured history tracks
+        # concrete amounts/dates as well as stage names after a successful send.
+        # Legacy keyword-only history cannot disprove a new amount, authority
+        # or fiscal period. Fail open once, then record the structured evidence.
+        return any((entity, fact["stage"]) not in seen_stages or
+                   fact["amounts"] or fact["dates"] or fact.get("identities")
+                   for fact in facts)
 
     before_combo = len(filtered)
     filtered_final = []
@@ -5825,6 +5758,9 @@ def main():
         if entity and event_type:
             event_key = f"{entity}_{event_type}"  # entity는 위에서 정규화 완료
         ek_combo   = ("ek", event_key) if event_key else None
+        if (entity and not a.get("_force_urgent") and event_history.duplicate(
+                entity, a.get("title", ""), a.get("desc", ""), event_type)):
+            matched = True; reason = "동일 사건 이력, 신규 악화 근거 없음"
         if not matched and ek_combo and ek_combo in seen_combos:
             if not a.get("_force_urgent") and not is_next_stage(a.get("title",""), a.get("desc",""), entity):
                 matched = True; reason = "동일 사건(event_key) 이미 발송"
@@ -5855,6 +5791,7 @@ def main():
                 if _drop is not None and _drop <= PRICE_RESEND_THRESHOLD:
                     matched = False
                     reason = ""
+                    a["_material_price_resend"] = True
                     # 재발송 사유는 바로 아래 로그로 남긴다. 플래그를 두었으나
                     # 읽는 곳이 없어 죽은 코드였음(2026-07-29 정리).
                     print(f"  [dedup 해제] {entity} 당일 {_drop}% 하락 → 재발송 허용")
@@ -5866,16 +5803,17 @@ def main():
                 and entity in seen_entities_today
                 and entity not in _GENERIC
                 and not a.get("_force_urgent")
+                and not a.get("_material_price_resend")
                 and not is_next_stage(a.get("title",""), a.get("desc",""), entity)):
             matched = True; reason = f"당일 동일 entity({entity}) 이미 발송"
 
-        if not matched and t_norm and not is_next_stage(a.get("title",""), a.get("desc",""), entity):
+        if not matched and t_norm and not a.get("_material_price_resend") and not is_next_stage(a.get("title",""), a.get("desc",""), entity):
             for prev_t in prev_title_norms:
                 if _sim(t_norm, prev_t) >= TITLE_SIM_THRESHOLD - 0.02:
                     matched = True; reason = "이전 실행 발송 기사와 제목 유사"
                     break
 
-        if not matched and d_norm and len(d_norm) > 20 and not is_next_stage(a.get("title",""), a.get("desc",""), entity):
+        if not matched and d_norm and len(d_norm) > 20 and not a.get("_material_price_resend") and not is_next_stage(a.get("title",""), a.get("desc",""), entity):
             for prev_d in prev_desc_norms:
                 if _sim(d_norm, prev_d) >= DESC_SIM_THRESHOLD:
                     matched = True; reason = "이전 실행 발송 기사와 내용 유사"
@@ -5929,7 +5867,7 @@ def main():
     # ──────────────────────────────────────────────────────────────────────────
 
     # ── known_entities 기반 장기 이슈 등급 강등·차단 ──────────────────────────
-    # D+0~2: 정상, D+3~6: 1단계 강등, D+7+: 완전 차단 (NEXT_STAGE 예외 유지)
+    # 기지 사건 배경 재보도는 참고. 장기 이력은 확인된 동일 사건에만 적용
     GRADE_DEMOTE = {"긴급": "주의", "주의": "참고", "참고": "참고"}
     _known_case_ents = load_known_case_entities()
     # 일반명사 entity — known_entities·seen_entities_today 차단 제외
@@ -5938,17 +5876,21 @@ def main():
     for a in list(filtered):
         # 저장된 combos가 정규화 entity 기준이므로 조회 키도 정규화 (별칭 우회 방지)
         ent = canonicalize_entity(a.get("entity", "") or "", _entity_canon, exposure_data)
-        if not ent or a.get("_force_urgent") or ent in GENERIC_ENTITIES:
+        if not ent or a.get("_force_urgent") or a.get("_material_price_resend") or ent in GENERIC_ENTITIES:
             continue
-        days = known_entities.get(ent, 0)
         title = a.get("title", "")
         desc  = a.get("desc", "")
-        if days >= 7:
+        # Long-lived age applies to this source-derived event family, never to
+        # every future story about the company.
+        days = max(known_entities.get(ent, 0), event_history.age_days(
+            ent, title, desc, a.get("event_type", "")))
+        if days >= 7 and event_history.duplicate(ent, title, desc, a.get("event_type", "")):
             if not is_next_stage(title, desc, ent):
                 print(f"  [장기이슈 차단] D+{days} {ent}: {title[:40]}")
                 _known_removed.append(a)
                 filtered.remove(a)
-        elif days >= 3:
+        elif days >= 3 and ((ent in _known_case_ents and is_background_recap(title, desc)) or event_history.duplicate(
+                ent, title, desc, a.get("event_type", ""))):
             if not is_next_stage(title, desc, ent):
                 old_grade = a.get("grade", "참고")
                 new_grade = GRADE_DEMOTE.get(old_grade, "참고")
@@ -6375,7 +6317,7 @@ JSON만 출력:
     _recheck_removed = []
     for a in list(filtered):
         ent = a.get("entity", "") or ""
-        if not ent or a.get("_force_urgent") or ent in _GENERIC_E:
+        if not ent or a.get("_force_urgent") or a.get("_material_price_resend") or ent in _GENERIC_E:
             continue
         if (ent in seen_entities_today
                 and not is_next_stage(a.get("title",""), a.get("desc",""), ent)):
@@ -6684,7 +6626,23 @@ JSON만 출력:
     _self_only = _scope["self_only"]
     _mail_articles = filter_articles_for_scope(filtered, exposure_data, _self_only,
                                                _scope["market_crash"])
-    _summary_src = _mail_articles or filtered
+    if _self_only or FORCE_SELF_ONLY:
+        _mail_articles = [a for a in _mail_articles if
+                          a.get("_force_urgent") or a.get("_material_price_resend") or
+                          not event_history.duplicate(
+                              canonicalize_entity(a.get("entity", "") or "", _entity_canon, exposure_data),
+                              a.get("title", ""), a.get("desc", ""),
+                              a.get("event_type", ""), scope="self")]
+        if not _mail_articles and not _scope["alerted_count"]:
+            # Do not generate a summary/alarm from cards removed by owner dedup.
+            send_email_no_result(f"❗ [리스크 탐지] {now_str_full} 기준 — 신규 사건 없음",
+                                 build_empty_html(now))
+            save_seen_urls(seen_urls | {a.get("url", "") for a in filtered})
+            save_filter_log(raw_articles, hard_excluded_articles, ai_filtered_articles, [])
+            save_run_stats(total_count, 0,
+                           globals().get("_LAST_VERIFY_MODEL") or CLAUDE_MODEL, True)
+            return
+    _summary_src = _mail_articles
 
     urgent_cnt = len([a for a in _summary_src if a["grade"]=="긴급"])
     caution_cnt = len([a for a in _summary_src if a["grade"]=="주의"])
@@ -6800,63 +6758,41 @@ JSON만 출력:
     if FORCE_SELF_ONLY and not _self_only:
         print("  [FORCE_SELF_ONLY] 전체발송 판정이나 테스트 모드 — 본인 한정으로만 발송")
         _self_only = True
-    send_email(subject, html, self_only=_self_only)
+    delivery_complete = send_email(subject, html, self_only=_self_only)
+    if delivery_complete is False:
+        # A partially delivered group email is not full-recipient history.
+        # Leave article/event state untouched so failed recipients can retry.
+        print("  [dedup 보류] 일부 수신자 실패 — 발송 이력 미등록")
+        return
     save_run_stats(total_count, len(_mail_articles),
                    globals().get("_LAST_VERIFY_MODEL") or CLAUDE_MODEL, _self_only)
 
-    for a in filtered:
-        sent_urls.add(a.get("url", ""))
-        # 저장 키는 정규화 entity 기준 — dedup 비교(canonicalize 적용)와 대칭.
-        # 원본 a['entity']는 카드 표시·익스포저 매칭용으로 이미 사용 완료라 무영향.
-        entity     = canonicalize_entity((a.get("entity") or "").strip(), _entity_canon, exposure_data)
-        keyword    = (a.get("keyword") or "").strip()
+    # Only delivered cards are event history. Filtered-out cards and sibling
+    # articles removed by verification/entity dedup must not suppress recipients.
+    delivered_combos = set()
+    delivered_stages = set()
+    delivered_titles = []
+    delivered_descs = []
+    for a in _mail_articles:
+        entity = canonicalize_entity((a.get("entity") or "").strip(), _entity_canon, exposure_data)
         event_type = (a.get("event_type") or "").strip()
-        event_key  = (a.get("event_key") or "").strip()
-        if entity and event_type:
-            event_key = f"{entity}_{event_type}"  # 정규화 entity로 재구성
-        # stage 기반 dedup — 발송 기사의 매칭 stage 키워드 기록 (차단 기사엔 미기록)
-        if entity:
-            for _skw in _stage_hits(a.get("title", ""), a.get("desc", "")):
-                new_stages_this_run.add((entity, _skw))
-        # event_key 우선 저장 → event_type → keyword 순 fallback
-        if event_key:
-            new_combos_this_run.add(("ek", event_key))
-        if event_type and entity:
-            new_combos_this_run.add((entity, event_type))
-        elif keyword and entity:
-            new_combos_this_run.add((entity, keyword))
-
-    # entity dedup으로 제거된 기사도 URL·combo 등록 — 다음 실행 재탐지 방지
-    for a in _removed:
+        keyword = (a.get("keyword") or "").strip()
         sent_urls.add(a.get("url", ""))
-        _ent = canonicalize_entity((a.get("entity") or "").strip(), _entity_canon, exposure_data)
-        _kw  = (a.get("keyword") or "").strip()
-        _et  = (a.get("event_type") or "").strip()
-        _ek  = (a.get("event_key") or "").strip()
-        if _ent and _et:
-            _ek = f"{_ent}_{_et}"  # 정규화 entity로 event_key 재구성
-        if _ek:
-            new_combos_this_run.add(("ek", _ek))
-        if _et and _ent:
-            new_combos_this_run.add((_ent, _et))
-        elif _kw and _ent:
-            new_combos_this_run.add((_ent, _kw))
-    # ── 본인 한정 발송(_self_only)은 사건 단위 dedup에서 제외 ──
-    # 전체 수신자에게는 안 나간 기사인데 combo/stage/context가 등록되면,
-    # 이후 같은 사건의 후속 기사가 "이미 발송함"으로 차단돼 수신자들은
-    # 그 사건을 영영 못 보게 된다(봇이 미탐한 것처럼 보이는 원인).
-    # URL만 등록해 동일 기사 재처리는 막고, 사건 단위 키는 남기지 않는다.
-    if _self_only:
-        print(f"  [dedup 제외] 본인 한정 발송 — 사건 단위 키 미등록 "
-              f"(combo {len(new_combos_this_run)}건, stage {len(new_stages_this_run)}건 스킵)")
-        new_combos_this_run = set()
-        new_stages_this_run = set()
-        new_title_norms = []
-        new_desc_norms  = []
+        event_history.record(entity, a.get("title", ""), a.get("desc", ""), event_type,
+                             scope="self" if _self_only else "full")
+        if not _self_only:
+            if entity and event_type:
+                delivered_combos.add(("ek", f"{entity}_{event_type}"))
+            if entity and (event_type or keyword):
+                delivered_combos.add((entity, event_type or keyword))
+            delivered_stages.update((entity, stage) for stage in
+                                    _stage_hits(a.get("title", ""), a.get("desc", "")) if entity)
+            delivered_titles.append(_norm(a.get("title", "")))
+            delivered_descs.append(_norm(a.get("desc", "")))
 
-    save_seen_urls(sent_urls, new_combos_this_run,
-                   title_norms=new_title_norms, desc_norms=new_desc_norms,
-                   stages=new_stages_this_run)
+    save_seen_urls(sent_urls, delivered_combos,
+                   title_norms=delivered_titles, desc_norms=delivered_descs,
+                   stages=delivered_stages, event_history=event_history)
     save_filter_log(raw_articles, hard_excluded_articles,
                     ai_filtered_articles, filtered)
 

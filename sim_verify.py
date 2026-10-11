@@ -336,11 +336,8 @@ check("우리금융 계열 매핑 등록", "동양생명" in _G.get("우리금�
 print("\n[O] stage 판정 — 과거 배경 서술은 신규 단계로 보지 않음")
 # 금양이 3회차 연속 발송된 원인. desc(기사 리드)에 실린 과거 국면 설명을
 # '신규 법적 단계'로 오인해 known_cases D+3 강등을 매번 면제받았다.
-_src = open("naver_news_monitor.py", encoding="utf-8").read()
-_kwblk = _src[_src.index("    NEXT_STAGE_KEYWORDS = ["):_src.index("    def is_next_stage(")]
-_ns = {}
-exec("\n".join(l[4:] for l in _kwblk.split("\n")), _ns)
-_hits = _ns["_stage_hits"]
+from event_history import material_facts
+_hits = lambda title, desc: [f["stage"] for f in material_facts(title, desc)]
 
 _geum_desc = ("한국거래소는 지난 5월 20일 유가증권시장 상장공시위원회를 열어 금양의 "
               "상장폐지를 결정했다. 상장폐지 절차는 금양이 법원에 효력정지 가처분을 "
