@@ -3908,7 +3908,7 @@ def _verify_high_risk_by_claude(articles: list):
         "【역할 구분】 이 단계는 '등급 조정' 전담입니다. 기사의 포함/제외 판정은\n"
         "이후 본문 기반 2차 검수에서 별도로 수행하므로, 여기서는 제목·요약 수준에서\n"
         "판단 가능한 '등급의 과대/과소'만 바로잡으세요.\n"
-        "Gemini AI가 아래 기사들을 리스크 등급(긴급/주의/참고)으로 분류했습니다.\n"
+        "1차 AI 필터가 아래 기사들을 리스크 등급(긴급/주의/참고)으로 분류했습니다.\n"
         "각 기사의 등급이 실제 내용에 맞는지 재검토하고, 필요시 조정하세요.\n\n"
         "긴급 기준: 상장폐지·거래정지·부도·파산·회생 확정, MTS 장애, 당사 직접 제재 등 확정된 손실·부실\n"
         "주의 기준: 손실 가능성·조사 착수·심의 예정 등 아직 확정 아닌 리스크\n"
@@ -5177,7 +5177,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
   <tr>
     <td class="footer-td" style="padding:14px 22px;background:#fff;border-top:1px solid #e2e8f0;">
       <p style="margin:0;font-size:13px;color:#94a3b8;line-height:2.0;">
-        본 이메일은 Claude, Gemini가 심층 분석·선별하여 발송합니다.<br>
+        본 이메일은 Claude가 심층 분석·선별하여 발송합니다.<br>
         담당자 &nbsp;최진후 차장
       </p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
@@ -5233,7 +5233,7 @@ def build_empty_html(now) -> str:
   <tr>
     <td style="padding:14px 22px;border-top:1px solid #e2e8f0;">
       <p style="margin:0;font-size:13px;color:#94a3b8;line-height:2.0;">
-        본 이메일은 Claude, Gemini가 심층 분석·선별하여 발송합니다.<br>
+        본 이메일은 Claude가 심층 분석·선별하여 발송합니다.<br>
         담당자 &nbsp;최진후 차장
       </p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
@@ -6181,7 +6181,7 @@ def main():
         prompt = f"""당신은 한국투자증권 개인고객그룹 리스크 담당자입니다.
 
 【당신의 역할 — 2차 정밀 검수】
-1차 필터(Gemini)는 제목·요약만 보고 넓게 걸러낸 결과입니다. 당신은 그 통과분
+1차 필터(Claude Haiku)는 제목·요약만 보고 넓게 걸러낸 결과입니다. 당신은 그 통과분
 전건을 **본문까지 읽고** 최종 판정하는 마지막 관문입니다. 1차는 recall 우선
 (애매하면 통과)이므로, 오탐을 걸러내는 책임은 전적으로 당신에게 있습니다.
 제목만으로는 알 수 없고 본문에만 드러나는 사실(예: 거래정지의 실제 사유)을
