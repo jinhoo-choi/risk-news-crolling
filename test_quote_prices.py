@@ -567,6 +567,9 @@ class MonitorPriceIntegrationTests(OfflineTestCase):
         self.assertIn("가격 확인 1/5종목", html)
         self.assertIn("미확인 상태", html)
         for status in coverage["failures"]:
+            if status == "not_listed":  # (2026-10-11) 비상장은 상시 상태라 사유에서 제외
+                self.assertNotIn(prices.STATUS_LABELS[status], html)
+                continue
             self.assertIn(prices.STATUS_LABELS[status], html)
         self.assertEqual(monitor.build_price_alert_section.last_alerted_count, 1)
         self.assertEqual(monitor.build_price_alert_section.last_alerted_rbal, 7)
@@ -578,8 +581,9 @@ class MonitorPriceIntegrationTests(OfflineTestCase):
     def test_no_decline_still_displays_coverage_without_price_alerts(self):
         provider = self.mock_provider({"196170.KQ": history(100, 105)})
         html = monitor.build_price_alert_section(exposure(exposure_row(code="196170")))
-        self.assertIn("가격 감시 범위", html)
-        self.assertIn("당일 가격 확인 1/1종목", html)
+        # (2026-10-11) 조회 장애가 없으면 유의사항 박스를 숨긴다(사용자 결정).
+        self.assertNotIn("가격 감시 범위", html)
+        self.assertEqual(monitor.build_price_alert_section.last_coverage["priced"], 1)
         self.assertNotIn("여신잔고 리스크 현황", html)
         self.assertEqual(monitor.build_price_alert_section.last_alerted_count, 0)
         self.assertEqual(monitor.build_price_alert_section.last_alerted_rbal, 0)
@@ -599,11 +603,21 @@ class MonitorPriceIntegrationTests(OfflineTestCase):
         self.assertEqual(monitor.build_price_alert_section.last_alerted_rbal, 0)
         provider.assert_called_once_with("005930.KS")
 
+    def test_weekend_all_stale_plus_one_unlisted_hides_notice(self):
+        # (2026-10-11) 주말·휴장 회차: 전 종목 당일 가격 없음 + 비상장 1 → 유의사항 미노출
+        self.mock_provider({"005930.KS": history(stamp=NOW - timedelta(days=1))})
+        data = exposure(exposure_row("시험가", "005930"), exposure_row("시험나", "285240"))
+        html = monitor.build_price_alert_section(data)
+        self.assertEqual(monitor.build_price_alert_section.last_coverage["failures"],
+                         {"stale_price": 1, "not_listed": 1})
+        self.assertNotIn("가격 감시 범위", html)
+
     def test_decline_without_risk_customers_still_displays_coverage(self):
         self.mock_provider({"005930.KS": history(100, 70)})
         html = monitor.build_price_alert_section(exposure(exposure_row(risk=0)))
-        self.assertIn("당일 가격 확인 1/1종목", html)
-        self.assertIn("가격 확인 0/0종목", html)
+        # (2026-10-11) 조회 장애 없으면 유의사항 박스 미노출
+        self.assertNotIn("가격 감시 범위", html)
+        self.assertEqual(monitor.build_price_alert_section.last_coverage["priced"], 1)
         self.assertNotIn("여신잔고 리스크 현황", html)
         self.assertEqual(monitor.build_price_alert_section.last_alerted_count, 0)
         self.assertEqual(monitor.build_price_alert_section.last_alerted_rbal, 0)
@@ -647,7 +661,11 @@ class MonitorPriceIntegrationTests(OfflineTestCase):
                     html = monitor.build_price_alert_section(data)
                 self.assertEqual(provider.call_count, 2)
                 self.assertEqual(monitor.build_price_alert_section.last_coverage["failures"], {status: 1})
-                self.assertIn("당일 가격 확인 0/1종목", html)
+                if status == "stale_price":
+                    # (2026-10-11) 전 종목 당일 가격 없음 = 주말·휴장·개장 전 → 박스 미노출
+                    self.assertNotIn("가격 감시 범위", html)
+                else:
+                    self.assertIn("당일 가격 확인 0/1종목", html)
                 self.assertEqual(monitor.build_price_alert_section.last_alerted_count, 0)
 
     def test_unlisted_bond_ambiguous_and_unavailable_dedup_do_not_fetch(self):

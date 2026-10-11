@@ -1,5 +1,5 @@
 """
-경쟁사 증권사 신용·대출 공지사항 크롤러
+경쟁사 증권사 신용·대출·오류 공지사항 크롤러
 data/ 폴더에 증권사별 CSV 저장
 컬럼: date, company, title, url
 """
@@ -13,6 +13,8 @@ import re
 import time
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlencode, urljoin
+
+from notice_filter import matches_notice_title
 
 KST = timezone(timedelta(hours=9))
 DATA_DIR = "data"
@@ -180,16 +182,19 @@ def crawl_broker(broker: dict, status=None) -> list:
     url     = broker["url"]
     if status is None:
         status = {}
-    status.update(company=company, url=url, status="error", count=0, http_status=None)
+    status.update(company=company, url=url, status="error", count=0, retained_count=0, http_status=None)
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
         status.update(http_status=res.status_code, response_url=res.url)
         res.raise_for_status()
-        items = parse_notices(res, broker)
-        status.update(status="ok" if items else "empty", count=len(items))
+        raw_items = parse_notices(res, broker)
+        items = [item for item in raw_items if matches_notice_title(item.get("title"))]
+        # Source health is determined before filtering: no keyword hit is healthy.
+        status.update(status="ok" if raw_items else "empty", count=len(raw_items),
+                      retained_count=len(items))
         if broker["type"] in ("kb", "shinhan", "kiwoom"):
             status["parser"] = "legacy_generic"
-        print(f"  [{company}] {len(items)}건 수집")
+        print(f"  [{company}] 원본 {len(raw_items)}건 / 키워드 일치 {len(items)}건")
         return items
     except Exception as e:
         status.update(error_type=type(e).__name__, error=str(e))
@@ -206,27 +211,28 @@ def save_csv(company: str, items: list):
     # 기존 데이터 로드
     existing = []
     if os.path.exists(fpath):
-        try:
-            with open(fpath, "r", encoding="utf-8-sig") as f:
-                reader = csv.DictReader(f)
-                existing = list(reader)
-        except Exception:
-            existing = []
+        # Do not overwrite unreadable history as if it were an empty file.
+        with open(fpath, "r", encoding="utf-8-sig") as f:
+            existing = list(csv.DictReader(f))
+
+    # Apply the same filter to stored and incoming rows on normal healthy runs.
+    kst_now = datetime.now(KST)
+    cutoff = (kst_now - timedelta(days=30)).strftime("%Y-%m-%d")
+    retained = [r for r in existing if r.get("date", "") >= cutoff
+                and matches_notice_title(r.get("title"))]
+    items = [r for r in items if matches_notice_title(r.get("title"))]
 
     # 중복 제거 — (company, title) 기준
-    seen = {(r.get("company",""), r.get("title","")) for r in existing}
+    seen = {(r.get("company",""), r.get("title","")) for r in retained}
     new_items = [
         item for item in items
         if (item["company"], item["title"]) not in seen
     ]
 
-    if not new_items:
+    # Expired rows must not suppress a matching notice collected again today.
+    all_items = retained + new_items
+    if all_items == existing:
         return
-
-    # 최근 30일치만 유지
-    kst_now = datetime.now(KST)
-    cutoff  = (kst_now - timedelta(days=30)).strftime("%Y-%m-%d")
-    all_items = [r for r in existing if r.get("date","") >= cutoff] + new_items
 
     with open(fpath, "w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["date","company","title","url"])
@@ -242,7 +248,7 @@ def main():
     for broker in BROKERS:
         status = {}
         items = crawl_broker(broker, status)
-        if items:
+        if status["status"] != "error":
             try:
                 save_csv(broker["company"], items)
             except Exception as e:
@@ -256,10 +262,11 @@ def main():
     with open("broker_notices_status.json", "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
     summary = [f"### 경쟁사 공지: {state} ({failed}/{len(statuses)} 소스 실패)",
-               "| 소스 | 상태 | HTTP | 건수 | 오류 |", "|---|---|---|---|---|"]
+               "| 소스 | 상태 | HTTP | 원본 | 키워드 일치 | 오류 |", "|---|---|---|---|---|---|"]
     for s in statuses:
         error = s.get("error", "").replace("|", "\\|").replace("\n", " ")
-        summary.append(f"| {s['company']} | {s['status']} | {s['http_status']} | {s['count']} | {error} |")
+        summary.append(f"| {s['company']} | {s['status']} | {s['http_status']} | {s['count']} | {s['retained_count']} | {error} |")
+    summary.append("제목에 신용·대출·오류 중 하나라도 포함된 공지만 저장합니다. 키워드 일치 0건은 수집 실패가 아닙니다.")
     summary.append("KB·신한·키움은 기존 공통 파서 유지. empty는 HTTP 성공·0건이며 목록 완전성 보증은 아닙니다.")
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:

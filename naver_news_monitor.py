@@ -107,6 +107,7 @@ RELATED_STOCK_MAP = {
 import requests
 from collections import Counter
 from quote_prices import resolve_symbol, fetch_quote, format_price, STATUS_LABELS
+from notice_filter import matches_notice_title
 import re
 import random
 from html import escape as _html_escape
@@ -547,12 +548,20 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
     # Counts/statuses only: never print customer names, balances or raw errors.
     print(f"  [price_alert] coverage={coverage['priced']}/{total_count} "
           f"unknown={coverage['missing']} reasons={dict(sorted(failures.items()))}")
+    # (2026-10-11) 유의사항 박스는 '실제 조회 장애'일 때만 노출한다.
+    #   비상장(not_listed)은 상시, 당일 가격 없음(stale_price)은 전 종목 미체결
+    #   (주말·휴장·장 시작 전)일 때 정상 상태라 여신잔고 영역에 매 회차 뜨던 소음이었다.
+    #   실사례: 10/10·10/11 주말 회차 '0/355 미조회', 평일 '354/355(비상장 1)'.
+    #   ※ not_listed가 대량이면 상장시장 마스터(카탈로그) 장애이므로 노출한다.
+    _benign = ({'not_listed'} if failures.get('not_listed', 0) <= max(3, total_count * 0.05) else set()) \
+        | ({'stale_price'} if not price_map else set())
+    _degraded = {st: c for st, c in failures.items() if st not in _benign}
     reasons = ' · '.join(f'{STATUS_LABELS.get(status, "조회 오류")} {count}개'
-                         for status, count in sorted(failures.items()))
-    coverage_html = f'''<div style="margin-top:12px;padding:10px 14px;border:1px solid #e2e8f0;font-size:12px;color:#475569;">
+                         for status, count in sorted(_degraded.items()))
+    coverage_html = '' if not _degraded else f'''<div style="margin-top:12px;padding:10px 14px;border:1px solid #e2e8f0;font-size:12px;color:#475569;">
       <b>가격 감시 범위</b>: 당일 가격 확인 {coverage['priced']}/{total_count}종목 · 미조회 {coverage['missing']}종목<br>
       위험고객 보유 종목: 가격 확인 {coverage['risk_priced']}/{coverage['risk_total']}종목
-      {('<br>' + reasons + '<br>미조회 종목은 하락 없음이 아닌 미확인 상태이며, 급락 종목 수·시장급락 판정에 포함되지 않습니다.') if failures else ''}
+      {'<br>' + reasons + '<br>미조회 종목은 하락 없음이 아닌 미확인 상태이며, 급락 종목 수·시장급락 판정에 포함되지 않습니다.'}
       </div>'''
 
     # PRICE_DROP_THRESHOLD 이하 필터
@@ -1615,13 +1624,7 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
     return results
 
 def load_competitor_notices() -> list:
-    """경쟁사 공지사항 CSV에서 당일 신용·대출 관련 공지 로드"""
-    CREDIT_KEYWORDS = [
-        "신용한도", "신용융자", "신용공여", "신용거래",
-        "증거금률", "증거금 변경", "반대매매 급증",
-        "대출한도", "신용대출", "신용 중단", "한도 축소",
-        "신용 재개", "신용거래 제한"
-    ]
+    """기존 최근 2일 범위에서 제목에 신용·대출·오류가 포함된 공지 로드."""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     valid_dates = {(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(2)}
@@ -1645,7 +1648,7 @@ def load_competitor_notices() -> list:
                     company = row.get("company", "")
                     if date not in valid_dates:
                         continue
-                    if _kw_hit(title, CREDIT_KEYWORDS):
+                    if matches_notice_title(title):
                         result.append({
                             "company": company,
                             "title": title,
@@ -1664,7 +1667,7 @@ def load_competitor_notices() -> list:
             deduped.append(item)
     return deduped
 def build_competitor_html(notices: list, today_str: str) -> str:
-    """경쟁사 신용·대출 특이사항 HTML — 없으면 빈 문자열"""
+    """경쟁사 신용·대출·오류 공지 HTML — 없으면 빈 문자열"""
     if not notices:
         return ""
     rows_html = ""
@@ -1682,7 +1685,7 @@ def build_competitor_html(notices: list, today_str: str) -> str:
         <td style="padding:14px 22px 4px 22px;">
           <table width="100%" cellpadding="0" cellspacing="0" border="0">
             <tr>
-              <td><span style="font-size:15px;font-weight:bold;color:#3b5491;">경쟁사 신용·대출 특이사항</span></td>
+              <td><span style="font-size:15px;font-weight:bold;color:#3b5491;">경쟁사 신용·대출·오류 공지</span></td>
               <td align="right"><span style="font-size:12px;color:#94a3b8;">{today_str} 당일 기준</span></td>
             </tr>
           </table>
@@ -5928,6 +5931,7 @@ def main():
     # ── known_entities 기반 장기 이슈 등급 강등·차단 ──────────────────────────
     # D+0~2: 정상, D+3~6: 1단계 강등, D+7+: 완전 차단 (NEXT_STAGE 예외 유지)
     GRADE_DEMOTE = {"긴급": "주의", "주의": "참고", "참고": "참고"}
+    _known_case_ents = load_known_case_entities()
     # 일반명사 entity — known_entities·seen_entities_today 차단 제외
     GENERIC_ENTITIES = {"기업", "시장", "코스닥", "코스피", "증시", "채권", "주식", "부동산", "금융"}
     _known_removed = []
@@ -5948,6 +5952,11 @@ def main():
             if not is_next_stage(title, desc, ent):
                 old_grade = a.get("grade", "참고")
                 new_grade = GRADE_DEMOTE.get(old_grade, "참고")
+                # (2026-10-11) 기지 사건 종목은 1단계가 아니라 참고 고정 — 프롬프트 규칙
+                #   ('재조명은 참고 이하, 신규 법적단계만 격상')과 정합. 1단계 강등만으론
+                #   AI 긴급 → 주의로 전사 발송돼 금양이 10/2·10/10 물적분할로 반복 노출됐다.
+                if ent in _known_case_ents:
+                    new_grade = "참고"
                 if old_grade != new_grade:
                     a["grade"] = new_grade
                     print(f"  [장기이슈 강등] D+{days} {ent} {old_grade}→{new_grade}: {title[:35]}")
@@ -6651,9 +6660,9 @@ JSON만 출력:
     today_str = now.strftime("%m월 %d일")
     competitor_notices = load_competitor_notices()
     if competitor_notices:
-        print(f"  경쟁사 신용·대출 특이사항 {len(competitor_notices)}건 발견")
+        print(f"  경쟁사 신용·대출·오류 공지 {len(competitor_notices)}건 발견")
     else:
-        print("  경쟁사 신용·대출 특이사항 없음")
+        print("  경쟁사 신용·대출·오류 공지 없음")
     if exposure_data:
         ref_date = next(iter(exposure_data.values()))[0].get("기준일", "")
         print(f"  익스포저 데이터 로드 완료 ({len(exposure_data)}건, 기준일: {ref_date})")
@@ -6698,7 +6707,7 @@ JSON만 출력:
     # 경쟁사 공지 요약 추가
     if competitor_notices:
         competitor_summary = "\n".join([f"- [경쟁사] {n['company']}: {n['title']}" for n in competitor_notices[:3]])
-        filtered_titles += f"\n\n[경쟁사 신용·대출 특이사항]\n{competitor_summary}"
+        filtered_titles += f"\n\n[경쟁사 신용·대출·오류 공지]\n{competitor_summary}"
 
     try:
         sum_res = requests.post(
