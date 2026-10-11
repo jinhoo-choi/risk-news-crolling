@@ -5710,10 +5710,10 @@ def main():
 
     def _stage_hits(title: str, desc: str) -> list:
         # Shared source-evidence parser: background nouns are not new stages.
-        return [fact["stage"] for fact in material_facts(title, desc)]
+        return [fact["stage"] for fact in material_facts(title, desc, now=event_history.now)]
 
     def is_next_stage(title: str, desc: str, entity: str = "") -> bool:
-        facts = material_facts(title, desc)
+        facts = material_facts(title, desc, now=event_history.now)
         if not facts:
             return False
         if not entity:
@@ -5889,7 +5889,7 @@ def main():
                 print(f"  [장기이슈 차단] D+{days} {ent}: {title[:40]}")
                 _known_removed.append(a)
                 filtered.remove(a)
-        elif days >= 3 and ((ent in _known_case_ents and is_background_recap(title, desc)) or event_history.duplicate(
+        elif days >= 3 and ((ent in _known_case_ents and is_background_recap(title, desc, now=event_history.now)) or event_history.duplicate(
                 ent, title, desc, a.get("event_type", ""))):
             if not is_next_stage(title, desc, ent):
                 old_grade = a.get("grade", "참고")

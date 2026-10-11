@@ -118,9 +118,11 @@ class HistoryTests(unittest.TestCase):
         self.assertTrue(self.history.new_material("금양", "금융위 금양 추가 과징금 10억원 부과"))
 
     def test_different_explicit_event_date_is_new(self):
-        self.history.record("금양", "금양, 10월 7일 과징금 76억원 부과")
-        self.assertFalse(self.history.new_material("금양", "금양 10월7일 과징금 76억원 부과"))
-        self.assertTrue(self.history.new_material("금양", "금양, 11월 10일 과징금 76억원 부과"))
+        first = EventHistory(now=datetime(2026, 10, 7, 21, tzinfo=KST))
+        first.record("금양", "금양, 10월 7일 과징금 76억원 부과")
+        history = EventHistory(first.serialize(), now=datetime(2026, 10, 11, 21, tzinfo=KST))
+        self.assertFalse(history.new_material("금양", "금양 10월7일 과징금 76억원 부과"))
+        self.assertTrue(history.new_material("금양", "금양, 10월 11일 과징금 76억원 부과"))
 
     def test_expiration_and_invalid_state_fail_open(self):
         old = EventHistory(now=NOW - timedelta(days=181))
@@ -325,6 +327,192 @@ class PersistenceTests(unittest.TestCase):
         with patch.object(nm.smtplib, "SMTP_SSL", SMTP), patch.object(nm, "NO_RESULT_RECEIVER", "ok@example.com"), \
              contextlib.redirect_stdout(io.StringIO()):
             self.assertIs(nm.send_email("test", "test", self_only=True), True)
+
+class DatedEventGateTests(unittest.TestCase):
+    AS_OF = datetime(2026, 10, 11, 21, tzinfo=KST)
+    REAL_TITLE = "[아침을 열며] 중앙그룹의 기업회생 신청이 갖는 의미"
+    REAL_DESC = ("2026년 6월 15일 지주사인 중앙홀딩스를 비롯해 JTBC, 콘텐트리중앙, "
+                 "메가박스중앙, 중앙피앤아이 등 중앙그룹 5개사는 서울회생법원에 "
+                 "기업회생절차 개시를 신청했습니다. JTBC가 6월 12일 206억원")
+
+    @classmethod
+    def setUpClass(cls):
+        # Compile the actual production dedup and grade-cap blocks, preserving
+        # their real ordering and source parser. No AI, quote, or email calls.
+        with open(nm.__file__, encoding="utf-8") as source:
+            tree = ast.parse(source.read())
+        main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+        start = next(i for i, n in enumerate(main.body) if isinstance(n, ast.FunctionDef) and n.name == "_stage_hits")
+        end = next(i for i, n in enumerate(main.body) if isinstance(n, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == "ref_after_demote" for t in n.targets))
+        gate = ast.FunctionDef(name="gate", args=ast.arguments(posonlyargs=[], args=[ast.arg(arg="filtered")],
+                              kwonlyargs=[], kw_defaults=[], defaults=[]),
+                              body=main.body[start:end] + [ast.Return(value=ast.Name(id="filtered", ctx=ast.Load()))],
+                              decorator_list=[])
+        cls.code = compile(ast.fix_missing_locations(ast.Module(body=[gate], type_ignores=[])), "actual-dated-main-gate", "exec")
+
+    def gate(self, title, desc="", history=None, entity="중앙그룹", now=None, legacy=False):
+        from difflib import SequenceMatcher
+        history = history or EventHistory(now=now or self.AS_OF)
+        env = dict(nm.__dict__, event_history=history, exposure_data={},
+                   seen_stages={(entity, "회생신청")} if legacy else set(),
+                   seen_context={"title_norms": [], "desc_norms": []},
+                   seen_entities_today={entity} if legacy else set(),
+                   seen_combos={(entity, "기업회생"), ("ek", f"{entity}_기업회생")} if legacy else set(),
+                   load_entity_canonical_map=lambda: {}, load_known_case_entities=lambda: {entity},
+                   known_entities={entity: 3}, _norm=lambda t: t,
+                   _sim=lambda a, b: SequenceMatcher(None, a, b).ratio())
+        exec(self.code, env)
+        article = dict(entity=entity, title=title, desc=desc, event_type="기업회생", grade="긴급")
+        with contextlib.redirect_stdout(io.StringIO()):
+            return env["gate"]([article])
+
+    def test_real_21h_source_is_reference_on_cold_start_and_legacy_duplicate(self):
+        self.assertEqual(material_facts(self.REAL_TITLE, self.REAL_DESC, now=self.AS_OF), [])
+        self.assertTrue(is_background_recap(self.REAL_TITLE, self.REAL_DESC, now=self.AS_OF))
+        self.assertEqual(self.gate(self.REAL_TITLE, self.REAL_DESC)[0]["grade"], "참고")
+        self.assertEqual(self.gate(self.REAL_TITLE, self.REAL_DESC, legacy=True), [])
+
+    def test_absolute_relative_and_cross_field_old_date_scope(self):
+        for date in ("2026년 6월 15일", "2026-06-15", "2026.06.15", "6월 15일",
+                     "지난 6월 15일", "지난 7일", "작년", "지난해", "지난달", "3일 전"):
+            with self.subTest(date=date):
+                title = "중앙그룹 기업회생 신청"
+                desc = f"중앙그룹은 {date} 기업회생절차 개시를 신청했다."
+                self.assertEqual(self.gate(title, desc)[0]["grade"], "참고")
+                self.assertEqual(material_facts(title, desc, now=self.AS_OF), [])
+        self.assertEqual(self.gate("중앙그룹 2026년6월15일 기업회생 신청",
+                                  "중앙그룹은 기업회생절차 개시를 신청했다.")[0]["grade"], "참고")
+        # An unrelated company's old application must not date the title event.
+        self.assertEqual(self.gate("새계열사 기업회생 신청",
+                                  "중앙그룹은 2026년6월15일 기업회생절차 개시를 신청했다.",
+                                  entity="새계열사")[0]["grade"], "긴급")
+
+    def test_mixed_old_and_fresh_clauses_keep_current_decision(self):
+        for desc in (
+            "중앙그룹은 2026년6월15일 회생절차 개시를 신청했다. 법원은 오늘 회생절차 개시를 결정했다.",
+            "중앙그룹은 2026년6월15일 회생절차 개시를 신청했고 오늘 법원은 회생절차 개시를 결정했다.",
+            "중앙그룹은 지난달 회생절차 개시를 신청했고 오늘 법원은 회생절차 개시를 결정했다.",
+            "중앙그룹은 작년 회생절차 개시를 신청했고 2026년10월11일 법원은 회생절차 개시를 결정했다.",
+        ):
+            with self.subTest(desc=desc):
+                facts = material_facts("중앙그룹 회생 경과", desc, now=self.AS_OF)
+                self.assertEqual([f["stage"] for f in facts], ["회생개시"])
+                self.assertEqual(facts[0]["dates"], ["2026-10-11"])
+                self.assertEqual(self.gate("중앙그룹 회생 경과", desc, legacy=True)[0]["grade"], "긴급")
+        self.assertEqual(self.gate("금양 신규 사업 횡령 발생", "지난달 가처분 기각 결정이 있었다.",
+                                  entity="금양")[0]["grade"], "긴급")
+
+    def test_yesterday_delayed_report_overlaps_14h_window(self):
+        morning = self.AS_OF.replace(hour=7)
+        for date in ("어제", "전날", "지난 10일", "10월 10일", "2026-10-10"):
+            with self.subTest(date=date):
+                desc = f"중앙그룹은 {date} 기업회생절차 개시를 신청했다."
+                self.assertEqual(self.gate("중앙그룹 회생 신청", desc, now=morning)[0]["grade"], "긴급")
+                self.assertEqual(self.gate("중앙그룹 회생 신청", desc)[0]["grade"], "참고")
+        # Calendar inference crosses a year boundary without dating last month
+        # to last year twice, or treating it as a current action.
+        january = datetime(2027, 1, 1, 7, tzinfo=KST)
+        facts = material_facts("중앙그룹 지난 12월31일 회생 신청", now=january)
+        self.assertEqual(facts[0]["dates"], ["2026-12-31"])
+
+    def test_application_is_not_opening_and_real_order_reopens_old_bad_history(self):
+        for text in ("중앙그룹 회생 신청", "중앙그룹 기업회생절차 신청", "중앙그룹 회생절차 개시 신청",
+                     "중앙그룹 회생절차 개시를 신청했다"):
+            self.assertEqual([f["stage"] for f in material_facts(text, now=self.AS_OF)], ["회생신청"])
+        history = EventHistory(now=self.AS_OF)
+        history.record("중앙그룹", "중앙그룹 회생 신청")
+        self.assertEqual(self.gate("중앙그룹 회생절차 개시를 신청했다", history=history), [])
+        self.assertEqual(self.gate("중앙그룹 오늘 회생절차 개시 결정", history=history, legacy=True)[0]["grade"], "긴급")
+        # Reproduce the pre-fix persisted error without editing production state.
+        history.records[0]["facts"].append({"family": "insolvency", "stage": "회생개시",
+                                            "amounts": [], "dates": ["2026년6월15일"], "identities": []})
+        self.assertTrue(history.new_material("중앙그룹", "중앙그룹 오늘 회생절차 개시 결정"))
+        self.assertEqual(self.gate("중앙그룹 오늘 회생절차 개시 결정", history=history, legacy=True)[0]["grade"], "긴급")
+
+    def test_requested_order_and_rejected_application_are_distinct_stages(self):
+        application = EventHistory(now=self.AS_OF)
+        application.record("중앙그룹", "중앙그룹 회생 신청")
+        for suffix in ("개시 결정 신청", "개시결정을 신청", "개시 신청서 제출", "개시 신청서 접수",
+                       "개시를 요청", "개시결정을 요청", "개시 결정 신청했다"):
+            with self.subTest(suffix=suffix):
+                title = "중앙그룹 회생절차 " + suffix
+                self.assertEqual([f["stage"] for f in material_facts(title, now=self.AS_OF)], ["회생신청"])
+                self.assertFalse(application.new_material("중앙그룹", title))
+                self.assertEqual(self.gate(title, history=application, legacy=True), [])
+        for suffix in ("개시신청 기각", "개시 신청을 기각", "개시결정 신청 각하", "기각"):
+            with self.subTest(suffix=suffix):
+                title = "중앙그룹 회생절차 " + suffix
+                self.assertEqual([f["stage"] for f in material_facts(title, now=self.AS_OF)], ["회생기각"])
+                self.assertTrue(application.new_material("중앙그룹", title))
+                self.assertEqual(self.gate(title, history=application, legacy=True)[0]["grade"], "긴급")
+        for stage, suffix in (("회생개시", "개시 결정"), ("회생폐지", "폐지 결정")):
+            title = "중앙그룹 법원 회생절차 " + suffix
+            self.assertEqual([f["stage"] for f in material_facts(title, now=self.AS_OF)], [stage])
+            self.assertEqual(self.gate(title, history=application, legacy=True)[0]["grade"], "긴급")
+        # A rejected request to terminate proceedings is not an actual end.
+        self.assertEqual(material_facts("중앙그룹 회생절차 폐지신청 기각", now=self.AS_OF), [])
+
+    def test_deadline_date_order_and_distinct_company_names_fail_open(self):
+        for clause in ("6월15일을 납부기한으로 하는", "6월15일까지 납부해야 하는", "6월15일이 만기인",
+                       "6월15일 기준일 자료에 나온", "만기가 6월15일인", "기준일이 6월15일인"):
+            with self.subTest(clause=clause):
+                desc = f"금양은 {clause} 과징금 10억원 부과 결정을 받았다."
+                self.assertTrue(material_facts("금양 과징금 10억원 부과", desc, now=self.AS_OF))
+                self.assertEqual(self.gate("금양 과징금 10억원 부과", desc, entity="금양", legacy=True)[0]["grade"], "긴급")
+        for company in ("금양홀딩스", "금양에너지", "새금양"):
+            desc = f"{company}는 6월15일 과징금 부과 결정을 받았다."
+            self.assertEqual(self.gate("금양 과징금 부과", desc, entity="금양", legacy=True)[0]["grade"], "긴급")
+
+    def test_subject_boundaries_are_local_to_the_action_clause(self):
+        for desc in (
+            "금양은 입장을 내지 않았다. 금양홀딩스는 6월15일 과징금 부과 결정을 받았다.",
+            "금양은 입장을 내지 않았다; 금양에너지는 6월15일 과징금 부과 결정을 받았다.",
+            "금양은 입장을 내지 않았고, 금양홀딩스는 6월15일 과징금 부과 결정을 받았다.",
+            "금양은 입장을 내지 않았다…새금양은 6월15일 과징금 부과 결정을 받았다.",
+        ):
+            with self.subTest(desc=desc):
+                self.assertTrue(material_facts("금양 과징금 부과", desc, now=self.AS_OF))
+                self.assertFalse(is_background_recap("금양 과징금 부과", desc, now=self.AS_OF))
+                self.assertEqual(self.gate("금양 과징금 부과", desc, entity="금양", legacy=True)[0]["grade"], "긴급")
+        # Subject-only punctuation still carries the correct date and authority.
+        desc = "금양, 금융위, 6월15일 과징금 10억원 부과 결정을 받았다."
+        self.assertEqual(self.gate("금양 과징금 부과", desc, entity="금양")[0]["grade"], "참고")
+
+    def test_prospective_stage_does_not_claim_an_order_already_happened(self):
+        for title in ("중앙그룹 내일 회생 개시 예정", "중앙그룹 모레 회생 개시", "중앙그룹 다음달 회생 개시 예정",
+                      "중앙그룹 2026년10월12일 회생 개시", "중앙그룹 오는12일 회생 개시", "중앙그룹 회생 개시 예정"):
+            with self.subTest(title=title):
+                self.assertEqual(material_facts(title, now=self.AS_OF), [])
+                self.assertEqual(self.gate(title)[0]["grade"], "참고")
+        for title, desc in (
+            ("중앙그룹 오늘 회생 개시 결정, 내일 효력", ""),
+            ("중앙그룹 오늘 법원이 다음달 회생 개시를 결정했다", ""),
+            ("중앙그룹 회생 개시 결정", "법원은 오늘 회생 개시를 결정했다. 내일 효력이 발생할 예정이다."),
+            ("중앙그룹 회생 개시 결정", "법원은 오늘 회생 개시를 결정했다. 10월12일부터 효력이 발생한다."),
+        ):
+            with self.subTest(title=title, desc=desc):
+                self.assertTrue(material_facts(title, desc, now=self.AS_OF))
+                self.assertEqual(self.gate(title, desc, legacy=True)[0]["grade"], "긴급")
+
+    def test_legacy_date_spelling_does_not_reopen_same_day_event(self):
+        history = EventHistory(now=self.AS_OF)
+        history.record("중앙그룹", "중앙그룹 오늘 회생절차 개시 결정")
+        history.records[0]["facts"][0]["dates"] = ["2026년10월11일"]
+        self.assertFalse(history.new_material("중앙그룹", "중앙그룹 2026-10-11 회생절차 개시 결정"))
+        self.assertEqual(self.gate("중앙그룹 10월11일 회생절차 개시 결정", history=history), [])
+
+    def test_new_amount_authority_period_and_deadline_are_not_stale_events(self):
+        for title, desc in (
+            ("금양 공정위 과징금 10억원 부과", "금양은 6월15일 금융위 과징금 10억원 부과 결정을 받았다."),
+            ("금양 금융위 과징금 2,000억원 부과", "금양은 6월15일 금융위 과징금 1,000억원 부과 결정을 받았다."),
+            ("금양 2026년 감사의견 거절", "금양은 6월15일 2025년 감사의견 거절을 통보받았다."),
+            ("금양 과징금 10억원 부과", "금양은 과징금을 오늘 10억원 부과받았다. 납부기한은 6월15일이다."),
+            ("금양 과징금 10억원 부과", "금양은 납부기한이 6월15일인 과징금 10억원 부과 결정을 받았다."),
+            ("금양 과징금 10억원 부과", "금양은 납부기한이 12월15일인 과징금 10억원 부과 결정을 받았다."),
+        ):
+            with self.subTest(title=title, desc=desc):
+                self.assertEqual(self.gate(title, desc, entity="금양", legacy=True)[0]["grade"], "긴급")
 
 
 if __name__ == "__main__":
