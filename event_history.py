@@ -35,6 +35,9 @@ _FAMILIES = {
 
 # Stage patterns express an action/outcome, not a background noun such as
 # '가처분 계류' or '2년 연속 감사의견 거절로 상폐 문턱에 선'.
+_COURT = (r"(?:법원|대법원|(?:서울|수원|대전|대구|부산|광주|울산|인천|춘천|청주|전주|창원|제주|의정부)"
+          r"(?:중앙|동부|서부|남부|북부)?(?:지방법원|고등법원|회생법원|지법|고법))")
+_OPENING_REQUEST = r"(?:결정)?[를을]?(?:" + _COURT + r"에)?(?:신청|요청)"
 _STAGES = [
     ("listing", "가처분기각", r"(?:가처분|효력정지|집행정지|이의신청|항고).{0,18}?(?:기각|각하)"),
     ("listing", "가처분신청", r"(?:가처분|효력정지|집행정지).{0,10}?신청"),
@@ -44,9 +47,10 @@ _STAGES = [
     ("listing", "거래정지", r"(?:매매)?거래정지(?:결정|통보|시행|돌입|조치)?"),
     ("listing", "감사의견거절", r"(?:감사의견|의견)[\"'‘’“”]*(?:거절|부적정)"),
     ("insolvency", "파산선고", r"파산선고|부도(?:처리|발생|확정)|디폴트(?:발생|선언)"),
-    ("insolvency", "회생신청", r"(?:기업)?회생(?:절차)?신청|법정관리신청"),
-    ("insolvency", "회생개시", r"회생(?:절차)?.{0,5}?개시"),
-    ("insolvency", "회생폐지", r"회생(?:절차)?.{0,5}?(?:폐지|기각)"),
+    ("insolvency", "회생신청", r"(?:기업)?회생(?:절차)?(?:개시" + _OPENING_REQUEST + r"|[를을]?(?:신청|요청))|법정관리신청"),
+    ("insolvency", "회생개시", r"회생(?:절차)?.{0,5}?개시(?!" + _OPENING_REQUEST + r")"),
+    ("insolvency", "회생기각", r"회생(?:절차)?(?:개시(?:결정)?)?[를을]?(?:(?:" + _COURT + r"에)?(?:신청|요청).{0,12}?)?(?:기각|각하)"),
+    ("insolvency", "회생폐지", r"회생(?:절차)?.{0,5}?폐지(?!(?:결정)?[를을]?(?:신청|요청))"),
     ("insolvency", "회생인가", r"회생계획.{0,5}?인가|회생인가"),
     ("insolvency", "청산절차", r"청산(?:절차|신청)|폐업(?:결정|신고)"),
     ("insolvency", "워크아웃개시", r"워크아웃(?:개시|신청|확정)"),
@@ -77,6 +81,56 @@ _RESOLVED_STAGES = {
 }
 _AMOUNT = re.compile(r"\d[\d,]*(?:\.\d+)?(?:조|억|만)(?:\d[\d,]*(?:\.\d+)?(?:억|만))*(?:원)?")
 _DATE = re.compile(r"(?:20\d{2}년)?\d{1,2}월\d{1,2}일|20\d{2}[-./]\d{1,2}[-./]\d{1,2}")
+_RELATIVE_DATE = re.compile(r"오늘|금일|어제|전날|그제|그저께|내일|모레|(?<!\d)\d+일전|(?:지난|오는)\d{1,2}일")
+_OLD_PERIOD = re.compile(r"작년|지난해|지난달|전월|지난주")
+_FUTURE_PERIOD = re.compile(r"내년|다음해|다음달|다음주")
+_NON_EVENT_DATE = re.compile(r"납부기한|상환기한|변제기한|신청기한|마감일|예정|기준일|만기일?|효력발생일")
+
+
+def _event_dates(src, now):
+    """Source event dates, never article publication time or accounting year.
+
+    A day-only report is fresh if any part of that day overlaps the collector's
+    14-hour window. This deliberately permits yesterday's delayed morning news.
+    """
+    dates = []
+    for match in _DATE.finditer(src):
+        parts = [int(n) for n in re.findall(r"\d+", match.group())]
+        before, after = src[max(0, match.start()-12):match.start()], src[match.end():match.end()+16]
+        if (_NON_EVENT_DATE.search(before) or re.match(
+                r"(?:을|를|이|가|은|는)?(?:납부기한|상환기한|변제기한|신청기한|마감일|예정|기준|만기|부터효력)|"
+                r"까지(?:납부|상환|변제|신청|제출|지급)", after)):
+            continue  # A deadline/reference date does not date the action.
+        if len(parts) == 2:
+            parts.insert(0, now.year)
+            if re.search(r"작년|지난해", src[:match.start()]):
+                parts[0] -= 1
+            elif "지난" in src[:match.start()] and tuple(parts[1:]) > (now.month, now.day):
+                parts[0] -= 1
+        try:
+            dates.append(datetime(*parts, tzinfo=KST).date())
+        except ValueError:
+            continue  # An invalid or ambiguous source date is not old evidence.
+    for value in _RELATIVE_DATE.findall(src):
+        if value.startswith(("지난", "오는")):
+            day = int(re.search(r"\d+", value).group())
+            try:
+                date = now.date().replace(day=day)
+                if value.startswith("지난") and date > now.date():
+                    date = (now.replace(day=1) - timedelta(days=1)).date().replace(day=day)
+                elif value.startswith("오는") and date < now.date():
+                    date = (now.replace(day=28) + timedelta(days=4)).date().replace(day=day)
+                dates.append(date)
+            except ValueError:
+                continue
+        else:
+            offset = {"오늘": 0, "금일": 0, "어제": 1, "전날": 1, "그제": 2, "그저께": 2,
+                      "내일": -1, "모레": -2}.get(value)
+            if offset is None:
+                offset = int(re.search(r"\d+", value).group())
+            dates.append((now - timedelta(days=offset)).date())
+    old = bool(dates) and max(dates) < (now - timedelta(hours=14)).date()
+    return sorted({d.isoformat() for d in dates}), old if dates else bool(_OLD_PERIOD.search(src))
 
 
 def _amounts(src):
@@ -98,7 +152,7 @@ def _identities(src):
         "전단채": r"전단채|전자단기사채", "회사채": r"회사채",
         "CP": r"기업어음|CP", "CB": r"전환사채|CB",
         "주식매수청구권": r"주식매수청구권", "대여금": r"대여금",
-        "추가": r"추가(?:제재|과징금|부과|부도|손실)",
+        "추가": r"추가(?:제재|과징금|부과|부도|손실|회생|신청)",
     }.items():
         if re.search(pattern, src):
             identities.add(label)
@@ -141,27 +195,81 @@ def _event_clauses(text):
             if not src:
                 continue
             if not any(re.search(pattern, src) for _, _, pattern in _STAGES):
-                prefix += src
+                # Only unfinished subject/date fragments belong to the next
+                # action. A completed unrelated statement cannot donate actors.
+                if re.search(r"했다|하였다|않았다|밝혔다|전했다|없었다|않았고|없었고|있다|없다", src):
+                    prefix = ""
+                else:
+                    prefix += clause + " "
                 continue
-            yield prefix + src
+            raw = unicodedata.normalize("NFKC", prefix + clause)
+            src = _compact(raw)
+            positions = [i for i, char in enumerate(raw) if not char.isspace()]
+            # A second event date starts its own action scope, even without
+            # punctuation: "6월 신청했고 오늘 개시 결정" is two events.
+            start = 0
+            rehabilitation = False
+            for marker in re.finditer(_DATE.pattern + "|" + _RELATIVE_DATE.pattern, src):
+                before = src[start:marker.start()]
+                prior_time = _DATE.search(before) or _RELATIVE_DATE.search(before) or _OLD_PERIOD.search(before)
+                if prior_time and any(re.search(pattern, before) for _, _, pattern in _STAGES):
+                    yield before, raw[positions[start]:positions[marker.start()-1]+1]
+                    rehabilitation = bool(re.search(r"회생(?:절차)?.{0,5}?개시", before))
+                    start = marker.start()
+            tail = src[start:]
+            # Same-sentence "old rehabilitation filing, today court ordered
+            # opening" can omit the repeated noun. Require the court's explicit
+            # order; another company's action or hearing does not inherit it.
+            if rehabilitation and re.match(
+                    r"(?:" + _DATE.pattern + "|" + _RELATIVE_DATE.pattern + r")" +
+                    _COURT + r"(?:은|이|가)개시(?!" + _OPENING_REQUEST + r")[를을]?(?:결정|명령|선고)", tail):
+                tail = tail.replace("개시", "회생절차개시", 1)
+            yield tail, raw[positions[start]:]
             prefix = ""
 
 
-def material_facts(title, desc=""):
+def _headline_subject(title):
+    # Only reconcile title/lead dates when their named subject is visibly shared.
+    # Failing open on an unclear subject protects a separate affiliate's action.
+    text = re.sub(r"\[[^]]*\]", "", title)
+    prefix = re.split(r"(?:기업)?회생|법정관리|과징금|과태료|가처분|상장폐지|상폐|거래정지|감사의견|파산", text)[0]
+    for word in re.findall(r"[가-힣A-Za-z][가-힣A-Za-z0-9]*", prefix):
+        word = re.sub(r"(?:은|는|의|가)$", "", word)
+        if len(word) > 1 and word not in {"오늘", "금일", "어제", "전날", "지난", "법원", "법원에"}:
+            return word
+    return ""
+
+
+def _mentions_subject(src, subject, text):
+    # Keep the original token boundaries: 금양홀딩스/금양에너지 are not 금양.
+    return subject in src and bool(re.search(
+        r"(?<![가-힣A-Za-z])" + re.escape(subject) + r"(?:은|는|의|이|가|을|를|에|도|과|와)?"
+        r"(?=$|[^가-힣A-Za-z]|기업회생|회생|과징금|상장|거래|감사)", text))
+
+
+def _source_facts(title, desc, now):
     """Concrete adverse developments in headline or individual lead clauses.
 
     Lead evidence requires an explicit action; a bare risk keyword never opens
     the new-stage exemption. Historic/uncertain clauses are ignored separately
     so a real new decision is not lost because another sentence has background.
     """
-    facts = []
+    evidence = []
+    subject = _headline_subject(title)
     for text, headline in ((title, True), (desc, False)):
-        for src in _event_clauses(text):
-            if not src or _BACKGROUND.search(src) or _UNCERTAIN.search(src):
+        for src, clause_text in _event_clauses(text):
+            dates, old = _event_dates(src, now)
+            if not src or _UNCERTAIN.search(src):
                 continue
+            future = bool(dates) and min(dates) > now.date().isoformat()
+            background = old or future or (not dates and bool(_BACKGROUND.search(src)))
             for family, stage, pattern in _STAGES:
                 match = re.search(pattern, src)
                 if not match:
+                    continue
+                # Rejection is a new judicial outcome, not a fresh filing and
+                # not termination of already-open rehabilitation proceedings.
+                if stage == "회생신청" and re.match(r".{0,12}?(?:기각|각하)", src[match.end():]):
                     continue
                 # A background modifier is not a newly imposed halt/opinion.
                 if stage in {"거래정지", "감사의견거절"} and re.search(
@@ -175,29 +283,53 @@ def material_facts(title, desc=""):
                     continue
                 # Dates must be attached to the event clause, never pubDate.
                 amounts = _amounts(src) if family in {"sanction", "liquidity", "crime"} else []
-                dates = sorted(set(_DATE.findall(src)))
-                facts.append({"family": family, "stage": stage,
-                              "amounts": amounts, "dates": dates, "identities": _identities(src)})
-    # Keep distinct source facts, without duplicate title/lead entries.
+                fact = {"family": family, "stage": stage,
+                        "amounts": amounts, "dates": dates, "identities": _identities(src)}
+                # A prospective action is not an executed stage. A separately
+                # stated decision today still survives as its own clause.
+                planned = bool((_FUTURE_PERIOD.search(src) and now.date().isoformat() not in dates)
+                               or re.search(r"예정|할계획", src[match.end():]))
+                evidence.append((fact, headline, background or planned, src, clause_text))
+    # Headlines commonly omit the date spelled out in the lead. An undated
+    # restatement cannot turn that same explicitly old action into a new one.
+    # A different stage, authority, amount or fiscal year remains independent.
+    result = []
+    for fact, headline, background, src, text in evidence:
+        if not fact["dates"] and not background and subject and _mentions_subject(src, subject, text):
+            matching = [old for other, is_title, old, other_src, other_text in evidence
+                        if is_title != headline and other["stage"] == fact["stage"]
+                        and _mentions_subject(other_src, subject, other_text)
+                        and all(set(fact[key]) <= set(other[key]) for key in ("amounts", "identities"))]
+            background = bool(matching) and all(matching)
+        result.append((fact, background))
+    return result
+
+
+def material_facts(title, desc="", now=None):
+    now = (now or datetime.now(KST)).astimezone(KST)
+    facts = [fact for fact, background in _source_facts(title, desc, now) if not background]
     return [fact for i, fact in enumerate(facts) if fact not in facts[:i]]
 
 
-def is_background_recap(title, desc=""):
+def is_background_recap(title, desc="", now=None):
     """Narrow known-case cap: background/prospective article, no adverse change.
 
     Unknown developments with active adverse wording are left to the existing
     risk review. A monetary 'hurdle' alone is not proof of a new obligation.
     """
     src = _compact(title)
-    if material_facts(title, desc):
+    evidence = _source_facts(title, desc, (now or datetime.now(KST)).astimezone(KST))
+    if any(not background for _, background in evidence):
         return False
     if re.search(r"발생|확정|현실화|급증|확대|악화|불능|실패|발각|유동성위기|자금난|횡령|배임", src):
         return False
+    if any(background and fact["family"] in event_families(title) for fact, background in evidence):
+        return True
     return bool(re.search(r"거래정지속|문턱|계류|물적분할|전자투표|주총|허들|"
                           r"경과|전망|갈림길|협의중|진행중|(?:회생|상폐|상장폐지).{0,5}?(?:위기|기로)", src))
 
 
-def _new_fact(fact, previous):
+def _new_fact(fact, previous, now):
     same = [p for p in previous if p.get("stage") == fact["stage"]]
     if not same:
         return True
@@ -205,7 +337,8 @@ def _new_fact(fact, previous):
     amounts, dates = set(fact["amounts"]), set(fact["dates"])
     identities = set(fact.get("identities", []))
     return not any(amounts <= set(p.get("amounts", [])) and
-                   dates <= set(p.get("dates", [])) and
+                   dates <= {date for value in p.get("dates", []) if isinstance(value, str)
+                             for date in _event_dates(_compact(value), now)[0]} and
                    identities <= set(p.get("identities", [])) for p in same)
 
 
@@ -239,10 +372,10 @@ class EventHistory:
                 and r["family"] in families]
 
     def new_material(self, entity, title, desc="", scope="full"):
-        facts = material_facts(title, desc)
+        facts = material_facts(title, desc, now=self.now)
         records = self.matching(entity, {f["family"] for f in facts}, scope)
         previous = [f for r in records for f in r["facts"]]
-        return any(_new_fact(fact, previous) for fact in facts)
+        return any(_new_fact(fact, previous, self.now.astimezone(KST)) for fact in facts)
 
     def duplicate(self, entity, title, desc="", event_type="", scope="full"):
         # The primary headline must match. An old listing sentence appended to
@@ -260,7 +393,7 @@ class EventHistory:
             return False
         # No structured event evidence: only strong textual recap evidence can
         # suppress. Fail open for unfamiliar facts outside our finite vocabulary.
-        threshold = 0.6 if material_facts(title) else 0.72
+        threshold = 0.6 if material_facts(title, now=self.now) else 0.72
         return any(SequenceMatcher(None, _compact(title), t).ratio() >= threshold for t in titles)
 
     def age_days(self, entity, title, desc="", event_type="", scope="full"):
@@ -271,7 +404,7 @@ class EventHistory:
     def record(self, entity, title, desc="", event_type="", scope="full"):
         if not entity:
             return
-        facts = material_facts(title, desc)
+        facts = material_facts(title, desc, now=self.now)
         for family in event_families(title, desc, event_type):
             previous = self.matching(entity, {family}, scope)
             if previous:
