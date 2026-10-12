@@ -578,6 +578,22 @@ class MonitorPriceIntegrationTests(OfflineTestCase):
         self.assertNotIn("시험가", self.output.getvalue())
         self.assertNotIn("synthetic", self.output.getvalue())
 
+    def test_no_news_full_send_counts_only_100eok_loan_stocks(self):
+        # (2026-10-13) 뉴스 없는 여신잔고 단독 메일: 전체여신(뱅+영) 100억 미만 종목은 전사 집계 제외
+        self.mock_provider({"005930.KS": history(100, 90), "196170.KQ": history(100, 90)})
+        data = exposure(exposure_row("시험가", "005930", balance=100, risk_balance=200),
+                        exposure_row("시험나", "196170", balance=99, risk_balance=200))
+        with patch.object(monitor, "MARKET_CRASH_STOCK_THRESHOLD", 2), \
+             patch.object(monitor, "MARKET_CRASH_RBAL_THRESHOLD", 150):
+            monitor.build_price_alert_section(data)
+            self.assertEqual(monitor.build_price_alert_section.last_alerted_count, 2)
+            self.assertEqual(monitor.build_price_alert_section.last_alerted_big, (1, 200))
+            self.assertFalse(monitor.no_news_full_send())
+            monitor.clear_price_alert_cache()
+            data["시험나"][0]["잔고(억)"] = 100
+            monitor.build_price_alert_section(data)
+            self.assertTrue(monitor.no_news_full_send())
+
     def test_no_decline_still_displays_coverage_without_price_alerts(self):
         provider = self.mock_provider({"196170.KQ": history(100, 105)})
         html = monitor.build_price_alert_section(exposure(exposure_row(code="196170")))

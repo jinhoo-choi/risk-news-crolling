@@ -436,6 +436,7 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
     """
     _build_price_alert_section_uncached.last_alerted_count = 0
     _build_price_alert_section_uncached.last_alerted_rbal = 0
+    _build_price_alert_section_uncached.last_alerted_big = (0, 0)
     _build_price_alert_section_uncached.last_coverage = {}
     # 2026-09-26: -3% → -5% 재환원(PRICE_DROP_THRESHOLD). 뉴스 필터는 -5%인데
     # 여기만 -3%라 -3~-5% 구간이 가격경보에는 뜨고 기사는 걸리는 불일치가 있었다.
@@ -601,6 +602,10 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
     # 알릴 가치가 있으므로 발송 게이트에서 종목 수와 함께 판단한다.
     _build_price_alert_section_uncached.last_alerted_rbal = sum(
         (a[4] or 0) for a in alerted_sorted)
+    # (2026-10-13) 뉴스 없는 메일의 전사 판정용 — 전체여신(뱅+영) 100억↑ 종목만 집계.
+    _big = [a for a in alerted_sorted if (a[1] or 0) >= EXPOSURE_FLOOR_EOK]
+    _build_price_alert_section_uncached.last_alerted_big = (
+        len(_big), sum((a[4] or 0) for a in _big))
     if not alerted_sorted:
         return coverage_html
     MAX_DISPLAY = 3
@@ -773,6 +778,7 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
         build_price_alert_section.last_alerted_count = _c["count"]
         build_price_alert_section.last_alerted_rbal = _c["rbal"]
         build_price_alert_section.last_coverage = _c["coverage"]
+        build_price_alert_section.last_alerted_big = _c["big"]
         return _c["html"]
 
     html = _build_price_alert_section_uncached(exposure_data, ref_date)
@@ -782,8 +788,10 @@ def build_price_alert_section(exposure_data: dict, ref_date: str = '') -> str:
     build_price_alert_section.last_alerted_rbal = rbal
     coverage = getattr(_build_price_alert_section_uncached, "last_coverage", {})
     build_price_alert_section.last_coverage = coverage
-    build_price_alert_section._cache = {"key": _ck, "html": html,
-                                        "count": cnt, "rbal": rbal, "coverage": coverage}
+    big = getattr(_build_price_alert_section_uncached, "last_alerted_big", (0, 0))
+    build_price_alert_section.last_alerted_big = big
+    build_price_alert_section._cache = {"key": _ck, "html": html, "count": cnt, "rbal": rbal,
+                                        "coverage": coverage, "big": big}
     return html
 
 
@@ -797,6 +805,7 @@ def clear_price_alert_cache():
     for _f in (build_price_alert_section, _build_price_alert_section_uncached):
         _f.last_alerted_count = 0
         _f.last_alerted_rbal = 0
+        _f.last_alerted_big = (0, 0)
         _f.last_coverage = {}
 
 
@@ -4866,6 +4875,15 @@ def decide_send_scope(filtered: list, exposure_data: dict, ref_date: str = "") -
             "triggers": _triggers}
 
 
+def no_news_full_send() -> bool:
+    """뉴스 없이 여신잔고 리스크 현황만 나가는 메일의 전사 판정 (2026-10-13).
+    전체여신(뱅+영) EXPOSURE_FLOOR_EOK(100억) 미만 종목은 급락 집계에서 빼고
+    시장급락 기준(종목 수 AND 리스크잔고)을 적용한다. 미달이면 본인 한정(참고).
+    ※ build_price_alert_section() 호출 이후에만 유효."""
+    _c, _r = getattr(build_price_alert_section, "last_alerted_big", (0, 0))
+    return _c >= MARKET_CRASH_STOCK_THRESHOLD and _r >= MARKET_CRASH_RBAL_THRESHOLD
+
+
 def filter_articles_for_scope(filtered: list, exposure_data: dict, self_only: bool,
                               market_crash: bool = False) -> list:
     """발송 범위에 맞춰 메일에 실을 기사를 추린다.
@@ -6007,11 +6025,10 @@ def main():
         _NR_RBAL_TH  = MARKET_CRASH_RBAL_THRESHOLD
         _nr_cnt  = getattr(build_price_alert_section, "last_alerted_count", 0)
         _nr_rbal = getattr(build_price_alert_section, "last_alerted_rbal", 0)
-        _nr_full = bool(_price_section) and (_nr_cnt >= _NR_STOCK_TH
-                                             and _nr_rbal >= _NR_RBAL_TH)
+        _nr_full = bool(_price_section) and no_news_full_send()
         if _price_section:
             print(f"  [뉴스 0건 발송판정] 경보 {_nr_cnt}종목 / 리스크잔고 {_nr_rbal:,.0f}억 "
-                  f"/ 기준 {_NR_STOCK_TH}종목 AND {_NR_RBAL_TH:,.0f}억 → "
+                  f"/ 기준 {_NR_STOCK_TH}종목 AND {_NR_RBAL_TH:,.0f}억(여신 {EXPOSURE_FLOOR_EOK}억↑ 종목만) → "
                   f"{'충족(전체발송)' if _nr_full else '미달(본인한정)'}")
         if _nr_cnt > 0:
             # 경보가 있으면 내용은 동일하게 만들고 '발송 범위'만 기준으로 가른다.
@@ -6670,6 +6687,12 @@ JSON만 출력:
     _self_only = _scope["self_only"]
     _mail_articles = filter_articles_for_scope(filtered, exposure_data, _self_only,
                                                _scope["market_crash"])
+    # (2026-10-13) 실을 기사 0건 = 여신잔고 현황만 전사 → 여신 100억↑ 종목 기준 재판정.
+    if not _self_only and not _mail_articles and not no_news_full_send():
+        print(f"  [여신잔고 단독 메일] 여신 {EXPOSURE_FLOOR_EOK}억↑ 종목 기준 시장급락 미달 → 본인 한정")
+        _self_only = True
+        _scope["self_only"] = True
+        _mail_articles = filter_articles_for_scope(filtered, exposure_data, True)
     if _self_only or FORCE_SELF_ONLY:
         _mail_articles = [a for a in _mail_articles if
                           a.get("_force_urgent") or a.get("_material_price_resend") or

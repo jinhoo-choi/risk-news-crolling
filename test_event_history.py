@@ -253,7 +253,8 @@ class PersistenceTests(unittest.TestCase):
         self.assertFalse(history.new_material("금양", "금양 서울중앙지방법원 가처분 기각"))
         history.record("금양", "금양 2025사업연도 감사의견 거절")
         self.assertFalse(history.new_material("금양", "금양 2025년 감사의견 거절"))
-        dated = material_facts("금양 2026년10월11일 보도 2025년 감사의견 거절")
+        dated = material_facts("금양 2026년10월11일 보도 2025년 감사의견 거절",
+                               now=datetime(2026, 10, 11, 21, tzinfo=KST))  # 실시각 의존 제거(10-13)
         self.assertNotIn("회계연도:2026", dated[0]["identities"])
         history.record("금양", "금융위, 금양 과징금 1,000억원 부과")
         self.assertFalse(history.new_material("금양", "금융위원회, 금양 과징금 1000억원 부과"))
