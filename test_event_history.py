@@ -177,6 +177,12 @@ class PersistenceTests(unittest.TestCase):
         exec(compile(ast.fix_missing_locations(ast.Module(body=[stage], type_ignores=[])), "actual-stage", "exec"), env)
         self.assertFalse(env["is_next_stage"](GEUM_TITLE, GEUM_DESC, "금양"))
         self.assertTrue(env["is_next_stage"]("금양 120억원 추가 과징금 부과", "", "금양"))
+        # (2026-10-12) 확연한 진전만 인정: 절차성 단계·금액만 다른 동일 단계는 제외
+        self.assertFalse(env["is_next_stage"]("금양, 상장폐지 효력정지 가처분 신청", "", "금양"))
+        self.assertFalse(env["is_next_stage"]("금양 매매거래정지", "", "금양"))
+        self.assertFalse(env["is_next_stage"]("금양 120억원 과징금 부과", "", "금양"))
+        self.assertTrue(env["is_next_stage"]("금양 정리매매 개시", "", "금양"))
+        self.assertTrue(env["is_next_stage"]("금양 파산선고", "", "금양"))
         start = next(i for i, n in enumerate(main.body) if isinstance(n, ast.Assign)
                      and any(isinstance(t, ast.Name) and t.id == "GRADE_DEMOTE" for t in n.targets))
         end = next(i for i, n in enumerate(main.body) if isinstance(n, ast.Assign)
@@ -186,14 +192,15 @@ class PersistenceTests(unittest.TestCase):
         env.update(_entity_canon={}, exposure_data={}, known_entities={"금양": 3},
                    load_known_case_entities=lambda: {"금양"})
         exec(compile(ast.fix_missing_locations(ast.Module(body=[cap], type_ignores=[])), "actual-cap", "exec"), env)
-        for title, desc, expected in [(GEUM_TITLE, GEUM_DESC, "참고"),
+        # (2026-10-12) 진전 없는 기지 사건 재조명은 참고가 아니라 제외(None)
+        for title, desc, expected in [(GEUM_TITLE, GEUM_DESC, None),
                                        ("금양, 주식매수청구권 1000억원 지급의무 확정", GEUM_DESC, "긴급"),
                                        ("금양, 신규 사업 유동성 위기", GEUM_DESC, "긴급")]:
             article = dict(entity="금양", title=title, desc=desc, grade="긴급")
             env["filtered"] = [article]
             with contextlib.redirect_stdout(io.StringIO()):
                 env["cap"]()
-            self.assertEqual(article["grade"], expected, title)
+            self.assertEqual(article["grade"] if env["filtered"] else None, expected, title)
 
     def test_actual_main_dedup_preserves_punctuated_material_changes(self):
         from difflib import SequenceMatcher
@@ -233,7 +240,10 @@ class PersistenceTests(unittest.TestCase):
                 exec(code, env)
                 self.assertTrue(history.new_material("금양", changed))
                 self.assertFalse(history.duplicate("금양", changed))
-                for title, expected_count in [(previous, 0), (changed, 1)]:
+                # (2026-10-12) 같은 단계의 금액만 바뀐 보도는 '확연한 진전' 아님 → 제외(사용자 결정).
+                #   새 기관·법원·회계연도는 계속 진전으로 인정한다.
+                _amount_only = changed == "금양 과징금 2,000억원 부과"
+                for title, expected_count in [(previous, 0), (changed, 0 if _amount_only else 1)]:
                     article = dict(entity="금양", title=title, desc="", event_type=event_type, grade="긴급")
                     with contextlib.redirect_stdout(io.StringIO()):
                         self.assertEqual(len(env["gate"]([article])), expected_count, title)
@@ -370,7 +380,7 @@ class DatedEventGateTests(unittest.TestCase):
     def test_real_21h_source_is_reference_on_cold_start_and_legacy_duplicate(self):
         self.assertEqual(material_facts(self.REAL_TITLE, self.REAL_DESC, now=self.AS_OF), [])
         self.assertTrue(is_background_recap(self.REAL_TITLE, self.REAL_DESC, now=self.AS_OF))
-        self.assertEqual(self.gate(self.REAL_TITLE, self.REAL_DESC)[0]["grade"], "참고")
+        self.assertEqual(self.gate(self.REAL_TITLE, self.REAL_DESC), [])  # (2026-10-12) 진전 없는 기지사건 후속 = 제외
         self.assertEqual(self.gate(self.REAL_TITLE, self.REAL_DESC, legacy=True), [])
 
     def test_absolute_relative_and_cross_field_old_date_scope(self):
@@ -379,10 +389,10 @@ class DatedEventGateTests(unittest.TestCase):
             with self.subTest(date=date):
                 title = "중앙그룹 기업회생 신청"
                 desc = f"중앙그룹은 {date} 기업회생절차 개시를 신청했다."
-                self.assertEqual(self.gate(title, desc)[0]["grade"], "참고")
+                self.assertEqual(self.gate(title, desc), [])  # (2026-10-12) 진전 없는 기지사건 후속 = 제외
                 self.assertEqual(material_facts(title, desc, now=self.AS_OF), [])
         self.assertEqual(self.gate("중앙그룹 2026년6월15일 기업회생 신청",
-                                  "중앙그룹은 기업회생절차 개시를 신청했다.")[0]["grade"], "참고")
+                                  "중앙그룹은 기업회생절차 개시를 신청했다."), [])  # (2026-10-12) 진전 없는 기지사건 후속 = 제외
         # An unrelated company's old application must not date the title event.
         self.assertEqual(self.gate("새계열사 기업회생 신청",
                                   "중앙그룹은 2026년6월15일 기업회생절차 개시를 신청했다.",
@@ -409,7 +419,7 @@ class DatedEventGateTests(unittest.TestCase):
             with self.subTest(date=date):
                 desc = f"중앙그룹은 {date} 기업회생절차 개시를 신청했다."
                 self.assertEqual(self.gate("중앙그룹 회생 신청", desc, now=morning)[0]["grade"], "긴급")
-                self.assertEqual(self.gate("중앙그룹 회생 신청", desc)[0]["grade"], "참고")
+                self.assertEqual(self.gate("중앙그룹 회생 신청", desc), [])  # (2026-10-12) 진전 없는 기지사건 후속 = 제외
         # Calendar inference crosses a year boundary without dating last month
         # to last year twice, or treating it as a current action.
         january = datetime(2027, 1, 1, 7, tzinfo=KST)
@@ -513,14 +523,14 @@ class DatedEventGateTests(unittest.TestCase):
                 self.assertEqual(self.gate("금양 과징금 부과", desc, entity="금양", legacy=True)[0]["grade"], "긴급")
         # Subject-only punctuation still carries the correct date and authority.
         desc = "금양, 금융위, 6월15일 과징금 10억원 부과 결정을 받았다."
-        self.assertEqual(self.gate("금양 과징금 부과", desc, entity="금양")[0]["grade"], "참고")
+        self.assertEqual(self.gate("금양 과징금 부과", desc, entity="금양"), [])  # (2026-10-12) 진전 없는 기지사건 후속 = 제외
 
     def test_prospective_stage_does_not_claim_an_order_already_happened(self):
         for title in ("중앙그룹 내일 회생 개시 예정", "중앙그룹 모레 회생 개시", "중앙그룹 다음달 회생 개시 예정",
                       "중앙그룹 2026년10월12일 회생 개시", "중앙그룹 오는12일 회생 개시", "중앙그룹 회생 개시 예정"):
             with self.subTest(title=title):
                 self.assertEqual(material_facts(title, now=self.AS_OF), [])
-                self.assertEqual(self.gate(title)[0]["grade"], "참고")
+                self.assertEqual(self.gate(title), [])  # (2026-10-12) 진전 없는 기지사건 후속 = 제외
         for title, desc in (
             ("중앙그룹 오늘 회생 개시 결정, 내일 효력", ""),
             ("중앙그룹 오늘 법원이 다음달 회생 개시를 결정했다", ""),

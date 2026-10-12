@@ -105,7 +105,7 @@ RELATED_STOCK_MAP = {
 }
 
 import requests
-from event_history import EventHistory, HISTORY_KEY, is_background_recap, material_facts
+from event_history import EventHistory, HISTORY_KEY, is_background_recap, material_facts, event_families, _new_fact
 from collections import Counter
 from quote_prices import resolve_symbol, fetch_quote, format_price, STATUS_LABELS
 from notice_filter import matches_notice_title
@@ -264,6 +264,12 @@ PRICE_RESEND_THRESHOLD = -8.0
 # 메일 안내 문구·로그·시장급락 집계가 모두 이 값을 참조한다
 # (2026-09-26: 문구만 -3% 로 남아 수신자에게 잘못 안내되던 사례가 있었다).
 PRICE_DROP_THRESHOLD = -5.0
+# '확연한 진전'으로 인정하는 단계 (event_history._STAGES 이름). 그 외는 동일 종목 재발송 사유 아님 (2026-10-12)
+_DECISIVE_STAGES = {
+    "상장폐지결정", "상장폐지사유", "정리매매개시", "가처분기각", "감사의견거절",
+    "파산선고", "회생신청", "회생개시", "회생기각", "회생폐지", "회생인가", "청산절차", "워크아웃개시",
+    "과징금", "영업정지", "기소", "미상환", "지급의무확정", "등급강등",
+}
 # 개별종목 기사 긴급·주의 최소 익스포저(억, 뱅+영 전 유형 합산). 미만은 참고 (2026-10-12)
 EXPOSURE_FLOOR_EOK = 100
 EXPOSURE_FILE = "exposure_data.csv"
@@ -3664,22 +3670,35 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
     # 여신·해외대출 합산)가 EXPOSURE_FLOOR_EOK 미만이면 사건 유형과 무관하게 참고.
     # 강등 전용·잠금. 당사 직접(제목 '한국투자증권')·entity 없음(시장 전체)·
     # 익스포저 행 없음(별도 '익스포저 없음 → 참고' 게이트)은 대상 아님.
+    #   (2026-10-12) 상폐 트랙(_DELIST_RE) 기사는 100억 미만이면 등급 무관 완전 제외 —
+    #   "100억 미만 상장폐지는 볼 필요 없음"(사용자 결정, ETF 포함).
+    #   ※ 상폐 트랙만(상폐·관리종목·실질심사·정리매매·감사의견·거래정지). 유증·회생계획은
+    #     _DELIST_RE(강등용)에는 있지만 상폐가 아니므로 여기선 참고 강등까지만.
+    _DELIST_ONLY_RE = re.compile(r'상장\s*폐지|상폐|관리\s*종목|상장\s*적격성|실질\s*심사|정리\s*매매'
+                                 r'|감사\s*의견|거래\s*정지|매매\s*정지')
     for a in articles:
-        if a.get("_force_urgent") or a.get("grade") not in ("긴급", "주의"):
+        if a.get("_force_urgent"):
             continue
         _t = a.get("title", "")
         _e = (a.get("entity") or "").strip()
         if not _e or DIRECT_COMPANY_KW in _t:
             continue
+        _delist = bool(_DELIST_ONLY_RE.search(_t))
+        if a.get("grade") not in ("긴급", "주의") and not _delist:
+            continue
         _rows = find_exposure(_e, exposure_data or {})
         if not _rows:
             continue
         _tot = sum(_num(r.get("잔고(억)")) for r in _rows)
-        if _tot < EXPOSURE_FLOOR_EOK:
+        if _tot < EXPOSURE_FLOOR_EOK and _delist:
+            print(f"  [익스포저 하한·상폐 제외] {_e} {_tot:.0f}억: {_t[:30]}")
+            a["_excluded"] = True
+        elif _tot < EXPOSURE_FLOOR_EOK:
             print(f"  [익스포저 하한] {_e} {_tot:.0f}억 {a['grade']}→참고: {_t[:30]}")
             a["grade"] = "참고"
             a["customer_notice"] = None
             a["_grade_locked"] = True
+    articles = [a for a in articles if not a.get("_excluded")]
 
     for a in articles:
         a["_risk_score"] = calc_risk_score(a, exposure_data)
@@ -5737,20 +5756,28 @@ def main():
         return [fact["stage"] for fact in material_facts(title, desc, now=event_history.now)]
 
     def is_next_stage(title: str, desc: str, entity: str = "") -> bool:
-        facts = material_facts(title, desc, now=event_history.now)
+        # (2026-10-12) '확연한 진전'만 다음 단계로 인정한다(사용자 결정).
+        #   ① 결정적 단계(_DECISIVE_STAGES)만 본다 — 가처분 신청·거래정지·고발·수사착수·
+        #      자금부족 확대 등 절차·정황성 단계는 재발송 사유가 아니다.
+        #   ② 같은 단계의 금액만 바뀐 보도는 진전이 아니다(금양 과징금 76억 vs 91.5억 =
+        #      같은 의결의 다른 보도). 단 제목에 '추가'가 있으면 새 처분으로 본다.
+        #   ③ 새 법원·기관·회계연도·사건일은 진전으로 본다(항고 기각, 다음 연도 의견거절 등).
+        facts = [f for f in material_facts(title, desc, now=event_history.now)
+                 if f["stage"] in _DECISIVE_STAGES]
         if not facts:
             return False
         if not entity:
             return True
-        if event_history.matching(entity, {f["family"] for f in facts}, "full"):
-            return event_history.new_material(entity, title, desc)
-        # Compatibility for legacy 72h slots. New structured history tracks
-        # concrete amounts/dates as well as stage names after a successful send.
-        # Legacy keyword-only history cannot disprove a new amount, authority
-        # or fiscal period. Fail open once, then record the structured evidence.
-        return any((entity, fact["stage"]) not in seen_stages or
-                   fact["amounts"] or fact["dates"] or fact.get("identities")
-                   for fact in facts)
+        _add = "추가" in (title or "")
+        facts = [f if _add else dict(f, amounts=[]) for f in facts]
+        _prev = [p for r in event_history.matching(entity, {f["family"] for f in facts}, "full")
+                 for p in r["facts"]]
+        if _prev:
+            return any(_new_fact(f, _prev, event_history.now) for f in facts)
+        # 구버전 72h 슬롯 호환 — 단계명만 남아 있으므로 날짜·기관·'추가' 금액만 신규 근거로 인정
+        return any((entity, f["stage"]) not in seen_stages or
+                   f["amounts"] or f["dates"] or f.get("identities")
+                   for f in facts)
 
     before_combo = len(filtered)
     filtered_final = []
@@ -5906,26 +5933,19 @@ def main():
         desc  = a.get("desc", "")
         # Long-lived age applies to this source-derived event family, never to
         # every future story about the company.
-        days = max(known_entities.get(ent, 0), event_history.age_days(
-            ent, title, desc, a.get("event_type", "")))
-        if days >= 7 and event_history.duplicate(ent, title, desc, a.get("event_type", "")):
-            if not is_next_stage(title, desc, ent):
-                print(f"  [장기이슈 차단] D+{days} {ent}: {title[:40]}")
-                _known_removed.append(a)
-                filtered.remove(a)
-        elif days >= 3 and ((ent in _known_case_ents and is_background_recap(title, desc, now=event_history.now)) or event_history.duplicate(
-                ent, title, desc, a.get("event_type", ""))):
-            if not is_next_stage(title, desc, ent):
-                old_grade = a.get("grade", "참고")
-                new_grade = GRADE_DEMOTE.get(old_grade, "참고")
-                # (2026-10-11) 기지 사건 종목은 1단계가 아니라 참고 고정 — 프롬프트 규칙
-                #   ('재조명은 참고 이하, 신규 법적단계만 격상')과 정합. 1단계 강등만으론
-                #   AI 긴급 → 주의로 전사 발송돼 금양이 10/2·10/10 물적분할로 반복 노출됐다.
-                if ent in _known_case_ents:
-                    new_grade = "참고"
-                if old_grade != new_grade:
-                    a["grade"] = new_grade
-                    print(f"  [장기이슈 강등] D+{days} {ent} {old_grade}→{new_grade}: {title[:35]}")
+        # (2026-10-12) 동일 종목 후속 기사는 '확연한 진전'(is_next_stage)이 없으면 제외.
+        #   이전: D+3 1단계 강등(기지 사건은 참고 고정), D+7 차단. 강등만으론 참고로
+        #   계속 노출돼 같은 종목 메일이 반복된다는 운영 피드백(금양 10/2·10/7·10/8·10/10).
+        #   '같은 사건'의 범위 = 제목 기준 같은 위험 계열로 전사 발송 이력이 있거나,
+        #   기지 사건의 배경 재조명, 또는 EventHistory 중복 판정. 제목의 위험 계열이
+        #   새로우면(예: 상폐 이력 종목의 신규 유동성 위기) 손대지 않는다.
+        _prior = (bool(event_history.matching(ent, event_families(title), "full"))
+                  or (ent in _known_case_ents and is_background_recap(title, desc, now=event_history.now))
+                  or event_history.duplicate(ent, title, desc, a.get("event_type", "")))
+        if _prior and not is_next_stage(title, desc, ent):
+            print(f"  [동일종목 후속 제외] {ent}: {title[:40]}")
+            _known_removed.append(a)
+            filtered.remove(a)
 
     # 강등 후 참고 GRADE_LIMITS 재체크 (최대 5건)
     ref_after_demote = [a for a in filtered if a.get("grade") == "참고"]
