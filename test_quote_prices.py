@@ -142,10 +142,29 @@ def setUpModule():
         guard.assert_not_called()
 
 
+def naver_from_yahoo(ticker):
+    """(2026-10-13) 국내는 네이버 소스로 교체 — 기존 야후 일봉 픽스처를 네이버 응답으로 변환."""
+    try:
+        frame = yfinance.Ticker(ticker).history(period="5d", interval="1d", auto_adjust=False)
+    except Exception as exc:
+        if type(exc).__name__ == "YFRateLimitError" or \
+                getattr(getattr(exc, "response", None), "status_code", None) == 429:
+            raise requests.HTTPError(response=SimpleNamespace(status_code=429)) from exc
+        raise
+    if frame is None or len(frame) < 2:
+        return None
+    prev, cur = frame["Close"].iloc[-2], frame["Close"].iloc[-1]
+    change = (cur - prev) / prev * 100
+    return {"itemCode": ticker.split(".")[0], "localTradedAt": str(frame.index[-1].isoformat()),
+            "closePrice": str(cur), "fluctuationsRatio": str(abs(change)),
+            "compareToPreviousPrice": {"code": "5" if change < 0 else "2" if change > 0 else "3"}}
+
+
 class OfflineTestCase(unittest.TestCase):
     def setUp(self):
         self.io_stack, self.io_guards = blocked_io()
         self.addCleanup(self.io_stack.close)
+        self.io_stack.enter_context(patch.object(prices, "_naver_json", side_effect=naver_from_yahoo))
         self.clock = self.io_stack.enter_context(patch.object(prices, "datetime", wraps=datetime))
         self.clock.now.return_value = NOW
         prices.get_market_catalog.cache_clear()
@@ -478,7 +497,7 @@ class QuoteValidationTests(OfflineTestCase):
                             ticker_factory=factory, now=NOW), "provider_error")
         factory.assert_called_once()
         with patch.dict(sys.modules, {"yfinance": None}):
-            self.assert_unknown(prices.fetch_quote(prices.Symbol("005930.KS")), "provider_unavailable")
+            self.assert_unknown(prices.fetch_quote(prices.Symbol("AAPL")), "provider_unavailable")  # 국내는 네이버(10-13)
 
     def test_unresolved_symbols_never_contact_provider(self):
         factory = Mock()
@@ -702,6 +721,45 @@ class MonitorPriceIntegrationTests(OfflineTestCase):
             self.assertEqual(monitor.build_price_alert_section.last_coverage, {})
             self.assertEqual(monitor.build_price_alert_section.last_alerted_count, 0)
 
+
+
+class NaverDomesticQuoteTests(unittest.TestCase):
+    """(2026-10-13) 국내 등락률 = 네이버 전일대비율. 10/13 하이닉스 -10.6%→-14.6% 과장 회귀 방지."""
+    SYM = prices.Symbol("000660.KS")
+
+    def quote(self, **over):
+        d = {"itemCode": "000660", "localTradedAt": NOW.isoformat(), "closePrice": "1,435,000",
+             "fluctuationsRatio": "-10.59", "compareToPreviousPrice": {"code": "5"}}
+        d.update(over)
+        with patch.object(prices, "_naver_json", return_value=d):
+            return prices.fetch_quote(self.SYM, now=NOW)
+
+    def test_ratio_and_price_from_naver_not_yahoo_bars(self):
+        with patch.object(yfinance, "Ticker") as yf:
+            q = self.quote()
+            yf.assert_not_called()
+        self.assertEqual((q.status, q.change, q.current), ("ok", -10.59, 1435000.0))
+
+    def test_sign_follows_direction_code_even_if_ratio_unsigned(self):
+        self.assertEqual(self.quote(fluctuationsRatio="10.59").change, -10.59)
+        self.assertEqual(self.quote(fluctuationsRatio="3.1", compareToPreviousPrice={"code": "2"}).change, 3.1)
+        self.assertEqual(self.quote(fluctuationsRatio="0.00", compareToPreviousPrice={"code": "3"}).change, 0.0)
+        self.assertEqual(self.quote(compareToPreviousPrice=None).change, -10.59)  # 방향코드 없으면 부호 그대로
+
+    def test_fail_closed(self):
+        y = (NOW - timedelta(days=1)).isoformat()
+        for over, status in [({"localTradedAt": y}, "stale_price"),
+                             ({"localTradedAt": "2026-10-13T14:00:00"}, "invalid_timestamp"),
+                             ({"itemCode": "005930"}, "invalid_timestamp"),
+                             ({"closePrice": "0"}, "invalid_price"),
+                             ({"fluctuationsRatio": "nan"}, "invalid_price")]:
+            with self.subTest(over=over):
+                self.assertEqual(self.quote(**over).status, status)
+        with patch.object(prices, "_naver_json", return_value=None):
+            self.assertEqual(prices.fetch_quote(self.SYM, now=NOW).status, "no_history")
+        with patch.object(prices, "_naver_json", side_effect=requests.HTTPError(
+                response=SimpleNamespace(status_code=429))):
+            self.assertEqual(prices.fetch_quote(self.SYM, now=NOW).status, "rate_limited")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

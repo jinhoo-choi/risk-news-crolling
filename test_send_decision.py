@@ -56,6 +56,18 @@ with contextlib.redirect_stdout(io.StringIO()):
 import quote_prices
 _TEST_MARKETS = {f"99{i:04d}": ".KS" for i in range(20)}
 quote_prices.get_market_catalog = lambda: _TEST_MARKETS
+def _naver_bridge(tk):  # (2026-10-13) 국내 시세 네이버 교체 — 가짜 야후 일봉을 네이버 응답으로 변환
+    h = sys.modules["yfinance"].Ticker(tk).history(period="5d", interval="1d", auto_adjust=False)
+    if h is None or len(h) < 2:
+        return None
+    p, c = float(h["Close"].iloc[-2]), float(h["Close"].iloc[-1])
+    r = (c - p) / p * 100
+    return {"itemCode": tk.split(".")[0], "localTradedAt": h.index[-1].isoformat(),
+            "closePrice": str(c), "fluctuationsRatio": str(abs(r)),
+            "compareToPreviousPrice": {"code": "5" if r < 0 else "2" if r > 0 else "3"}}
+
+
+quote_prices._naver_json = _naver_bridge
 for i, code in enumerate(_TEST_MARKETS):
     name = f"가격회귀가상종목{i}"
     EXPO[name] = [{"종목명": name, "종목코드": code, "종목유형": "여신",

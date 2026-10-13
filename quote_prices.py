@@ -20,6 +20,10 @@ KST = timezone(timedelta(hours=9))
 MASTER_BASE = "https://new.real.download.dws.co.kr/common/master/"
 MASTER_MAX_AGE = timedelta(days=7)  # accommodates weekends/holiday closures
 MAX_MASTER_BYTES = 10 * 1024 * 1024
+# (2026-10-13) 국내 등락률은 네이버 금융 실시간 전일대비율(KRX 기준). 야후 일봉의
+# 직전 봉 종가가 미확정값으로 남아 SK하이닉스 -10.6%가 -14.6%로 과장된 사례.
+NAVER_QUOTE_URL = "https://polling.finance.naver.com/api/realtime/domestic/stock/"
+_NAVER_SIGN = {"1": -1, "2": -1, "3": 0, "4": 1, "5": 1}  # 상한·상승 / 보합 / 하한·하락 → 부호 반전용
 
 STATUS_LABELS = {
     "market_unavailable": "상장시장 자료 조회불가",
@@ -158,6 +162,47 @@ def resolve_symbol(rows: list[dict], fallback_ticker: str = "") -> Symbol:
     return Symbol(code + suffix) if suffix else Symbol(status="not_listed")
 
 
+def _naver_json(ticker: str) -> dict | None:
+    with requests.get(NAVER_QUOTE_URL + ticker.split(".")[0], timeout=(3, 5),
+                      headers={"User-Agent": "Mozilla/5.0"}) as response:
+        response.raise_for_status()
+        return (response.json().get("datas") or [None])[0]
+
+
+def _naver_quote(symbol: Symbol, now=None) -> Quote:
+    """국내(.KS/.KQ) — 네이버 전일대비율. 당일 체결시각·종목코드·부호 검증, 실패 시 미확인."""
+    code = symbol.ticker.split(".")[0]
+    try:
+        d = _naver_json(symbol.ticker)
+    except Exception as exc:
+        status = ("rate_limited" if getattr(getattr(exc, "response", None), "status_code", None) == 429
+                  else "provider_error")
+        return Quote(status, symbol.ticker)
+    if not d:
+        return Quote("no_history", symbol.ticker)
+    try:
+        if d.get("itemCode") and str(d["itemCode"]).upper() != code.upper():
+            raise ValueError("code mismatch")
+        traded = datetime.fromisoformat(str(d["localTradedAt"]))
+        if traded.tzinfo is None:
+            raise ValueError("naive")
+    except Exception:
+        return Quote("invalid_timestamp", symbol.ticker)
+    if traded.astimezone(KST).date() != (now or datetime.now(KST)).astimezone(KST).date():
+        return Quote("stale_price", symbol.ticker)
+    try:
+        current = float(str(d["closePrice"]).replace(",", ""))
+        ratio = float(str(d["fluctuationsRatio"]).replace(",", ""))
+        sign = str((d.get("compareToPreviousPrice") or {}).get("code", ""))
+        # 방향코드 우선(1·2 상승 / 3 보합 / 4·5 하락), 없으면 부호 있는 비율 그대로
+        change = round(-abs(ratio) * _NAVER_SIGN[sign], 2) if sign in _NAVER_SIGN else round(ratio, 2)
+        if not (math.isfinite(current) and current > 0 and math.isfinite(change)):
+            raise ValueError("invalid price")
+    except Exception:
+        return Quote("invalid_price", symbol.ticker)
+    return Quote("ok", symbol.ticker, change, current)
+
+
 def fetch_quote(symbol: Symbol, *, ticker_factory=None, now=None) -> Quote:
     """Missing/invalid data stays unknown; daily bars use their market timezone.
 
@@ -168,6 +213,8 @@ def fetch_quote(symbol: Symbol, *, ticker_factory=None, now=None) -> Quote:
     """
     if symbol.status != "ok" or not symbol.ticker:
         return Quote(symbol.status)
+    if ticker_factory is None and symbol.ticker.endswith((".KS", ".KQ")):
+        return _naver_quote(symbol, now)  # 야후 팩토리를 명시 주입한 경우만 야후 검증 경로
     if ticker_factory is None:
         try:
             from yfinance import Ticker
