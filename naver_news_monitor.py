@@ -6692,6 +6692,7 @@ JSON만 출력:
         print(f"  [여신잔고 단독 메일] 여신 {EXPOSURE_FLOOR_EOK}억↑ 종목 기준 시장급락 미달 → 본인 한정")
         _self_only = True
         _scope["self_only"] = True
+        _scope["triggers"] = [t for t in _scope["triggers"] if not t.startswith("시장급락")]
         _mail_articles = filter_articles_for_scope(filtered, exposure_data, True)
     if _self_only or FORCE_SELF_ONLY:
         _mail_articles = [a for a in _mail_articles if
