@@ -190,6 +190,19 @@ def verify_job(queue, jid, self_test=False):
 
 
 def consume(queue, jid, self_test=False):
+    if not JOB_ID.fullmatch(jid):
+        raise RuntimeError('회차 ID 오류')
+    # A merged request file can retrigger an already finished owner verification.
+    # Terminal receipts are evidence of completion, never a reason to resend.
+    current_config(queue, self_test)
+    existing, _ = queue.get('jobs/'+jid+'.json')
+    if existing and existing.get('status') in {'verified', 'completed'}:
+        expected_mode = 'verification' if self_test else 'production'
+        if existing.get('mode') != expected_mode:
+            raise RuntimeError('종결 회차 모드 불일치')
+        print(json.dumps({'job_id': jid, 'status': existing['status'], 'noop': True,
+                          'smtp_calls': 0, 'paid_ai_calls': 0}))
+        return
     config, job, sha, result = verify_job(queue, jid, self_test)
     bot = import_bot()
     if self_test:

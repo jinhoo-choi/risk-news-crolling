@@ -39,7 +39,8 @@ class Provider:
                        _body_source_hash=hashlib.sha256(body.encode()).hexdigest(),
                        _body_risk_confirmed=a['body_status'] == 'verified',
                        _judgment=copy.deepcopy(a['judgment']),
-                       related_stocks=copy.deepcopy(a['related_stocks']))
+                       related_stocks=copy.deepcopy(a['related_stocks']),
+                       _subscription_direct_entities=copy.deepcopy(a.get('direct_event_entities', [])))
 
     def response(self, route, article=None, articles=None, offset=0):
         self.calls[route] = self.calls.get(route, 0)+1

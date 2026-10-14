@@ -179,6 +179,24 @@ class Integration(unittest.TestCase):
         self.assertTrue(all(a['grade'] == '참고' and not a.get('_force_urgent')
                             for a in queue.data['filter-logs/test.json']['final']))
 
+    def test_terminal_request_is_noop_without_smtp_or_history_write(self):
+        queue=self.fixture('verification')
+        queue.data['jobs/test.json']['status']='verified'
+        queue.data['jobs/test.json']['receipts']={'owner':'accepted'}
+        with patch('risk_subscription.verify_job',side_effect=AssertionError('terminal reanalysis')):
+            consume(queue,'test',self_test=True)
+        self.assertEqual(Path('seen_news.json').read_bytes(),self.before)
+        self.assertEqual(queue.data['jobs/test.json']['receipts'],{'owner':'accepted'})
+
+    def test_joint_subject_without_source_quote_is_rejected(self):
+        from risk_result_validator import validate
+        queue=self.fixture()
+        job=queue.data['jobs/test.json'];result=queue.data['results/test.json']
+        a=result['analyses']['one'];a['entities'].append('배경계열사')
+        a['direct_event_entities']=['한국투자증권','배경계열사']
+        with self.assertRaisesRegex(ValueError,'직접 사건 주체의 본문 인용 누락'):
+            validate(result,job,job['input'],job['body_manifest'])
+
     def test_incomplete_result_blocks_smtp(self):
         queue, smtp = self.fixture(), SMTP()
         queue.data['results/test.json']['classifications'] = []

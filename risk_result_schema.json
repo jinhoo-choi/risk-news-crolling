@@ -277,6 +277,17 @@
         },
         "reviewed": {
           "const": true
+        },
+        "direct_event_entities": {
+          "type": "array",
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          },
+          "description": "본문 인용으로 같은 사건의 직접 주체임을 검토한 회사만 기입. entities의 부분집합. 단순 계열사·배경 언급 제외."
         }
       }
     }

@@ -128,6 +128,15 @@ def validate(result, job, inputs, manifest):
             segment = segments[evidence['source_segment']]
             if evidence['source_hash'] != text_digest(segment) or evidence['quote'] not in segment:
                 raise ValueError('원문 해시·연속 인용 불일치')
+        direct = analysis.get('direct_event_entities', [])
+        if not set(direct) <= set(analysis['entities']):
+            raise ValueError('직접 사건 주체는 entities에 포함되어야 함')
+        if direct and analysis['body_status'] != 'verified':
+            raise ValueError('직접 복수 주체 원문 미확인')
+        for entity in direct:
+            if not any(e['source_segment'] == 'body' and entity in e['quote']
+                       for e in analysis['evidence']):
+                raise ValueError('직접 사건 주체의 본문 인용 누락')
         allowed_numbers = numbers('\n'.join(segments.values()))
         for field in ('fact_summary', 'action', 'customer_notice'):
             text = analysis[field] or ''
