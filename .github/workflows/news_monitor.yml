@@ -8,9 +8,6 @@ concurrency:
   group: risk-monitor
   cancel-in-progress: false
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
 
   crawl-broker-notices:
@@ -21,10 +18,10 @@ jobs:
 
     steps:
       - name: 코드 체크아웃
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Python 설치
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -36,7 +33,7 @@ jobs:
 
       - name: 소스별 수집 상태 저장
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: broker-notices-status-${{ github.run_id }}
           path: broker_notices_status.json
@@ -64,15 +61,15 @@ jobs:
 
     steps:
       - name: 코드 체크아웃
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Python 설치
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
       - name: pip 캐시 복원
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/pip
           # requirements.txt 기반 캐시키 — 패키지 변경 시 자동 무효화
@@ -124,7 +121,7 @@ jobs:
 
       - name: 필터링 로그 artifact 저장
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: filter-log-${{ github.run_id }}
           path: filter_log_*.json
@@ -133,7 +130,7 @@ jobs:
 
       - name: 실행 실패 시 로그 저장
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: workflow-logs-${{ github.run_id }}
           path: seen_news.json

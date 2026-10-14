@@ -1,5 +1,9 @@
 # STATE — 리스크봇 현황 (2026-09-26)
 
+**2026-10-11 Actions 재검증 (Codex, PR #7 Draft·미병합):** 최신 main `576a6d7` 통합, 운영 변경 보존. bash run_tests.sh 컴파일 및 11개 회귀/시뮬레이션 통과, check_changes.py 통과. 기존 미사용 심볼 경고 유지. 로컬 Python 3.12.14; hosted Python 3.11 명시. 운영 발송·유료 API·네이버 저장 미실행. 검증 범위: [인계](HANDOFF_2026-10-07_ACTIONS_NODE24.md).
+
+**2026-10-07 Actions 호환성 (Codex, 검토용 PR·미병합):** GitHub-hosted action을 기본 Node 24 최소 버전으로 변경. runner 2.337.0 실측. 기존 테스트·workflow 정적 검증만 수행, 운영·실발송 미실행. 목록·근거·검증·롤백: [인계](HANDOFF_2026-10-07_ACTIONS_NODE24.md).
+
 이 문서는 **외부 AI/제3자 검수용 인계서**다. 레포를 처음 보는 사람이
 "지금 어디까지 와 있고, 무엇이 검증됐고, 무엇이 미결인지"를 이 한 장으로 파악한다.
 
