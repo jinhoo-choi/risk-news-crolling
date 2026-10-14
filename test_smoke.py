@@ -8,7 +8,7 @@
 변수 스코프·호출 순서·타입 오류처럼 '연결해야만 드러나는' 결함을 잡는다.
 실패 시 종료코드 1.
 """
-import sys, os, types, json, io, contextlib
+import sys, os, types, json, io, contextlib, re
 import pandas as pd
 
 # ── 외부 의존성 모의 ────────────────────────────────────────────────────
@@ -142,6 +142,14 @@ def _fake_post(url, *a, **k):
              "confidence": 0.6, "action": None, "entity": "삼성전자",
              "entities": ["삼성전자"], "event_type": "주가급락", "related_stocks": []},
         ], ensure_ascii=False)
+        # The production contract now requires an explicit verdict for every
+        # requested ID, including extra keyword matches in this main() fixture.
+        content = body.get("messages", [{}])[0].get("content", [])
+        numbered = content[-1].get("text", "") if isinstance(content, list) and content else ""
+        requested = [int(value) for value in re.findall(r"(?m)^(\d+)\. ", numbered)]
+        examples = {entry["id"]: entry for entry in json.loads(txt)}
+        txt = json.dumps([examples.get(identifier, {"id": identifier, "relevant": False})
+                          for identifier in requested], ensure_ascii=False)
     elif "risk" in prompt and "judgment" in prompt:   # 2차 본문검증
         txt = json.dumps({"risk": True, "reason": "유지",
                           "judgment": {"핵심사건": "부도", "손실주체": "A사",

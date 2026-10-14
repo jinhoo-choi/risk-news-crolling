@@ -109,6 +109,8 @@ from event_history import EventHistory, HISTORY_KEY, is_background_recap, materi
 from collections import Counter
 from quote_prices import resolve_symbol, fetch_quote, format_price, STATUS_LABELS
 from notice_filter import matches_notice_title
+from risk_analysis_guard import (AnalysisIncompleteError, strict_json, validate_grade_map,
+    read_seen_data, validate_seen_data, model_label, apply_verified_direct_incident)
 import re
 import random
 from html import escape as _html_escape
@@ -1718,176 +1720,66 @@ def build_competitor_html(notices: list, today_str: str) -> str:
       </tr>
     </table>"""
 
+def _seen_keys(today_only=False):
+    now = datetime.now(timezone(timedelta(hours=9)))
+    return {(now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
+            for i in range(24 if today_only else SEEN_RETENTION_HOURS)
+            if not today_only or (now - timedelta(hours=i)).date() == now.date()}
+
+
 def load_seen_urls() -> set:
-    """최근 72시간 기사 URL 캐시. 장기 사건 이력은 load_event_history로 분리."""
-    kst = timezone(timedelta(hours=9))
-    now = datetime.now(kst)
-    valid_keys = {
-        (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(SEEN_RETENTION_HOURS)
-    }
-    if os.path.exists(SEEN_FILE):
-        try:
-            with open(SEEN_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            return set()
-        if isinstance(data, list):
-            return set()
-        urls = set()
-        for k in valid_keys:
-            entry = data.get(k, {})
-            if isinstance(entry, list):
-                urls |= set(entry)
-            elif isinstance(entry, dict):
-                urls |= set(entry.get("urls", []))
-        return urls
-    return set()
+    """Read 72h URLs; unreadable delivery history must stop the run."""
+    data = read_seen_data(SEEN_FILE)
+    urls = set()
+    for key in _seen_keys():
+        slot = data.get(key, {})
+        urls.update(slot if isinstance(slot, list) else slot.get("urls", []))
+    return urls
+
 
 def load_seen_combos() -> set:
-    """최근 3일 내 발송된 (entity, keyword) 조합 로드 (2026-07-24: 7일→3일 단축)"""
-    kst = timezone(timedelta(hours=9))
-    now = datetime.now(kst)
-    valid_keys = {
-        (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(SEEN_RETENTION_HOURS)
-    }
-    if os.path.exists(SEEN_FILE):
-        try:
-            with open(SEEN_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            return set()
-        if isinstance(data, list):
-            return set()
-        combos = set()
-        for k in valid_keys:
-            entry = data.get(k, {})
-            if isinstance(entry, dict):
-                for combo in entry.get("combos", []):
-                    combos.add(tuple(combo))
-        return combos
-    return set()
+    data = read_seen_data(SEEN_FILE)
+    return {tuple(combo) for key in _seen_keys() for combo in
+            (data[key].get("combos", []) if isinstance(data.get(key), dict) else [])}
+
 
 def load_seen_stages() -> set:
-    """최근 3일 내 발송된 (entity, stage_keyword) 조합 로드 — stage 기반 dedup용"""
-    kst = timezone(timedelta(hours=9))
-    now = datetime.now(kst)
-    valid_keys = {
-        (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(SEEN_RETENTION_HOURS)  # 3일 — 파산선고 등 단계 보도는 수일간 지속
-    }
-    stages = set()
-    if os.path.exists(SEEN_FILE):
-        try:
-            with open(SEEN_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            return stages
-        if not isinstance(data, dict):
-            return stages
-        for k in valid_keys:
-            entry = data.get(k, {})
-            if isinstance(entry, dict):
-                for st in entry.get("stages", []):  # 구버전 슬롯엔 없음 → 빈 처리 (하위호환)
-                    if isinstance(st, (list, tuple)) and len(st) == 2:
-                        stages.add((st[0], st[1]))
-    return stages
+    data = read_seen_data(SEEN_FILE)
+    return {tuple(stage) for key in _seen_keys() for stage in
+            (data[key].get("stages", []) if isinstance(data.get(key), dict) else [])}
+
 
 def load_seen_context() -> dict:
-    """최근 3일 내 발송된 기사의 title_norms·desc_norms 로드 — 맥락 기반
-    중복 감지 (2026-07-24: 7일→3일 단축)"""
-    kst = timezone(timedelta(hours=9))
-    now = datetime.now(kst)
-    valid_keys = {
-        (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(SEEN_RETENTION_HOURS)
-    }
-    title_norms = []
-    desc_norms  = []
-    if os.path.exists(SEEN_FILE):
-        try:
-            with open(SEEN_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            return {"title_norms": [], "desc_norms": []}
-        if isinstance(data, list):
-            return {"title_norms": [], "desc_norms": []}
-        for k in valid_keys:
-            entry = data.get(k, {})
-            if isinstance(entry, dict):
-                title_norms.extend(entry.get("title_norms", []))
-                desc_norms.extend(entry.get("desc_norms",  []))
-    return {"title_norms": title_norms, "desc_norms": desc_norms}
+    data = read_seen_data(SEEN_FILE)
+    return {field: [value for key in _seen_keys() if isinstance(data.get(key), dict)
+                    for value in data[key].get(field, [])]
+            for field in ("title_norms", "desc_norms")}
 
 
 def load_seen_entities_today() -> set:
-    """당일(KST 날짜 기준) 발송된 entity 목록 로드 — 동일 entity 1일 1건 제한용"""
-    kst = timezone(timedelta(hours=9))
-    now = datetime.now(kst)
-    today = now.strftime("%Y-%m-%d")
-    today_keys = {
-        (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
-        for i in range(24)
-        if (now - timedelta(hours=i)).strftime("%Y-%m-%d") == today
-    }
-    entities = set()
-    if not os.path.exists(SEEN_FILE):
-        return entities
-    try:
-        with open(SEEN_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return entities
-        for k in today_keys:
-            entry = data.get(k, {})
-            for combo in entry.get("combos", []):
-                if isinstance(combo, (list, tuple)) and len(combo) == 2:
-                    if combo[0] != "ek":
-                        entities.add(combo[0])
-    except Exception:
-        pass
-    return entities
+    data = read_seen_data(SEEN_FILE)
+    return {combo[0] for key in _seen_keys(today_only=True) if isinstance(data.get(key), dict)
+            for combo in data[key].get("combos", []) if combo[0] != "ek"}
 
 
 def load_event_history() -> EventHistory:
-    """Bounded event ledger, kept separately from the 72h article slots."""
-    try:
-        with open(SEEN_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return EventHistory(data.get(HISTORY_KEY)) if isinstance(data, dict) else EventHistory()
-    except (OSError, ValueError, TypeError):
-        return EventHistory()
+    """Preserve valid old ledgers; reject malformed records before construction."""
+    return EventHistory(read_seen_data(SEEN_FILE).get(HISTORY_KEY))
 
 
 def load_known_entities() -> dict:
-    """하위호환용 72시간 슬롯 나이. 장기 나이는 사건별 EventHistory가 담당."""
-    kst = timezone(timedelta(hours=9))
-    now = datetime.now(kst)
-    # 최대 3일 = 72시간치 슬롯 로드
-    entity_first: dict = {}  # {entity: 최초 발송 days_ago}
-    if not os.path.exists(SEEN_FILE):
-        return entity_first
-    try:
-        with open(SEEN_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return entity_first
-        for i in range(SEEN_RETENTION_HOURS):
-            slot_dt = now - timedelta(hours=i)
-            slot_key = slot_dt.strftime("%Y-%m-%d %H")
-            days_ago = i // 24
-            entry = data.get(slot_key, {})
-            for combo in entry.get("combos", []):
-                if isinstance(combo, (list, tuple)) and len(combo) == 2:
-                    if combo[0] != "ek":
-                        ent = combo[0]
-                        # 가장 오래된 발송일 추적 (최솟값 = 최초)
-                        if ent not in entity_first or days_ago > entity_first[ent]:
-                            entity_first[ent] = days_ago
-    except Exception:
-        pass
+    """Compatibility slot ages; do not infer empty history on a read failure."""
+    data = read_seen_data(SEEN_FILE)
+    now = datetime.now(timezone(timedelta(hours=9)))
+    entity_first = {}
+    for i in range(SEEN_RETENTION_HOURS):
+        entry = data.get((now - timedelta(hours=i)).strftime("%Y-%m-%d %H"), {})
+        if isinstance(entry, dict):
+            for entity, keyword in entry.get("combos", []):
+                if entity != "ek":
+                    entity_first[entity] = max(entity_first.get(entity, 0), i // 24)
     return entity_first
+
 
 def save_seen_urls(seen: set, combos: set = None, title_norms: list = None, desc_norms: list = None,
                    stages: set = None, event_history: EventHistory = None):
@@ -1899,20 +1791,10 @@ def save_seen_urls(seen: set, combos: set = None, title_norms: list = None, desc
         (now - timedelta(hours=i)).strftime("%Y-%m-%d %H")
         for i in range(SEEN_RETENTION_HOURS)  # 기사 캐시만 72시간 보존
     }
-    existing = {}
-    if os.path.exists(SEEN_FILE):
-        try:
-            with open(SEEN_FILE, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            if isinstance(raw, dict):
-                existing = {k: v for k, v in raw.items() if k in valid_keys}
-                # Every save path, including no-news runs, preserves the ledger.
-                if HISTORY_KEY in raw:
-                    existing[HISTORY_KEY] = EventHistory(raw[HISTORY_KEY]).serialize()
-            else:
-                existing = {}
-        except Exception:
-            existing = {}
+    raw = read_seen_data(SEEN_FILE, allow_missing=True)
+    existing = {key: value for key, value in raw.items() if key in valid_keys}
+    if HISTORY_KEY in raw:
+        existing[HISTORY_KEY] = EventHistory(raw[HISTORY_KEY]).serialize()
     cur = existing.get(current_key, {})
     if isinstance(cur, list):
         cur = {"urls": cur, "combos": [], "title_norms": [], "desc_norms": []}
@@ -1946,6 +1828,7 @@ def save_seen_urls(seen: set, combos: set = None, title_norms: list = None, desc
     }
     if event_history is not None:
         existing[HISTORY_KEY] = event_history.serialize()
+    validate_seen_data(existing)
     import tempfile as _tmpfile, os as _os
     fd, tmp_path = _tmpfile.mkstemp(prefix="seen_", suffix=".tmp",
                                     dir=_os.path.dirname(_os.path.abspath(SEEN_FILE)) or ".")
@@ -3124,40 +3007,20 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
             if _start == -1 or _end == -1 or _end <= _start:
                 raise ValueError("JSON 배열을 찾을 수 없음 (rfind 불일치)")
             raw = raw[_start:_end + 1]
-            try:
-                try:
-                    grades = json.loads(raw)
-                except json.JSONDecodeError:
-                    from json_repair import repair_json
-                    repaired = repair_json(raw)
-                    grades = json.loads(repaired)
-                    print(f"  JSON repair 적용됨 (배치 {offset//50+1})")
-            except json.JSONDecodeError as je:
-                raise ValueError(f"JSON 파싱 실패: {je}") from je
-            if not isinstance(grades, list):
-                raise ValueError(f"grades가 list가 아님: {type(grades)}")
-            if grades and not all(isinstance(g, dict) for g in grades):
-                raise ValueError(f"grades 요소가 dict가 아님 (markdown 응답 가능성): {type(grades[0])}")
-            grade_map = {}
-            for g in grades:
-                _gid = g.get("id", g.get("news_id"))
-                if _gid is not None:
-                    grade_map[_gid] = g
+            grades = strict_json(raw)
+            grade_map = validate_grade_map(grades, batch, offset)
             result = []
             for i, article in enumerate(batch):
-                info = grade_map.get(i + offset + 1, {})
+                info = grade_map[i + offset + 1]
                 article["_ai_confidence"] = info.get("confidence", None)
                 if info.get("relevant") and info.get("grade"):
-                    if not (info.get("entity") or "").strip():
-                        print(f"  [entity 빈값] relevant 무효화: {article.get('title','')[:30]}")
-                        continue
                     article["grade"]      = info["grade"]
                     article["reason"]     = info.get("reason", "")
-                    article["action"]     = info.get("action", "")
+                    article["action"]     = info.get("action") or ""
                     article["entity"]     = (info.get("entity") or "").strip()
                     _ent2 = (info.get("entity") or "").strip()
-                    _ents_clean2 = [e.strip() for e in (info.get("entities") or []) if e and e.strip()] or [_ent2]
-                    if _ent2 not in _ents_clean2:
+                    _ents_clean2 = [e.strip() for e in (info.get("entities") or []) if e and e.strip()]
+                    if _ent2 and _ent2 not in _ents_clean2:
                         _ents_clean2 = [_ent2] + _ents_clean2
                     article["entities"]   = _ents_clean2
                     article["event_type"] = info.get("event_type", "")
@@ -3455,8 +3318,10 @@ def display_risk_score(article: dict):
     lo, hi = _GRADE_SCORE_BAND.get(article.get("grade", "참고"), (0.0, 5.0))
     return round(lo + (hi - lo) * min(max(raw, 0.0), 10.0) / 10.0, 1)
 
-def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
+def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> list:
     """등급별 상한 초과 시 리스크 점수 기반으로 하위 등급 강등"""
+    for article in articles:
+        apply_verified_direct_incident(article, now)
     # ── 타 증권사 주체 기사의 당사 오추출 방어 ──
     # AI가 entity를 "한국투자증권"으로 뽑았으나 제목에 당사가 없고 타 증권사(키움·
     # 미래에셋 등)가 제목에 있으면, 경쟁사 이슈를 당사 이슈로 오인한 것. entity를
@@ -3724,10 +3589,11 @@ def regrade_by_score(articles: list, exposure_data: dict = None) -> list:
         # MTS/HTS/전산장애 키워드도 '한국투자증권'과 함께 있을 때만 인정.
         _is_direct = (
             _has_company
+            and not a.get("_verified_direct_recap")
             and not _has_other_broker
             and _kw_hit(title, (DIRECT_NEGATIVE_KW | DIRECT_INCIDENT_KW))
         )
-        if _is_direct:
+        if _is_direct or a.get("_verified_direct_incident"):
             if a.get("grade") != "긴급":
                 print(f"  [직접이슈 강제긴급] {title[:40]}")
             a["grade"] = "긴급"
@@ -4040,25 +3906,17 @@ def ai_filter_and_grade(articles: list, exposure_data: dict = None) -> list:
     # 출력은 100건이어도 max_tokens 8000에 크게 못 미친다(건당 12~30토큰).
     batch_size = 100
     _RUN_STATS["filter_input_count"] = len(articles)
-    ai_fail_count = 0
-    MAX_AI_FAILS = 3
     # 1차 필터가 재검증용 모델보다 하위면 등급 재검증을 건다.
     # (Gemini 제거 전에는 _used_gemini 가 이 역할을 했다. 1차를 저가 모델로
     #  내린 이상 게이트가 사라지면 안 되므로 모델 비교로 대체한다.)
     _need_regrade = CLAUDE_FILTER_MODEL != CLAUDE_MODEL
     for i in range(0, len(articles), batch_size):
-        if ai_fail_count >= MAX_AI_FAILS:
-            print(f"  ❗ AI 연속 {MAX_AI_FAILS}회 실패 — circuit breaker 작동, 필터링 중단")
-            break
         batch = articles[i:i+batch_size]
         print(f"  배치 {i//batch_size+1}/{-(-len(articles)//batch_size)} 처리 중... ({len(batch)}건)")
         batch_result = ai_filter_batch(batch, offset=i)
         if batch_result is None:
-            ai_fail_count += 1
-            print(f"  배치 실패 ({ai_fail_count}/{MAX_AI_FAILS})")
-        else:
-            ai_fail_count = 0
-            result.extend(batch_result)
+            raise AnalysisIncompleteError(f"AI 분류 미완료: 배치 {i//batch_size+1} 실패 — 정상 0건·부분 발송 중단")
+        result.extend(batch_result)
         if i + batch_size < len(articles):
             time.sleep(1)
 
@@ -4810,12 +4668,10 @@ def _model_label() -> str:
     상위 모델(Opus)로 검증하므로, 수신자가 '이 메일이 어느 수준의 검증을
     거쳤는지' 알 수 있어야 한다.
     """
-    _m = globals().get("_LAST_VERIFY_MODEL") or CLAUDE_MODEL
-    try:
-        _tier = _m.split("-")[1].capitalize()      # claude-opus-4-6 → Opus
-    except (IndexError, AttributeError):
-        _tier = "Sonnet"
-    return f"Claude {_tier}"          # Claude 단일 운영 (2026-09-24)
+    actual = globals().get("_LAST_VERIFY_MODEL")
+    engine = globals().get("_LAST_ANALYSIS_ENGINE")
+    return model_label(actual if actual is not None else CLAUDE_MODEL, engine)
+
 
 
 def decide_send_scope(filtered: list, exposure_data: dict, ref_date: str = "") -> dict:
@@ -6091,6 +5947,9 @@ def main():
         if body:
             article["body"] = body
             article["_body_failed"] = False
+            import hashlib
+            article["_body_source_url"] = article["url"]
+            article["_body_source_hash"] = hashlib.sha256(body.encode()).hexdigest()
         else:
             # 1) 네이버 검색으로 대체 URL 시도
             alt_url = search_alternative_url(article.get("title", ""))
@@ -6099,6 +5958,9 @@ def main():
                 if alt_body:
                     article["body"] = alt_body
                     article["_body_failed"] = False
+                    # An unverified search replacement cannot unlock direct urgency.
+                    article["_body_source_url"] = alt_url
+                    article.pop("_body_source_hash", None)
                     # 대체 URL은 로그로만 남긴다(이전엔 _alt_url 플래그를
                     # 설정만 하고 읽는 곳이 없어 죽은 코드였음 — 2026-07-29 정리)
                     print(f"  본문 대체 URL 성공: {article.get('title','')[:30]}")
@@ -6287,6 +6149,7 @@ JSON만 출력:
             raw = (_bpayload.get("content", [{}])[0].get("text") or "").strip()
             data = json.loads(raw)
             is_risk = data.get("risk", True)
+            article["_body_risk_confirmed"] = data.get("risk") is True
             # 판정 근거 기록 — 오탐 발생 시 어느 단계에서 틀렸는지 추적용.
             # save_filter_log()로 filter_log.json에 함께 저장된다.
             _judg = data.get("judgment") or {}
@@ -6370,6 +6233,13 @@ JSON만 출력:
     if _removed_verify:
         print(f"  [2차 검증] {len(_removed_verify)}건 제외 → {len(filtered)}건 유지")
     # ──────────────────────────────────────────────────────────────────────────
+
+    # Only source-verified, dated KIS incidents can unlock the direct exception.
+    for article in filtered:
+        if (article.get("_body_risk_confirmed") is True
+                and article.get("_body_source_url") == article.get("url")
+                and article.get("_body_source_hash")):
+            apply_verified_direct_incident(article, now_kst)
 
     # ── 2차 검증 이후 seen_entities_today 재체크 ──────────────────────────────
     # 2차 검증 통과 후에도 당일 동일 entity 1건 제한 적용
