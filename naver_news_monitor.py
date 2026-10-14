@@ -3600,6 +3600,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> li
         # MTS/HTS/전산장애 키워드도 '한국투자증권'과 함께 있을 때만 인정.
         _is_direct = (
             _has_company
+            and (RISK_PROVIDER is None or bool(a.get("_verified_direct_incident")))
             and not a.get("_verified_direct_recap")
             and not _has_other_broker
             and _kw_hit(title, (DIRECT_NEGATIVE_KW | DIRECT_INCIDENT_KW))

@@ -113,8 +113,12 @@ def validate(result, job, inputs, manifest):
                 raise ValueError('미수집 본문을 근거로 삼음')
         if not math.isfinite(analysis['confidence']):
             raise ValueError('confidence 비유한 값')
-        if not analysis['entity'] and (analysis['event_type'] != '반대매매' or analysis['entities']):
-            raise ValueError('빈 주체를 허용한 시장 사건 아님')
+        if not analysis['entity']:
+            source_text = '\n'.join(segments.values())
+            market = (analysis['event_type'] == '반대매매' and re.search(r'반대매매|강제\s*청산|마진콜', source_text))
+            market = market or (analysis['event_type'] == '기타리스크' and re.search(r'서킷\s*브레이커|사이드\s*카|코스피.*(?:급락|폭락)|코스닥.*(?:급락|폭락)', source_text))
+            if not market or analysis['entities']:
+                raise ValueError('빈 주체를 허용한 시장 사건 아님')
         if analysis['entity'] == '한국투자증권':
             if not re.search(r'한국투자증권|(?<![가-힣])한투증권', '\n'.join(segments.values())):
                 raise ValueError('당사 이름 근거 없음')

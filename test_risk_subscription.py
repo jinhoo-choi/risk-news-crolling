@@ -163,6 +163,35 @@ class Integration(unittest.TestCase):
         queue.data['jobs/test.json']['status'] = 'uncertain'
         with self.assertRaises(RuntimeError): expire_and_check(queue)
 
+    def test_body_missing_direct_title_stays_reference_owner_only(self):
+        queue, smtp = self.fixture(), SMTP()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        body = job['body_manifest'][0]
+        body.update(body='', body_status='missing')
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        a = result['analyses']['one']
+        title = job['input']['items'][0]['title']
+        a.update(base_grade='참고',confidence=0.6,body_status='missing',
+                 fact_summary='[본문 미수집] 한국투자증권 일부 잔고 조회 장애 보도.',
+                 evidence=[{'source_segment':'title','source_hash':hashlib.sha256(title.encode()).hexdigest(),'quote':title}])
+        self.run_consume(queue, smtp)
+        self.assertEqual([c[0] for c in smtp.calls], [['owner@example.invalid']])
+        self.assertTrue(all(a['grade'] == '참고' and not a.get('_force_urgent')
+                            for a in queue.data['filter-logs/test.json']['final']))
+
+    def test_incomplete_result_blocks_smtp(self):
+        queue, smtp = self.fixture(), SMTP()
+        queue.data['results/test.json']['classifications'] = []
+        with self.assertRaises(ValueError): self.run_consume(queue, smtp)
+        self.assertEqual(smtp.calls, [])
+        self.assertEqual(queue.data['jobs/test.json']['status'], 'pending')
+
+    def test_paid_fallback_blocked_without_provider(self):
+        with patch.dict(os.environ, {'RISK_ENGINE':'subscription'}):
+            self.bot.RISK_PROVIDER = None
+            with self.assertRaises(RuntimeError):
+                self.bot._ai_post('https://api.anthropic.com/v1/messages', _route='classify', json={})
+
 
 if __name__ == '__main__':
     unittest.main()
