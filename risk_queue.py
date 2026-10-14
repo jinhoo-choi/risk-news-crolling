@@ -9,6 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from risk_analysis_guard import strict_json
 
 REPOSITORY = 'jinhoo-choi/insight-bot-data'
 PREFIX = 'subscription/risk'
@@ -81,7 +82,7 @@ class Queue:
             return None, None
         if obj.get('type') != 'file':
             raise RuntimeError('큐 자료 형식 오류')
-        return json.loads(base64.b64decode(obj['content'])), obj['sha']
+        return strict_json(base64.b64decode(obj['content']).decode()), obj['sha']
 
     def put(self, path, value, sha=None):
         if '..' in path or path.startswith('/'):

@@ -105,6 +105,16 @@ RELATED_STOCK_MAP = {
 }
 
 import requests
+
+# Only the explicit legacy engine may use a paid HTTP inference request.
+RISK_PROVIDER = None
+
+def _ai_post(url, *, _route, _article=None, _articles=None, _offset=0, **kwargs):
+    if RISK_PROVIDER is not None:
+        return RISK_PROVIDER.response(_route, _article, _articles, _offset)
+    if os.environ.get("RISK_ENGINE", "api") != "api":
+        raise RuntimeError("구독·일시중지 경로의 유료 API 요청 금지")
+    return requests.post(url, **kwargs)
 from event_history import EventHistory, HISTORY_KEY, is_background_recap, material_facts, event_families, _new_fact
 from collections import Counter
 from quote_prices import resolve_symbol, fetch_quote, format_price, STATUS_LABELS
@@ -2959,8 +2969,9 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
     for attempt in range(3):
         try:
             _t0 = time.time()
-            res = requests.post(
+            res = _ai_post(
                 "https://api.anthropic.com/v1/messages",
+                _route="classify", _articles=batch, _offset=offset,
                 headers={
                     "x-api-key": ANTHROPIC_KEY,
                     "anthropic-version": "2023-06-01",
@@ -3843,8 +3854,9 @@ def _verify_high_risk_by_claude(articles: list):
     )
     _verify_dynamic = f"\n{lines_txt}"
     try:
-        _res = requests.post(
+        _res = _ai_post(
             "https://api.anthropic.com/v1/messages",
+                _route="verify_grade", _articles=articles,
             headers={
                 "x-api-key": ANTHROPIC_KEY,
                 "anthropic-version": "2023-06-01",
@@ -6125,8 +6137,9 @@ JSON만 출력:
 {{"judgment": {{"핵심사건": "...", "손실주체": "...", "당사연관": "...", "확정여부": "..."}}, "risk": false, "reason": "한 줄 이유"}}"""
 
         try:
-            res = requests.post(
+            res = _ai_post(
                 "https://api.anthropic.com/v1/messages",
+                _route="verify_body", _article=article,
                 headers={
                     "x-api-key": ANTHROPIC_KEY,
                     "anthropic-version": "2023-06-01",
@@ -6403,8 +6416,9 @@ JSON만 출력:
             .replace("__BODY_FAIL__", " (※ 본문 크롤링 실패 — 제목·요약 기반만 사용, 추측 금지)" if article.get("_body_failed") else "")
         )
         try:
-            res = requests.post(
+            res = _ai_post(
                 "https://api.anthropic.com/v1/messages",
+                _route="action", _article=article,
                 headers={
                     "x-api-key": ANTHROPIC_KEY,
                     "anthropic-version": "2023-06-01",
@@ -6606,8 +6620,9 @@ JSON만 출력:
         filtered_titles += f"\n\n[경쟁사 신용·대출·오류 공지]\n{competitor_summary}"
 
     try:
-        sum_res = requests.post(
+        sum_res = _ai_post(
             "https://api.anthropic.com/v1/messages",
+                _route="summary", _articles=_summary_src,
             headers={
                 "x-api-key": ANTHROPIC_KEY,
                 "anthropic-version": "2023-06-01",

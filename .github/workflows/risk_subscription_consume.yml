@@ -1,0 +1,49 @@
+name: Risk subscription consume (API0)
+on:
+  push:
+    branches: [main, codex/risk-subscription-20261014]
+    paths: [risk_subscription_request.json]
+permissions:
+  contents: write
+concurrency:
+  group: risk-monitor
+  cancel-in-progress: false
+jobs:
+  consume:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Validate subscription result and native SMTP delivery
+        id: consume
+        env:
+          RISK_QUEUE_TOKEN: ${{ secrets.RISK_QUEUE_TOKEN }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+          EMAIL_CC: ${{ secrets.EMAIL_CC }}
+          NO_RESULT_RECEIVER: ${{ secrets.NO_RESULT_RECEIVER }}
+        run: python risk_subscription_request.py
+      - name: Commit only confirmed production history
+        if: steps.consume.outputs.self_test == 'false'
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add seen_news.json
+          git diff --cached --quiet || git commit -m "chore: risk subscription delivery history [skip ci]"
+          for i in 1 2 3; do
+            git pull --rebase origin main
+            git push origin HEAD:main && exit 0
+            sleep $((i * 5))
+          done
+          exit 1
+      - name: Confirm main history and acknowledge delivery
+        if: steps.consume.outputs.self_test == 'false'
+        env:
+          RISK_QUEUE_TOKEN: ${{ secrets.RISK_QUEUE_TOKEN }}
+          JOB_ID: ${{ steps.consume.outputs.job_id }}
+        run: python risk_subscription.py ack --job-id "$JOB_ID"

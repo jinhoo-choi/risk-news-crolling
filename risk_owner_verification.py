@@ -153,6 +153,9 @@ def main():
     queue.preflight()
     path = 'jobs/'+request['job_id']+'.json'
     job, _ = queue.get(path)
+    if job and job.get('mode') == 'verification' and job.get('status') in {'verified', 'completed'}:
+        print('이미 종결된 본인 검수 회차; 분석0/SMTP0/쓰기0')
+        return
     require_pending(job)
     result, _ = queue.get('results/'+request['job_id']+'.json')
     contract = validate(result, job, job['input'], job['body_manifest'])

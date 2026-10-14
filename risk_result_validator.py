@@ -96,13 +96,21 @@ def validate(result, job, inputs, manifest):
         visible = re.sub(r'\[(?:링크|URL)[^\]]*\]', '', bodies[key]['body'])
         if bodies[key]['body_status'] in ('verified', 'alternate_verified') and not any(c.isalnum() for c in visible):
             raise ValueError('본문 내용 없이 확보 완료 표시')
-        if bodies[key]['body_status'] in ('missing', 'unreadable') and verdict is not None:
-            raise ValueError('본문 미확인을 확정 판정함')
+        if bodies[key]['body_status'] == 'alternate_verified':
+            raise ValueError('대체 본문의 독립 출처 검수 미구현 — 발송 보류')
     for key, analysis in result['analyses'].items():
         article, body = source[key], bodies[key]
         segments = {'title': article['title'], 'description': article['description'], 'body': body['body']}
-        if analysis['body_status'] != body['body_status']:
+        if analysis['body_status'] != body['body_status'] and not (
+                body['body_status'] == 'verified' and analysis['body_status'] in ('missing','unreadable')):
             raise ValueError('본문 상태 위조')
+        if analysis['body_status'] in ('missing', 'unreadable'):
+            if analysis['base_grade'] != '참고' or analysis['confidence'] > 0.6 or analysis['customer_notice']:
+                raise ValueError('본문 미수집은 참고·낮은 확신도·고객 안내 없음')
+            if '[본문 미수집]' not in analysis['fact_summary']:
+                raise ValueError('본문 미수집 표시 누락')
+            if any(e['source_segment'] == 'body' for e in analysis['evidence']):
+                raise ValueError('미수집 본문을 근거로 삼음')
         if not math.isfinite(analysis['confidence']):
             raise ValueError('confidence 비유한 값')
         if not analysis['entity'] and (analysis['event_type'] != '반대매매' or analysis['entities']):
@@ -110,6 +118,8 @@ def validate(result, job, inputs, manifest):
         if analysis['entity'] == '한국투자증권':
             if not re.search(r'한국투자증권|(?<![가-힣])한투증권', '\n'.join(segments.values())):
                 raise ValueError('당사 이름 근거 없음')
+        if analysis['judgment']['당사연관'] == '당사이슈' and analysis['entity'] != '한국투자증권':
+            raise ValueError('당사 사건의 행위 주체 불일치')
         for evidence in analysis['evidence']:
             segment = segments[evidence['source_segment']]
             if evidence['source_hash'] != text_digest(segment) or evidence['quote'] not in segment:

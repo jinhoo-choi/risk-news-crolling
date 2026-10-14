@@ -1,0 +1,87 @@
+"""Durable per-recipient SMTP reservations; no retry after uncertain DATA."""
+import hashlib
+from email import message_from_string
+from email.utils import getaddresses
+
+from risk_queue import now
+
+
+def address_key(address):
+    return hashlib.sha256(address.encode()).hexdigest()
+
+
+class Delivery:
+    def __init__(self, queue, job_id, real_smtp, check_config):
+        self.queue, self.path = queue, 'jobs/'+job_id+'.json'
+        self.real_smtp, self.check_config = real_smtp, check_config
+        self.targets = []
+
+    def change(self, fn):
+        job, sha = self.queue.get(self.path)
+        if not job or not sha:
+            raise RuntimeError('전송 선기록 읽기 실패')
+        fn(job)
+        self.queue.put(self.path, job, sha)
+        return job
+
+    def prepare(self, targets):
+        if self.targets:
+            raise RuntimeError('동일 회차 추가 메일 금지')
+        self.targets = list(dict.fromkeys(targets))
+        if not self.targets:
+            raise RuntimeError('수신자 없음')
+        keys = [address_key(t) for t in self.targets]
+        self.change(lambda j: j.update(expected_receipts=keys))
+
+    def complete(self):
+        job, _ = self.queue.get(self.path)
+        expected = set(job.get('expected_receipts', []))
+        receipts = job.get('receipts', {})
+        if not expected or set(receipts) != expected or any(v != 'accepted' for v in receipts.values()):
+            raise RuntimeError('수신자 전원 접수 확인 전 이력 저장 금지')
+        return job
+
+    def factory(self, host, port, **kwargs):
+        if (host, port) != ('smtp.gmail.com', 465):
+            raise RuntimeError('허용하지 않은 SMTP 서버')
+        server = self.real_smtp(host, port, timeout=30)
+        guard = self
+        class Session:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                try:
+                    server.quit()
+                except Exception:
+                    server.close()
+            def ehlo(self):
+                return server.ehlo()
+            def login(self, *args):
+                return server.login(*args)
+            def sendmail(self, sender, recipients, raw):
+                if len(recipients) != 1 or recipients[0] not in guard.targets:
+                    raise RuntimeError('기존 수신자 경로 외 전송 금지')
+                addr = recipients[0]
+                msg = message_from_string(raw)
+                if [a for _, a in getaddresses(msg.get_all('To', []))] != [addr] or msg.get('Cc') or msg.get('Bcc'):
+                    raise RuntimeError('SMTP envelope과 헤더 불일치')
+                guard.check_config()
+                key = address_key(addr)
+                def reserve(job):
+                    if job.get('status') != 'sending' or key in job.get('receipts', {}):
+                        raise RuntimeError('시작·접수·미확인 수신자 재전송 금지')
+                    job.setdefault('receipts', {})[key] = 'sending'
+                    job['attempted_count'] = job.get('attempted_count', 0)+1
+                guard.change(reserve)
+                try:
+                    refused = server.sendmail(sender, recipients, raw)
+                except Exception:
+                    guard.change(lambda j: (j['receipts'].__setitem__(key, 'uncertain'), j.update(status='uncertain')))
+                    raise RuntimeError('SMTP DATA 접수 불확실 — 자동 재시도 금지') from None
+                state = 'rejected' if refused else 'accepted'
+                guard.change(lambda j: (j['receipts'].__setitem__(key, state),
+                    j.update(status='uncertain') if refused else None))
+                if refused:
+                    raise RuntimeError('SMTP 수신자 거부 — 이력 저장·자동 재시도 금지')
+                return refused
+        return Session()
