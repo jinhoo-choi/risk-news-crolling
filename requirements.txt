@@ -4,3 +4,5 @@ rapidfuzz
 json-repair
 yfinance
 pytz
+
+jsonschema

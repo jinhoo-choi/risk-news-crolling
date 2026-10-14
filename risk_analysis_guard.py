@@ -66,6 +66,10 @@ def validate_grade_map(grades, batch, offset=0):
             if not entry['entity'].strip():
                 article = batch[identifier - offset - 1]
                 source = article.get('title', '') + ' ' + article.get('desc', '')
+                if article.get('_body_risk_confirmed') is True and not article.get('_body_failed'):
+                    body = article.get('body') or ''
+                    if article.get('_body_source_url') == article.get('url') and article.get('_body_source_hash') == hashlib.sha256(body.encode()).hexdigest():
+                        source += ' ' + body
                 market_event = (entry.get('event_type') == '반대매매'
                                 and re.search(r'반대매매|강제\s*청산|마진콜', source))
                 market_event = market_event or (entry.get('event_type') == '기타리스크'

@@ -1,0 +1,7 @@
+{
+  "operation": "consume",
+  "job_id": "risk-verification-38562193479",
+  "self_test": true,
+  "dry_run": false,
+  "request_id": "risk-recent-owner-20261014T1348"
+}

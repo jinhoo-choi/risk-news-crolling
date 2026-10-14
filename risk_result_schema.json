@@ -1,0 +1,295 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:risk-subscription:result:v1",
+  "title": "리스크봇 구독 최종 결과 스키마",
+  "description": "risk_result_validator.py와 함께 검증한다. ID 집합·해시·인용 원문·문장/수치·귀속·발송 상태 검사는 별도 코드로 시행해야 한다. 최종 점수와 수신 범위는 코드가 계산한다.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "job_id",
+    "input_hash",
+    "policy_version",
+    "policy_hash",
+    "analysis_engine",
+    "model_used",
+    "classifications",
+    "analyses",
+    "body_manifest_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "job_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "input_hash": {
+      "$ref": "#/$defs/hash"
+    },
+    "policy_version": {
+      "const": "risk-subscription-v1"
+    },
+    "policy_hash": {
+      "$ref": "#/$defs/hash"
+    },
+    "analysis_engine": {
+      "const": "chatgpt_subscription"
+    },
+    "model_used": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "description": "예약 실행에서 실제 확인한 모델명. 확인할 수 없으면 unconfirmed. API 모델명을 대신 기입하지 않는다."
+    },
+    "classifications": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/classification"
+      }
+    },
+    "analyses": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/analysis"
+      }
+    },
+    "body_manifest_hash": {
+      "$ref": "#/$defs/hash"
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "article_id",
+        "relevant",
+        "reason"
+      ],
+      "properties": {
+        "article_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "relevant": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "null은 확인 필요. false나 정상으로 집계하지 않음."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_segment",
+        "source_hash",
+        "quote"
+      ],
+      "properties": {
+        "source_segment": {
+          "enum": [
+            "title",
+            "description",
+            "body"
+          ]
+        },
+        "source_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 400
+        }
+      }
+    },
+    "judgment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "핵심사건",
+        "손실주체",
+        "당사연관",
+        "확정여부"
+      ],
+      "properties": {
+        "핵심사건": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30
+        },
+        "손실주체": {
+          "enum": [
+            "주주",
+            "회사",
+            "채권자",
+            "없음"
+          ]
+        },
+        "당사연관": {
+          "enum": [
+            "직접",
+            "당사이슈",
+            "무관",
+            "확인필요"
+          ]
+        },
+        "확정여부": {
+          "enum": [
+            "확정",
+            "가능성",
+            "무관",
+            "확인필요"
+          ]
+        }
+      }
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entity",
+        "entities",
+        "related_stocks",
+        "event_type",
+        "base_grade",
+        "confidence",
+        "judgment",
+        "fact_summary",
+        "action",
+        "customer_notice",
+        "evidence",
+        "body_status",
+        "reviewed"
+      ],
+      "properties": {
+        "entity": {
+          "type": "string",
+          "maxLength": 60,
+          "description": "시장 전체 사건은 빈 문자열 허용. 빈값을 임의 종목으로 대체하지 않는다."
+        },
+        "entities": {
+          "type": "array",
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          }
+        },
+        "related_stocks": {
+          "type": "array",
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          }
+        },
+        "event_type": {
+          "enum": [
+            "상장폐지",
+            "거래정지",
+            "기업회생",
+            "파산부도",
+            "PF부실",
+            "신용등급강등",
+            "반대매매",
+            "금감원제재",
+            "시스템장애",
+            "발행어음부실",
+            "유동성위기",
+            "대규모환매",
+            "감사의견거절",
+            "횡령배임",
+            "차환실패",
+            "기타리스크"
+          ]
+        },
+        "base_grade": {
+          "enum": [
+            "긴급",
+            "주의",
+            "참고"
+          ],
+          "description": "구독 분석 제안값이며 코드 규칙·잠금을 우회하지 않음."
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "judgment": {
+          "$ref": "#/$defs/judgment"
+        },
+        "fact_summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "action": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "최대 3조치. 참고 등급은 기존 짧은 조치 기준 적용. 없는 잔고 유형 조치 금지."
+        },
+        "customer_notice": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 190,
+          "description": "기존 표시 조건 충족 시에만. 5줄 이내. 검토용 초안."
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        },
+        "body_status": {
+          "enum": [
+            "verified",
+            "alternate_verified",
+            "missing",
+            "unreadable"
+          ],
+          "description": "미수집·읽을 수 없는 본문은 별도 semantic validator가 확인 필요 및 발송 제한을 적용함."
+        },
+        "reviewed": {
+          "const": true
+        },
+        "direct_event_entities": {
+          "type": "array",
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          },
+          "description": "본문 인용으로 같은 사건의 직접 주체임을 검토한 회사만 기입. entities의 부분집합. 단순 계열사·배경 언급 제외."
+        }
+      }
+    }
+  }
+}

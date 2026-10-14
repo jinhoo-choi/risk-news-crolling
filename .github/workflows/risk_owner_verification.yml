@@ -1,0 +1,28 @@
+name: Risk subscription owner verification (API0)
+on:
+  push:
+    branches: [main, codex/risk-subscription-20261014]
+    paths: [risk_verification_request.json]
+permissions:
+  contents: read
+concurrency:
+  group: risk-owner-verification
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt jsonschema
+      - name: Validate private analysis and send only to existing owner
+        env:
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          RISK_QUEUE_TOKEN: ${{ secrets.RISK_QUEUE_TOKEN }}
+        run: python risk_owner_verification.py

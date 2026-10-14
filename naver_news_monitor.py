@@ -105,6 +105,16 @@ RELATED_STOCK_MAP = {
 }
 
 import requests
+
+# Only the explicit legacy engine may use a paid HTTP inference request.
+RISK_PROVIDER = None
+
+def _ai_post(url, *, _route, _article=None, _articles=None, _offset=0, **kwargs):
+    if RISK_PROVIDER is not None:
+        return RISK_PROVIDER.response(_route, _article, _articles, _offset)
+    if os.environ.get("RISK_ENGINE", "api") != "api":
+        raise RuntimeError("구독·일시중지 경로의 유료 API 요청 금지")
+    return requests.post(url, **kwargs)
 from event_history import EventHistory, HISTORY_KEY, is_background_recap, material_facts, event_families, _new_fact
 from collections import Counter
 from quote_prices import resolve_symbol, fetch_quote, format_price, STATUS_LABELS
@@ -1602,7 +1612,10 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
 
     # 2) 부분포함 + prefix 6자 — entity가 name에 포함되거나 그 반대
     #    정규식 컴파일 1회만 수행 (루프 밖)
-    clean_e = re.sub(r'[(주)㈜\s]', '', entity)
+    # Remove whole legal markers, not individual letters such as the '주' in 주성.
+    clean_e = re.sub(r'\(주\)|㈜|주식회사|\s', '', entity)
+    jr_aliases = {'제이알글로벌리츠', '제이알글로벌위탁관리',
+                  '제이알글로벌위탁관리부동산투자회사'}
     ce_len = len(clean_e)
 
     for name, rows in exposure_data.items():
@@ -1612,7 +1625,7 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
         # 접두(prefix) 매칭 — 법인명 표기차이(중앙일보↔중앙일보(주))만 허용.
         # 접미 부분일치(마이크론⊂하나마이크론) + 짧은 무관명 흡수(에스엘⊂에스엘엘중앙,
         # 제이티⊂제이티비씨) 오매칭 차단 → 접두 관계라도 짧은 쪽이 5자 미만이면 정확일치만 허용
-        _clean_n = re.sub(r'[(주)㈜\s]', '', name)
+        _clean_n = re.sub(r'\(주\)|㈜|주식회사|\s', '', name)
         if _clean_n:
             if _clean_n == clean_e:
                 results.extend(rows); seen_names.add(name); continue
@@ -1620,26 +1633,11 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
             if _short >= 5 and (_clean_n.startswith(clean_e) or clean_e.startswith(_clean_n)):
                 results.extend(rows); seen_names.add(name); continue
 
-        # prefix 6자 매칭 — 법인명 축약 대응 (제이알글로벌리츠 ↔ 제이알글로벌위탁관리...)
-        if ce_len >= 4:
-            clean_n = re.sub(r'[(주)㈜\s]', '', name)
-            if len(clean_n) >= 4:
-                # 공통 접두 길이 계산
-                plen = 0
-                for a, b in zip(clean_e, clean_n):
-                    if a == b:
-                        plen += 1
-                    else:
-                        break
-                if plen >= 6:
-                    # 오매칭 가드: 공통 접두 6자 이상이어도, 짧은 쪽 이름 전체가
-                    # 공통 접두에 거의 포함될 때만 축약 관계로 인정한다.
-                    # (제이알글로벌리츠[7자]는 접두 6자가 이름의 86% → 축약 인정,
-                    #  제이알글로벌인베스트먼트[12자]는 접두 6자가 50% → 다른 회사)
-                    _short_len = min(ce_len, len(clean_n))
-                    if _short_len > 0 and (plen / _short_len) >= 0.75:
-                        results.extend(rows)
-                        seen_names.add(name)
+        # A shared prefix is not issuer identity. Only reviewed JR legal aliases
+        # bridge the equity name and its bond issuer; similarly named firms do not.
+        if clean_e in jr_aliases and _clean_n in jr_aliases:
+            results.extend(rows)
+            seen_names.add(name)
 
     return results
 
@@ -2959,8 +2957,9 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
     for attempt in range(3):
         try:
             _t0 = time.time()
-            res = requests.post(
+            res = _ai_post(
                 "https://api.anthropic.com/v1/messages",
+                _route="classify", _articles=batch, _offset=offset,
                 headers={
                     "x-api-key": ANTHROPIC_KEY,
                     "anthropic-version": "2023-06-01",
@@ -3589,6 +3588,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> li
         # MTS/HTS/전산장애 키워드도 '한국투자증권'과 함께 있을 때만 인정.
         _is_direct = (
             _has_company
+            and (RISK_PROVIDER is None or bool(a.get("_verified_direct_incident")))
             and not a.get("_verified_direct_recap")
             and not _has_other_broker
             and _kw_hit(title, (DIRECT_NEGATIVE_KW | DIRECT_INCIDENT_KW))
@@ -3843,8 +3843,9 @@ def _verify_high_risk_by_claude(articles: list):
     )
     _verify_dynamic = f"\n{lines_txt}"
     try:
-        _res = requests.post(
+        _res = _ai_post(
             "https://api.anthropic.com/v1/messages",
+                _route="verify_grade", _articles=articles,
             headers={
                 "x-api-key": ANTHROPIC_KEY,
                 "anthropic-version": "2023-06-01",
@@ -4836,7 +4837,10 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                             _kin.add(_k)
                             _kin.update(_v)
                     _kin.discard(_subj)
-                    _kept = [e for e in a_entities if e == _subj or e not in _kin]
+                    # The subscription validator requires original-source quotes
+                    # for each explicitly reviewed co-subject of the same event.
+                    _direct = set(a.get('_subscription_direct_entities') or [])
+                    _kept = [e for e in a_entities if e == _subj or e not in _kin or e in _direct]
                     if len(_kept) != len(a_entities):
                         print(f"  [비전이 사건 계열사 제외] {_subj}: "
                               f"{[e for e in a_entities if e not in _kept]}")
@@ -6125,8 +6129,9 @@ JSON만 출력:
 {{"judgment": {{"핵심사건": "...", "손실주체": "...", "당사연관": "...", "확정여부": "..."}}, "risk": false, "reason": "한 줄 이유"}}"""
 
         try:
-            res = requests.post(
+            res = _ai_post(
                 "https://api.anthropic.com/v1/messages",
+                _route="verify_body", _article=article,
                 headers={
                     "x-api-key": ANTHROPIC_KEY,
                     "anthropic-version": "2023-06-01",
@@ -6403,8 +6408,9 @@ JSON만 출력:
             .replace("__BODY_FAIL__", " (※ 본문 크롤링 실패 — 제목·요약 기반만 사용, 추측 금지)" if article.get("_body_failed") else "")
         )
         try:
-            res = requests.post(
+            res = _ai_post(
                 "https://api.anthropic.com/v1/messages",
+                _route="action", _article=article,
                 headers={
                     "x-api-key": ANTHROPIC_KEY,
                     "anthropic-version": "2023-06-01",
@@ -6606,8 +6612,9 @@ JSON만 출력:
         filtered_titles += f"\n\n[경쟁사 신용·대출·오류 공지]\n{competitor_summary}"
 
     try:
-        sum_res = requests.post(
+        sum_res = _ai_post(
             "https://api.anthropic.com/v1/messages",
+                _route="summary", _articles=_summary_src,
             headers={
                 "x-api-key": ANTHROPIC_KEY,
                 "anthropic-version": "2023-06-01",
