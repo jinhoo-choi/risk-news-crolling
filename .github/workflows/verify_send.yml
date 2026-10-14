@@ -34,7 +34,8 @@ jobs:
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
           EMAIL_CC: ${{ secrets.EMAIL_CC }}
           NO_RESULT_RECEIVER: ${{ secrets.NO_RESULT_RECEIVER }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEY: 'subscription-api-disabled'
+          RISK_ENGINE: 'subscription'
           NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
           CONFIRM_SEND: ${{ github.event.inputs.confirm }}

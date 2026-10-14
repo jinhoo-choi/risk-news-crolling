@@ -27,7 +27,8 @@ jobs:
           EMAIL_RECEIVER:       ${{ secrets.EMAIL_RECEIVER }}
           NO_RESULT_RECEIVER:   ${{ secrets.NO_RESULT_RECEIVER }}
           EMAIL_CC:             ${{ secrets.EMAIL_CC }}
-          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEY: 'subscription-api-disabled'
+          RISK_ENGINE: 'subscription'
           NAVER_CLIENT_ID:      ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET:  ${{ secrets.NAVER_CLIENT_SECRET }}
         run: python3 test_send_self.py

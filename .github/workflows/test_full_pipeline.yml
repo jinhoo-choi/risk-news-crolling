@@ -25,6 +25,9 @@ jobs:
       - name: 라이브러리 설치
         run: pip install -r requirements.txt
 
+      - name: 기존 유료 API 테스트 허용 설정 확인
+        run: python risk_legacy_api_preflight.py
+
       - name: 전체 파이프라인 실행 (발송은 본인 한정)
         env:
           FORCE_SELF_ONLY:      '1'
