@@ -19,6 +19,7 @@ from risk_queue import Queue, JOB_ID, now, digest
 from risk_result_validator import validate, utc_time
 from risk_delivery import Delivery
 from risk_provider import Provider
+from risk_shards import split_job, hydrate
 
 CONFIG = 'risk_subscription_config.json'
 POLICY = 'risk_policy.json'
@@ -151,9 +152,11 @@ def collect(config, queue, verification=False):
            'policy_hash': digest(rules), 'receipts': {}, 'paid_ai_calls': 0}
     if not verification:
         current_config(queue)
-    queue.put('jobs/'+jid+'.json', job)
+    small, values = split_job(job)
     index['jobs'] = (index['jobs']+[jid])[-60:]
-    queue.put('index.json', index, sha)
+    values['jobs/'+jid+'.json'] = small
+    values['index.json'] = index
+    queue.put_many(values, {'jobs/'+jid+'.json': None, 'index.json': sha})
     print(json.dumps({'job_id': jid, 'status': 'pending', 'inputs': len(items), 'paid_ai_calls': 0}))
 
 
@@ -168,6 +171,7 @@ def verify_job(queue, jid, self_test=False):
         raise RuntimeError('발송 시작·종결 회차 재처리 금지')
     if job.get('mode') != ('verification' if self_test else 'production') or utc_time(job['expires_at']) <= now():
         raise RuntimeError('회차 모드·만료 오류')
+    job = hydrate(queue, job)
     result, _ = queue.get('results/'+jid+'.json')
     if not result:
         raise RuntimeError('구독 분석 결과 없음')
@@ -197,8 +201,11 @@ def consume(queue, jid, self_test=False):
     provider.install(bot)
     original_seen = Path('seen_news.json').read_bytes()
     original_exposure = file_hash('exposure_data.csv')
-    job.update(status='sending', self_test=self_test, sending_at=now().isoformat())
-    queue.put('jobs/'+jid+'.json', job, sha)
+    metadata, current_sha = queue.get('jobs/'+jid+'.json')
+    if current_sha != sha:
+        raise RuntimeError('소비 검증 중 회차 상태 변경')
+    metadata.update(status='sending', self_test=self_test, sending_at=now().isoformat())
+    queue.put('jobs/'+jid+'.json', metadata, sha)
     guard = Delivery(queue, jid, smtplib.SMTP_SSL,
                      lambda: current_config(queue, self_test))
     native_send, native_empty, native_save = bot.send_email, bot.send_email_no_result, bot.save_seen_urls

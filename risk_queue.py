@@ -82,7 +82,18 @@ class Queue:
             return None, None
         if obj.get('type') != 'file':
             raise RuntimeError('큐 자료 형식 오류')
-        return strict_json(base64.b64decode(obj['content']).decode()), obj['sha']
+        if obj.get('encoding') == 'base64' and obj.get('content'):
+            raw = base64.b64decode(obj['content'])
+        else:
+            # Contents API omits content for files over 1 MiB. Git blobs retain it.
+            blob = self.request('/git/blobs/'+obj['sha'])
+            if not blob or blob.get('encoding') != 'base64':
+                raise RuntimeError('대용량 큐 blob 읽기 실패')
+            raw = base64.b64decode(blob['content'])
+        actual = hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+        if actual != obj['sha']:
+            raise RuntimeError('비공개 큐 blob 해시 불일치')
+        return strict_json(raw.decode()), obj['sha']
 
     def put(self, path, value, sha=None):
         if '..' in path or path.startswith('/'):
@@ -92,6 +103,26 @@ class Queue:
         if sha:
             body['sha'] = sha
         return self.request('/contents/' + PREFIX + '/' + urllib.parse.quote(path, safe='/'), 'PUT', body)
+
+    def put_many(self, values, expected):
+        """Publish shards and their job/index atomically, without retrying writes."""
+        ref = self.request('/git/ref/heads/main')
+        head = ref['object']['sha']
+        commit = self.request('/git/commits/'+head)
+        for path, wanted in expected.items():
+            if self.get(path)[1] != wanted:
+                raise RuntimeError('큐 원본 SHA 변경 — 일괄 쓰기 보류')
+        entries = []
+        for path, value in values.items():
+            if '..' in path or path.startswith('/'):
+                raise ValueError('큐 분할 경로 오류')
+            entries.append({'path': PREFIX+'/'+path, 'mode': '100644', 'type': 'blob',
+                            'content': json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False)})
+        tree = self.request('/git/trees', 'POST', {'base_tree': commit['tree']['sha'], 'tree': entries})
+        new = self.request('/git/commits', 'POST', {'message':'chore: private risk queue shards [skip ci]',
+                          'tree':tree['sha'], 'parents':[head]})
+        self.request('/git/refs/heads/main', 'PATCH', {'sha':new['sha'], 'force':False})
+        return new['sha']
 
 
 def connection(queue):

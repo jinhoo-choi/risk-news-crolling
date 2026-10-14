@@ -69,8 +69,14 @@ class Provider:
             return Response({'action': a['action'], 'customer_notice': a['customer_notice']})
         if route == 'summary':
             # Native format is a short upper summary. Use only delivered cards.
-            labels = list(dict.fromkeys((a.get('entity') or '시장')+' '+a['event_type'] for a in articles))
-            return Response(('·'.join(labels))[:40])
+            labels = list(dict.fromkeys((a.get('entity') or '시장')+' '+self.analysis(a)['judgment']['핵심사건'] for a in articles))
+            text = ''
+            for label in labels:
+                proposed = text+('·' if text else '')+label
+                if len(proposed) > 40:
+                    break
+                text = proposed
+            return Response(text)
         raise RuntimeError('미등록 구독 분석 경로 — API 자동 폴백 금지')
 
     def install(self, bot):
