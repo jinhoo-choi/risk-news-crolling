@@ -303,13 +303,39 @@ def acknowledge(queue, jid):
     print(json.dumps({'job_id': jid, 'status': 'completed', 'paid_ai_calls': 0, 'history_saved': True, 'ack': True}))
 
 
+def notify_error(error, context=''):
+    """Owner error notification only; never change delivery receipts or history."""
+    if not os.environ.get('EMAIL_PASSWORD'):
+        print('담당자 오류 알림 생략 — SMTP 설정 없음; Actions 확인 필요')
+        return False
+    try:
+        from risk_owner_verification import OWNER
+        bot=import_bot()
+        bot.NO_RESULT_RECEIVER=OWNER
+        run=os.environ.get('GITHUB_RUN_ID','')
+        if run.isdigit():
+            context += '\nActions: https://github.com/jinhoo-choi/risk-news-crolling/actions/runs/'+run
+        with contextlib.redirect_stdout(io.StringIO()):
+            accepted=bot.send_email_error('리스크 구독 경로 보류: '+str(error),context)
+        print('담당자 오류 알림 SMTP accepted 1건; 운영 영수증 변경0/API0' if accepted
+              else '담당자 오류 알림 접수 미확인; Actions 확인 필요')
+        return bool(accepted)
+    except Exception:
+        print('담당자 오류 알림 실패; Actions 확인 필요')
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('operation', choices=['scheduled', 'collect-test', 'consume', 'ack', 'connection', 'rollback-check'])
+    parser.add_argument('operation', choices=['scheduled', 'collect-test', 'consume', 'ack', 'connection', 'rollback-check', 'notify-error'])
     parser.add_argument('--job-id')
     parser.add_argument('--self-test', action='store_true')
     args = parser.parse_args()
     config = json.loads(Path(CONFIG).read_text())
+    if args.operation == 'notify-error':
+        notify_error(RuntimeError('발송 후 처리 이력 저장 또는 회차 ACK 실패'),
+                     '발송 영수증은 보존했습니다. 접수 메일을 재발송하지 말고 private 회차와 main 이력을 확인하세요.')
+        return
     if args.operation == 'scheduled' and config['engine'] == 'paused':
         print('리스크 구독 일시중지; 수집0/발송0/API0')
         return
@@ -337,13 +363,6 @@ if __name__ == '__main__':
     except Exception as error:
         # Native logs/results/addresses are private. No raw error payload in Actions.
         print('리스크 구독 경로 보류:', type(error).__name__)
-        if os.environ.get('EMAIL_PASSWORD'):
-            try:
-                import traceback
-                from risk_owner_verification import OWNER
-                bot = import_bot()
-                bot.NO_RESULT_RECEIVER = OWNER
-                bot.send_email_error('리스크 구독 경로 보류: '+str(error), traceback.format_exc())
-            except Exception:
-                print('담당자 오류 알림 실패; Actions 확인 필요')
+        import traceback
+        notify_error(error, traceback.format_exc())
         raise SystemExit(1)

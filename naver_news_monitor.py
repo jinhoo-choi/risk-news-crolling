@@ -5372,10 +5372,13 @@ def send_email_error(error_msg: str, trace: str):
             refused = server.sendmail(EMAIL_SENDER, [receiver], msg.as_string())
         if refused:
             print(f"  ⚠️ 오류 메일 수신자 거부됨: {refused}")
+            return False
         else:
             print(f"  오류 메일 발송 완료 → {receiver}")
+            return True
     except Exception as e:
         print(f"  오류 메일 발송 실패: {e}")
+        return False
 
 def send_email_no_result(subject: str, html_body: str):
     """결과 없을 때 특정인(NO_RESULT_RECEIVER)에게만 발송"""
