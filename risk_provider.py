@@ -26,6 +26,8 @@ class Provider:
         self.bodies = {b['article_id']: b for b in job['body_manifest']}
         self.by_url = {a['url']: a['article_id'] for a in job['input']['items']}
         self.calls = {}
+        self.event_groups = {aid: str(i) for i, group in enumerate(result.get('event_groups', []))
+                             for aid in group['article_ids']}
 
     def analysis(self, article):
         return self.analyses[article['article_id']]
@@ -41,6 +43,10 @@ class Provider:
                        _judgment=copy.deepcopy(a['judgment']),
                        related_stocks=copy.deepcopy(a['related_stocks']),
                        _subscription_direct_entities=copy.deepcopy(a.get('direct_event_entities', [])))
+        article.pop('_subscription_event_group', None)
+        group = self.event_groups.get(article['article_id'])
+        if group is not None:
+            article['_subscription_event_group'] = group
 
     def response(self, route, article=None, articles=None, offset=0):
         self.calls[route] = self.calls.get(route, 0)+1

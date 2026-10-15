@@ -137,6 +137,91 @@ class Integration(unittest.TestCase):
         self.assertEqual(queue.data['jobs/test.json']['status'], 'completed')
         self.assertTrue(queue.data['jobs/test.json']['ack'])
         self.assertEqual(queue.data['jobs/test.json']['paid_ai_calls'], 0)
+
+    def grouped_fixture(self):
+        queue = self.fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        item = copy.deepcopy(job['input']['items'][0])
+        item.update(article_id='two', url='https://example.invalid/test/two',
+                    title='한국투자증권 HTS 잔고 조회 장애 발생')
+        job['input']['items'].append(item)
+        job['input']['raw_articles'] = copy.deepcopy(job['input']['items'])
+        body = copy.deepcopy(job['body_manifest'][0])
+        body.update(article_id='two', source_url=item['url'])
+        job['body_manifest'].append(body)
+        job['event_grouping_version'] = 1
+        result['analyses']['one']['confidence'] = 0.90
+        result['analyses']['two'] = copy.deepcopy(result['analyses']['one'])
+        result['analyses']['two']['confidence'] = 0.99
+        result['classifications'].append({'article_id':'two','relevant':True,'reason':'같은 당일 조회 장애 보도.'})
+        result['event_groups'] = [{'article_ids':['one','two'], 'reason':'동일 거래일 같은 잔고 조회 장애 반복 보도.', 'reviewed':True}]
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        return queue
+
+    def test_grouped_native_mail_keeps_later_highest_score_and_delivered_history_only(self):
+        queue, smtp = self.grouped_fixture(), SMTP()
+        self.run_consume(queue, smtp)
+        document = queue.data['previews/test.json']['html']
+        self.assertIn('https://example.invalid/test/two', document)
+        self.assertNotIn('https://example.invalid/test/one', document)
+        final = queue.data['filter-logs/test.json']['final']
+        self.assertEqual([a['article_id'] for a in final], ['two'])
+        history = json.loads(Path('seen_news.json').read_text())
+        self.assertNotIn(queue.data['jobs/test.json']['input']['items'][0]['title'],
+                         json.dumps(history.get('_event_history', {}), ensure_ascii=False))
+        self.assertEqual(len(smtp.calls), 3)
+
+    def test_invalid_or_missing_event_comparison_blocks_before_smtp(self):
+        cases = ['missing','unknown','overlap','mixed','unverified']
+        for case in cases:
+            with self.subTest(case=case):
+                queue, smtp = self.grouped_fixture(), SMTP()
+                result = queue.data['results/test.json']
+                if case == 'missing':
+                    del result['event_groups']
+                elif case == 'unknown':
+                    result['event_groups'][0]['article_ids'][1] = 'unknown'
+                elif case == 'overlap':
+                    result['event_groups'] *= 2
+                elif case == 'mixed':
+                    result['analyses']['two']['event_type'] = '횡령배임'
+                else:
+                    result['analyses']['two']['body_status'] = 'missing'
+                with self.assertRaises(ValueError):
+                    self.run_consume(queue, smtp)
+                self.assertEqual(smtp.calls, [])
+                self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+
+    def test_event_score_selection_crosses_entities_and_preserves_independent_risks(self):
+        a = {'entity':'네비우스','grade':'주의','_risk_score':4.0,'url':'https://example.invalid/a', '_subscription_event_group':'0'}
+        b = dict(a, entity='샌디스크', _risk_score=6.0, url='https://example.invalid/b')
+        independent = dict(a, entity='', grade='긴급', event_type='반대매매', _risk_score=8.0)
+        independent.pop('_subscription_event_group')
+        separate = dict(b, entity='마벨', _subscription_event_group='1')
+        self.assertEqual(self.bot.dedup_same_mail_events([a,b,independent,separate]), [b,independent,separate])
+        # Equal final/display/raw/media scores preserve original order.
+        a['_risk_score'] = b['_risk_score']
+        self.assertEqual(self.bot.dedup_same_mail_events([a,b]), [a])
+
+    def test_duplicate_candidates_use_one_grade_slot_without_displacing_other_events(self):
+        rows, exposure = [], {}
+        for i in range(5):
+            entity = '검수기업'+chr(65+i)
+            article = {'entity':entity, 'entities':[entity], 'title':entity+' 신규 사업 부진',
+                       'url':'https://example.invalid/'+str(i), 'grade':'주의',
+                       '_ai_confidence':0.84, 'event_type':'기타리스크'}
+            if i < 3:
+                article['_subscription_event_group'] = '0'
+            rows.append(article)
+            exposure[entity] = [{'종목명':entity,'종목유형':'주식','잔고(억)':'150','고객수':'1'}]
+        with patch.object(self.bot, 'get_price_change', return_value=None):
+            graded = self.bot.regrade_by_score(rows, exposure)
+        final = self.bot.dedup_same_mail_events(graded)
+        self.assertEqual(len(final), 3)
+        self.assertTrue(all(a['grade'] == '주의' for a in final))
+        self.assertEqual({a['entity'] for a in final}, {'검수기업A','검수기업D','검수기업E'})
+
     def test_owner_pipeline_preserves_production_history(self):
         queue, smtp = self.fixture('verification'), SMTP()
         self.run_consume(queue, smtp, True)
