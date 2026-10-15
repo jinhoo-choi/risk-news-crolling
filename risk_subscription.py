@@ -4,9 +4,11 @@ import base64
 import contextlib
 import copy
 import hashlib
+import html
 import io
 import json
 import os
+import re
 import smtplib
 import tempfile
 import threading
@@ -20,6 +22,8 @@ from risk_result_validator import validate, utc_time
 from risk_delivery import Delivery
 from risk_provider import Provider
 from risk_shards import split_job, hydrate
+from risk_continuity import (freeze_exposure, read_exposure, pending_reviews,
+                             prepare_reviews, finish_reviews, delivery_view)
 
 CONFIG = 'risk_subscription_config.json'
 POLICY = 'risk_policy.json'
@@ -75,8 +79,22 @@ def expire_and_check(queue):
         if job.get('status') in TERMINAL:
             continue
         if job.get('status') == 'pending' and not job.get('receipts') and not job.get('attempted_count', 0) and utc_time(job['expires_at']) <= now():
+            values, expected = {}, {}
+            if job.get('mode') == 'production':
+                if 'input' not in job:
+                    raise RuntimeError('만료 회차 원본 누락 — 이월 전 종결 금지')
+                full = hydrate(queue, job)
+                if digest(full['input']) != job['input_hash'] or digest(full['body_manifest']) != job['body_manifest_hash']:
+                    raise RuntimeError('만료 회차 원본 해시 오류 — 이월 전 종결 금지')
+                values, expected, _ = prepare_reviews(queue, full,
+                    {a['article_id']: None for a in full['input']['items']}, reason='expired_unprocessed')
             job.update(status='expired', expired_at=now().isoformat())
-            queue.put('jobs/'+jid+'.json', job, old_sha)
+            path = 'jobs/'+jid+'.json'
+            if values:
+                values[path], expected[path] = job, old_sha
+                queue.put_many(values, expected)
+            else:
+                queue.put(path, job, old_sha)
             if job.get('mode') == 'production':
                 notify_best_effort(RuntimeError('운영 구독 회차 만료 — 기사 누락 가능; 수집 범위 확인 필요'),
                                    'job_id='+jid+'\ncreated_at='+str(job.get('created_at', 'unconfirmed')))
@@ -129,6 +147,8 @@ def prune_terminal_inputs(queue, retention_days=7):
 
 def collect(config, queue, verification=False):
     queue.preflight()
+    if not verification:
+        current_config(queue)
     index, sha = expire_and_check(queue)
     if not verification:
         current_config(queue)
@@ -141,6 +161,10 @@ def collect(config, queue, verification=False):
     for state_file in ('seen_news.json', 'exposure_data.csv'):
         data, _ = queue.source(state_file)
         Path(state_file).write_bytes(data)
+    exposure_raw = Path('exposure_data.csv').read_bytes()
+    captured_at = now().isoformat()
+    reviews = [] if verification else pending_reviews(queue)
+    replay = {r['article_id']: r for r in reviews}
     seen = bot.load_seen_urls()
     exposure = bot.load_exposure_data()
     keywords = list(dict.fromkeys(bot.KEYWORDS+bot.get_overseas_keywords(exposure)))
@@ -179,8 +203,22 @@ def collect(config, queue, verification=False):
         article['published_at'] = article.get('pubDate', '')
         if not bot.is_hard_excluded(article['title'], article.get('desc', ''), article['url'])[0]:
             items.append(article)
+    item_ids = {a['article_id'] for a in items}
+    raw_ids = {a['article_id'] for a in raw}
+    for record in reviews:
+        aid = record['article_id']
+        if aid not in item_ids:
+            items.append(copy.deepcopy(record['item']))
+        if aid not in raw_ids:
+            raw.append(copy.deepcopy(record['item']))
+    for article in items:
+        if article['article_id'] in replay:
+            article['_review_replay'] = True
+            article['_review_first_seen_at'] = replay[article['article_id']]['first_seen_at']
     def body(article):
         text = bot.fetch_article_body(article['url']) or ''
+        if not any(c.isalnum() for c in text) and article['article_id'] in replay:
+            return copy.deepcopy(replay[article['article_id']]['body'])
         # Preserve bounded paragraphs, including entity context; no menus-as-body.
         return {'article_id': article['article_id'], 'body': text[:12000],
                 'body_status': 'verified' if any(c.isalnum() for c in text) else 'missing',
@@ -188,13 +226,12 @@ def collect(config, queue, verification=False):
     with ThreadPoolExecutor(max_workers=6) as pool:
         manifest = list(pool.map(body, items))
     # The live main can finish a prior run while collection is in progress.
-    # Refresh state and discard already delivered URLs without touching main.
-    for state_file in ('seen_news.json', 'exposure_data.csv'):
-        data, _ = queue.source(state_file)
-        Path(state_file).write_bytes(data)
+    # Refresh delivery history; keep the exposure used to collect/filter this job.
+    data, _ = queue.source('seen_news.json')
+    Path('seen_news.json').write_bytes(data)
     current_seen = bot.load_seen_urls()
-    raw = [a for a in raw if a['url'] not in current_seen]
-    items = [a for a in items if a['url'] not in current_seen]
+    raw = [a for a in raw if a['url'] not in current_seen or a['article_id'] in replay]
+    items = [a for a in items if a['url'] not in current_seen or a['article_id'] in replay]
     allowed_ids = {a['article_id'] for a in items}
     manifest = [b for b in manifest if b['article_id'] in allowed_ids]
     created = now()
@@ -212,7 +249,11 @@ def collect(config, queue, verification=False):
            'policy_hash': digest(rules), 'receipts': {}, 'paid_ai_calls': 0}
     if not verification:
         current_config(queue)
+    frozen = freeze_exposure(job, exposure_raw, captured_at)
+    if job['exposure_snapshot']['sha256'] != job['input']['exposure_hash']:
+        raise RuntimeError('수집 중 잔고 변경 — 스냅샷 불일치')
     small, values = split_job(job)
+    values.update(frozen)
     index['jobs'] = (index['jobs']+[jid])[-60:]
     values['jobs/'+jid+'.json'] = small
     values['index.json'] = index
@@ -236,13 +277,21 @@ def verify_job(queue, jid, self_test=False):
     if not result:
         raise RuntimeError('구독 분석 결과 없음')
     info = validate(result, job, job['input'], job['body_manifest'])
-    if not info['consume_ready']:
+    if job.get('continuity_version') == 1 and policy().get('continuity', {}).get('version') != 1:
+        raise RuntimeError('연속 운영 정책 미승인 — 발송 보류')
+    if not info['consume_ready'] and (self_test or job.get('continuity_version') != 1):
         raise RuntimeError('본문·귀속 확인 보류 존재 — 정상 발송 금지')
     if digest(job['input']) != job['input_hash'] or digest(job['body_manifest']) != job['body_manifest_hash']:
         raise RuntimeError('원본 입력·본문 manifest 변경')
     if job['policy_hash'] != digest(policy()):
         raise RuntimeError('현재 정책 불일치')
-    for key, path in [('history_hash', 'seen_news.json'), ('exposure_hash', 'exposure_data.csv')]:
+    snapshot = read_exposure(queue, job, config)
+    if job.get('continuity_version') == 1 and snapshot is None:
+        raise RuntimeError('구독 연속 운영 회차 잔고 스냅샷 누락')
+    checks = [('history_hash', 'seen_news.json')]
+    if snapshot is None:
+        checks.append(('exposure_hash', 'exposure_data.csv'))
+    for key, path in checks:
         remote, _ = queue.source(path)
         if hashlib.sha256(remote).hexdigest() != job['input'][key] or file_hash(path) != job['input'][key]:
             raise RuntimeError('운영 이력·잔고 변경 — 기존 자료 발송 금지')
@@ -270,19 +319,47 @@ def consume(queue, jid, self_test=False):
         bot.EMAIL_RECEIVERS, bot.EMAIL_CC = [], []
         bot.NO_RESULT_RECEIVER = OWNER
         bot.FORCE_SELF_ONLY = True
-    provider = Provider(job, result)
-    provider.install(bot)
+    view, answers = delivery_view(job, result)
+    provider = Provider(view, answers)
     original_seen = Path('seen_news.json').read_bytes()
     original_exposure = file_hash('exposure_data.csv')
     metadata, current_sha = queue.get('jobs/'+jid+'.json')
     if current_sha != sha:
         raise RuntimeError('소비 검증 중 회차 상태 변경')
+    verdicts = {r['article_id']: r['relevant'] for r in result['classifications']}
+    deferred_ids = [aid for aid, value in verdicts.items() if value is None]
+    values, expected, resolutions = ({}, {}, {}) if self_test else prepare_reviews(queue, job, verdicts)
+    overdue_count = sum(utc_time(values['review/'+aid+'.json']['first_seen_at']) <= now()-timedelta(hours=24)
+                        for aid in deferred_ids)
     metadata.update(status='sending', self_test=self_test, sending_at=now().isoformat())
-    queue.put('jobs/'+jid+'.json', metadata, sha)
+    metadata.update(deferred_ids=deferred_ids, review_resolutions=resolutions,
+                    analysis_complete=not deferred_ids, overdue_review_count=overdue_count)
+    if values or resolutions:
+        values['jobs/'+jid+'.json'], expected['jobs/'+jid+'.json'] = metadata, sha
+        queue.put_many(values, expected)
+    else:
+        queue.put('jobs/'+jid+'.json', metadata, sha)
     guard = Delivery(queue, jid, smtplib.SMTP_SSL,
                      lambda: current_config(queue, self_test))
     native_send, native_empty, native_save = bot.send_email, bot.send_email_no_result, bot.save_seen_urls
+    def review_notice(subject, document, empty=False):
+        if not deferred_ids:
+            return subject, document
+        label = '확인 보류 '+str(len(deferred_ids))+'건'
+        if overdue_count:
+            label += ' · 24시간 이상 미확인 '+str(overdue_count)+'건'
+        banner = '<div style="padding:12px;color:#92400e;background:#fffbeb">'+html.escape(label)+' — 판정 미완료 기사는 발송·정상 처리에서 제외하고 다음 회차에 다시 확인합니다.</div>'
+        document = re.sub(r'(<body\b[^>]*>)', lambda m: m[1]+banner, document, count=1)
+        document = document.replace('금일 리스크 뉴스 없음', '검증 완료 발송 후보 없음')
+        if empty:
+            subject = '❗ [리스크 탐지] '+label+' · 검증 완료 후보 없음'
+            document = document.replace('AI 리스크 탐지 결과<br>해당하는 뉴스가 없습니다.',
+                                        '확인 보류 기사가 있습니다.<br>검증을 마친 발송 후보는 없습니다.')
+        else:
+            subject += ' · '+label
+        return subject, document
     def send(subject, html, self_only=False):
+        subject, html = review_notice(subject, html)
         targets = [bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER] if self_only else list(dict.fromkeys([bot.EMAIL_SENDER]+bot.EMAIL_RECEIVERS+bot.EMAIL_CC))
         if self_test:
             targets, self_only = [bot.NO_RESULT_RECEIVER], True
@@ -293,12 +370,16 @@ def consume(queue, jid, self_test=False):
         guard.complete()
         return value
     def empty(subject, html):
+        subject, html = review_notice(subject, html, empty=True)
         guard.prepare([bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER])
         queue.put('previews/'+jid+'.json', {'html': html, 'self_test': self_test, 'paid_ai_calls': 0})
         native_empty(('[TEST] ' if self_test else '')+subject, html)
         guard.complete()
     def save(*args, **kwargs):
         guard.complete()
+        if args:
+            held_urls = {a['url'] for a in job['input']['items'] if a['article_id'] in deferred_ids}
+            args = (set(args[0])-held_urls,)+args[1:]
         return native_save(*args, **kwargs)
     def private_stats(*args, **kwargs):
         queue.put('metrics/'+jid+'.json', {'stats': copy.deepcopy(bot._RUN_STATS), 'paid_ai_calls': 0})
@@ -309,7 +390,14 @@ def consume(queue, jid, self_test=False):
     def no_paid_post(*args, **kwargs):
         raise RuntimeError('유료 HTTP inference POST 차단')
     try:
+        provider.install(bot)
         with contextlib.ExitStack() as stack:
+            frozen = read_exposure(queue, job, config)
+            if frozen is not None:
+                directory = stack.enter_context(tempfile.TemporaryDirectory())
+                snapshot_path = Path(directory)/'exposure_data.csv'
+                snapshot_path.write_bytes(frozen)
+                stack.enter_context(patch.object(bot, 'EXPOSURE_FILE', str(snapshot_path)))
             if self_test:
                 temporary = stack.enter_context(tempfile.TemporaryDirectory())
                 seen_path = Path(temporary)/'seen_news.json'
@@ -338,6 +426,7 @@ def consume(queue, jid, self_test=False):
             production_history_writes=0 if self_test else None))
         print(json.dumps({'job_id': jid, 'status': 'verified' if self_test else 'delivery_complete',
                           'paid_ai_calls': 0, 'self_test': self_test,
+                          'analysis_complete': not deferred_ids, 'deferred_count': len(deferred_ids),
                           'smtp_accepted': len(guard.complete()['receipts'])}))
     except Exception:
         # An authenticated connection failure before any DATA is safely retryable.
@@ -359,8 +448,15 @@ def acknowledge(queue, jid):
     if set(job.get('receipts', {})) != set(job.get('expected_receipts', [])) or not job.get('receipts') or any(v != 'accepted' for v in job['receipts'].values()):
         raise RuntimeError('수신자 전원 accepted 없음')
     job.update(status='completed', completed_at=now().isoformat(), history_saved=True, ack=True)
-    queue.put('jobs/'+jid+'.json', job, sha)
-    print(json.dumps({'job_id': jid, 'status': 'completed', 'paid_ai_calls': 0, 'history_saved': True, 'ack': True}))
+    values, expected = finish_reviews(queue, job.get('review_resolutions', {}), jid)
+    if values:
+        values['jobs/'+jid+'.json'], expected['jobs/'+jid+'.json'] = job, sha
+        queue.put_many(values, expected)
+    else:
+        queue.put('jobs/'+jid+'.json', job, sha)
+    print(json.dumps({'job_id': jid, 'status': 'completed', 'paid_ai_calls': 0, 'history_saved': True,
+                      'ack': True, 'analysis_complete': job.get('analysis_complete', True),
+                      'deferred_count': len(job.get('deferred_ids', []))}))
 
 
 def notify_error(error, context=''):

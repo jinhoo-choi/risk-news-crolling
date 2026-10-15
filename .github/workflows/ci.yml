@@ -26,3 +26,4 @@ jobs:
       - run: python3 test_risk_notifications.py
       - run: python3 test_risk_legacy_api_preflight.py
       - run: python3 test_risk_hardening.py
+      - run: python3 test_risk_continuity.py

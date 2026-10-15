@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import risk_subscription as bridge
-from risk_queue import Queue, now
+from risk_queue import Queue, now, digest
 
 
 class Memory:
@@ -57,14 +57,18 @@ class Memory:
     def source(self, path):
         if path == bridge.CONFIG:
             return b'{"engine":"subscription","policy_version":"risk-subscription-v1"}', 'sha'
-        return b'{}' if path == 'seen_news.json' else b'fixture', 'sha'
+        csv = '기준일,종목명\n'+now().date().isoformat()+',fixture\n'
+        return b'{}' if path == 'seen_news.json' else csv.encode(), 'sha'
 
 
 def job(jid='old', status='pending', mode='production', age=8):
     old = (now()-timedelta(days=age)).isoformat()
+    inputs = {'items': [], 'raw_articles': [], 'history_hash': 'x', 'exposure_hash': 'y'}
     return {'job_id': jid, 'status': status, 'mode': mode, 'created_at': old,
             'expires_at': old, status+'_at': old, 'receipts': {}, 'attempted_count': 0,
-            'input_hash': 'preserved', 'input_parts': {'items': []}}
+            'input': inputs, 'input_hash': digest(inputs), 'body_manifest': [],
+            'body_manifest_hash': digest([]), 'input_count': 0, 'raw_count': 0,
+            'input_parts': {field: [] for field in ('items', 'raw_articles', 'body_manifest')}}
 
 
 class Collection(unittest.TestCase):
