@@ -146,7 +146,9 @@ def prune_terminal_inputs(queue, retention_days=7):
         queue.put_many({path: job}, expected, deletions=deletions)
 
 
-def collect(config, queue, verification=False):
+def collect(config, queue, verification=False, reviews_only=False):
+    if reviews_only and verification:
+        raise RuntimeError("보류 재수집은 운영 회차만 허용")
     queue.preflight()
     if not verification:
         current_config(queue)
@@ -165,10 +167,12 @@ def collect(config, queue, verification=False):
     exposure_raw = Path('exposure_data.csv').read_bytes()
     captured_at = now().isoformat()
     reviews = [] if verification else pending_reviews(queue)
+    if reviews_only and not reviews:
+        raise RuntimeError('재검토할 영속 보류 없음')
     replay = {r['article_id']: r for r in reviews}
     seen = bot.load_seen_urls()
     exposure = bot.load_exposure_data()
-    keywords = list(dict.fromkeys(bot.KEYWORDS+bot.get_overseas_keywords(exposure)))
+    keywords = [] if reviews_only else list(dict.fromkeys(bot.KEYWORDS+bot.get_overseas_keywords(exposure)))
     raw, failures = [], {}
     lock = threading.Lock()
     get = bot.requests.get
@@ -240,7 +244,7 @@ def collect(config, queue, verification=False):
     if not JOB_ID.fullmatch(jid) or queue.get('jobs/'+jid+'.json')[0]:
         raise RuntimeError('회차 ID·중복 오류')
     inputs = {'items': items, 'raw_articles': raw, 'history_hash': file_hash('seen_news.json'),
-              'exposure_hash': file_hash('exposure_data.csv'), 'snapshot_mode': 'natural_collection'}
+              'exposure_hash': file_hash('exposure_data.csv'), 'snapshot_mode': 'review_replay' if reviews_only else 'natural_collection'}
     rules = policy()
     job = {'schema_version': 1, 'bot_id': 'risk_monitor', 'job_id': jid,
            'mode': 'verification' if verification else 'production', 'status': 'pending',
@@ -619,7 +623,7 @@ def notify_error(error, context=''):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('operation', choices=['scheduled', 'collect-test', 'consume', 'recover', 'ack', 'connection', 'rollback-check', 'notify-error'])
+    parser.add_argument('operation', choices=['scheduled', 'collect-test', 'collect-review', 'consume', 'recover', 'ack', 'connection', 'rollback-check', 'notify-error'])
     parser.add_argument('--job-id')
     parser.add_argument('--self-test', action='store_true')
     args = parser.parse_args()
@@ -635,8 +639,8 @@ def main():
         raise RuntimeError('API 복귀는 별도 명시 경로로만 허용 — 자동 폴백 없음')
     queue = Queue()
     queue.preflight()
-    if args.operation in {'scheduled', 'collect-test'}:
-        collect(config, queue, args.operation == 'collect-test')
+    if args.operation in {'scheduled', 'collect-test', 'collect-review'}:
+        collect(config, queue, args.operation == 'collect-test', args.operation == 'collect-review')
     elif args.operation == 'consume':
         consume(queue, args.job_id or '', args.self_test)
     elif args.operation == 'recover':

@@ -239,5 +239,27 @@ class Integration(unittest.TestCase):
                 self.bot._ai_post('https://api.anthropic.com/v1/messages', _route='classify', json={})
 
 
+class BodyExtraction(unittest.TestCase):
+    def test_article_containers_keep_late_facts_and_exclude_footer(self):
+        from unittest.mock import MagicMock
+        import risk_subscription as bridge
+        bot = bridge.import_bot()
+        text = '대상 회사의 자금 납입 일정과 실제 사건 문단을 확인한다. ' * 70 + '마지막 직접 주체: 예시기업'
+        for opening, closing in [('<div id="newsView">','</div>'),
+                                  ('<div class="vtxt detailCont">','</div>'),
+                                  ('<div class="article-view__body">','</div>')]:
+            response = MagicMock()
+            response.headers = {}
+            response.text = '<nav>관련 기사 메뉴</nav>' + opening + text + closing + '<footer><p>고객센터 연락처와 저작권 정보</p></footer>'
+            with self.subTest(container=opening), patch.dict(os.environ, RISK_ENGINE='subscription'), \
+                    patch.object(bot.requests.Session, 'get', return_value=response):
+                body = bot.fetch_article_body('https://example.invalid/article')
+                self.assertIn('마지막 직접 주체: 예시기업', body)
+                self.assertNotIn('저작권', body)
+                self.assertGreater(len(body), 600)
+            with patch.dict(os.environ, RISK_ENGINE='api'), patch.object(bot.requests.Session, 'get', return_value=response):
+                self.assertEqual(len(bot.fetch_article_body('https://example.invalid/article')), 600)
+
+
 if __name__ == '__main__':
     unittest.main()

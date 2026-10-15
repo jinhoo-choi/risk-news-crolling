@@ -280,6 +280,20 @@ class Recovery(unittest.TestCase):
 
 
 class Request(unittest.TestCase):
+    def test_review_wake_is_fixed_collection_only_without_ack(self):
+        value = {'operation': 'collect-review', 'job_id': 'pending-review', 'self_test': False,
+                 'dry_run': False, 'request_id': 'review-test'}
+        result = json.dumps({'job_id': 'risk-production-review-test', 'status': 'pending', 'paid_ai_calls': 0})
+        with patch.object(request.Path, 'read_text', return_value=json.dumps(value)), \
+                patch.object(request.subprocess, 'run', return_value=SimpleNamespace(stdout=result)) as run:
+            request.main()
+        self.assertEqual(run.call_args.args[0], [request.sys.executable, 'risk_subscription.py', 'collect-review'])
+        for edit in [{'self_test':True}, {'job_id':'another'}]:
+            with patch.object(request.Path, 'read_text', return_value=json.dumps({**value, **edit})), \
+                    patch.object(request.subprocess, 'run') as run, self.assertRaises(RuntimeError):
+                request.main()
+            run.assert_not_called()
+
     def test_completed_noop_does_not_request_ack_again(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:
