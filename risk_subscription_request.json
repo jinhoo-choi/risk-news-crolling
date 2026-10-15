@@ -1,7 +1,7 @@
 {
   "operation": "consume",
-  "job_id": "risk-verification-38562193479",
-  "self_test": true,
+  "job_id": "risk-production-38684445708",
+  "self_test": false,
   "dry_run": false,
-  "request_id": "risk-recent-owner-20261014T1348"
+  "request_id": "risk-production-38684445708-20261015055430"
 }
