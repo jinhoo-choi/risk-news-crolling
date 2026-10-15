@@ -1951,14 +1951,19 @@ def fetch_article_body(url: str) -> str:
         res_text = res.text
         res.raise_for_status()
         soup = BeautifulSoup(res_text, "html.parser")
-        for selector in ["#dic_area", "#articleBodyContents", ".article-body", "#articeBody", "article"]:
+        limit = 12000 if os.environ.get('RISK_ENGINE') == 'subscription' else 600
+        for unwanted in soup.select('script, style, nav, footer, aside, button'):
+            unwanted.decompose()
+        for selector in ["#dic_area", "#articleBodyContents", "#newsView",
+                         "#articleBodyContent", ".article-view__body", ".vtxt.detailCont",
+                         ".article-body", "#articeBody", "article"]:
             tag = soup.select_one(selector)
             if tag:
                 text = tag.get_text(separator=" ", strip=True)
-                return text[:600]
+                return text[:limit]
         paragraphs = soup.find_all("p")
         text = " ".join(p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 20)
-        return text[:600]
+        return text[:limit]
     except Exception:
         return ""
 

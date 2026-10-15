@@ -248,6 +248,18 @@ class ReplayCollection(unittest.TestCase):
         self.assertEqual(queue.data['review/held.json']['status'], 'pending')
         self.assertIn('exposure_snapshot', small)
 
+    def test_manual_review_collection_reads_only_backlog_without_new_search_or_smtp(self):
+        queue = self.seed()
+        self.bot.crawl_naver_news.side_effect = AssertionError('new search forbidden')
+        with patch.object(bridge, 'prune_terminal_inputs'):
+            bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
+        full = hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])
+        self.assertEqual([a['article_id'] for a in full['input']['items']], ['held'])
+        self.assertEqual(full['input']['snapshot_mode'], 'review_replay')
+        self.bot.crawl_naver_news.assert_not_called()
+        self.assertEqual(queue.data['review/held.json']['status'], 'pending')
+        self.assertEqual(queue.data['jobs/risk-production-hardening-test.json']['receipts'], {})
+
     def test_exposure_is_captured_once_and_not_refreshed_after_filter(self):
         queue = self.seed()
         source, reads = queue.source, []
