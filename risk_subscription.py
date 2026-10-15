@@ -21,6 +21,7 @@ from risk_queue import Queue, JOB_ID, now, digest
 from risk_result_validator import validate, utc_time
 from risk_delivery import Delivery
 from risk_provider import Provider
+from risk_outbox import make_packet, validate_packet, store_packet, legacy_packet
 from risk_shards import split_job, hydrate
 from risk_continuity import (freeze_exposure, read_exposure, pending_reviews,
                              prepare_reviews, finish_reviews, delivery_view)
@@ -312,6 +313,11 @@ def consume(queue, jid, self_test=False):
         print(json.dumps({'job_id': jid, 'status': existing['status'], 'noop': True,
                           'smtp_calls': 0, 'paid_ai_calls': 0}))
         return
+    if (not self_test and existing and existing.get('status') == 'pending'
+            and not existing.get('receipts') and not existing.get('attempted_count', 0)
+            and utc_time(existing['expires_at']) > now()
+            and queue.get('outbox/'+jid+'.json')[0] is not None):
+        return recover(queue, jid)
     config, job, sha, result = verify_job(queue, jid, self_test)
     bot = import_bot()
     if self_test:
@@ -319,6 +325,20 @@ def consume(queue, jid, self_test=False):
         bot.EMAIL_RECEIVERS, bot.EMAIL_CC = [], []
         bot.NO_RESULT_RECEIVER = OWNER
         bot.FORCE_SELF_ONLY = True
+        previous, _ = queue.get('outbox/'+jid+'.json')
+        if previous is not None:
+            guard = Delivery(queue, jid, smtplib.SMTP_SSL, lambda: current_config(queue, True))
+            validate_packet(previous, job, result)
+            def restart(j):
+                if j.get('status') != 'pending' or j.get('receipts') or j.get('attempted_count', 0):
+                    raise RuntimeError('본인 검수 발송 시작 후 재처리 금지')
+                j['status'] = 'sending'
+            guard.change(restart)
+            try:
+                return finish_packet(queue, job, result, previous, bot, guard, bot.send_email)
+            except Exception:
+                guard.change(lambda j: j.update(status='uncertain' if j.get('receipts') else 'pending'))
+                raise
     view, answers = delivery_view(job, result)
     provider = Provider(view, answers)
     original_seen = Path('seen_news.json').read_bytes()
@@ -341,7 +361,14 @@ def consume(queue, jid, self_test=False):
         queue.put('jobs/'+jid+'.json', metadata, sha)
     guard = Delivery(queue, jid, smtplib.SMTP_SSL,
                      lambda: current_config(queue, self_test))
+    staged = {}
     native_send, native_empty, native_save = bot.send_email, bot.send_email_no_result, bot.save_seen_urls
+    def artifact(path, value):
+        # A zero-SMTP staging failure may have left diagnostics from that attempt.
+        # Only diagnostics are replaceable; saved results/outbox remain immutable.
+        previous, old_sha = queue.get(path)
+        if previous != value:
+            queue.put(path, value, old_sha)
     def review_notice(subject, document, empty=False):
         if not deferred_ids:
             return subject, document
@@ -364,28 +391,26 @@ def consume(queue, jid, self_test=False):
         if self_test:
             targets, self_only = [bot.NO_RESULT_RECEIVER], True
             subject = '[TEST] '+subject
-        guard.prepare(targets)
-        queue.put('previews/'+jid+'.json', {'html': html, 'self_test': self_test, 'paid_ai_calls': 0})
-        value = native_send(subject, html, self_only=self_only)
-        guard.complete()
-        return value
+        if staged:
+            raise RuntimeError('동일 회차 추가 메일 금지')
+        staged.update(subject=subject, html=html, targets=targets, self_only=self_only)
+        return True  # Stage native post-delivery history, without SMTP or main writes.
     def empty(subject, html):
         subject, html = review_notice(subject, html, empty=True)
-        guard.prepare([bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER])
-        queue.put('previews/'+jid+'.json', {'html': html, 'self_test': self_test, 'paid_ai_calls': 0})
-        native_empty(('[TEST] ' if self_test else '')+subject, html)
-        guard.complete()
+        if staged:
+            raise RuntimeError('동일 회차 추가 메일 금지')
+        staged.update(subject=('[TEST] ' if self_test else '')+subject, html=html,
+                      targets=[bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER], self_only=True)
     def save(*args, **kwargs):
-        guard.complete()
         if args:
             held_urls = {a['url'] for a in job['input']['items'] if a['article_id'] in deferred_ids}
             args = (set(args[0])-held_urls,)+args[1:]
         return native_save(*args, **kwargs)
     def private_stats(*args, **kwargs):
-        queue.put('metrics/'+jid+'.json', {'stats': copy.deepcopy(bot._RUN_STATS), 'paid_ai_calls': 0})
+        artifact('metrics/'+jid+'.json', {'stats': copy.deepcopy(bot._RUN_STATS), 'paid_ai_calls': 0})
     def private_log(*args):
         # Exact final/source objects stay private; the native logger writes no public file.
-        queue.put('filter-logs/'+jid+'.json', {'raw': args[0], 'hard_excluded': args[1],
+        artifact('filter-logs/'+jid+'.json', {'raw': args[0], 'hard_excluded': args[1],
                   'ai_selected': args[2], 'final': args[3], 'paid_ai_calls': 0})
     def no_paid_post(*args, **kwargs):
         raise RuntimeError('유료 HTTP inference POST 차단')
@@ -398,44 +423,139 @@ def consume(queue, jid, self_test=False):
                 snapshot_path = Path(directory)/'exposure_data.csv'
                 snapshot_path.write_bytes(frozen)
                 stack.enter_context(patch.object(bot, 'EXPOSURE_FILE', str(snapshot_path)))
-            if self_test:
-                temporary = stack.enter_context(tempfile.TemporaryDirectory())
-                seen_path = Path(temporary)/'seen_news.json'
-                seen_path.write_bytes(original_seen)
-                stack.enter_context(patch.object(bot, 'SEEN_FILE', str(seen_path)))
+            temporary = stack.enter_context(tempfile.TemporaryDirectory())
+            seen_path = Path(temporary)/'seen_news.json'
+            seen_path.write_bytes(original_seen)
+            stack.enter_context(patch.object(bot, 'SEEN_FILE', str(seen_path)))
             stack.enter_context(patch.object(bot, 'send_email', send))
             stack.enter_context(patch.object(bot, 'send_email_no_result', empty))
             stack.enter_context(patch.object(bot, 'save_seen_urls', save))
             stack.enter_context(patch.object(bot, 'save_run_stats', private_stats))
             stack.enter_context(patch.object(bot, 'save_filter_log', private_log))
-            stack.enter_context(patch.object(bot.smtplib, 'SMTP_SSL', guard.factory))
+            stack.enter_context(patch.object(bot.smtplib, 'SMTP_SSL', side_effect=RuntimeError('발송 계획 저장 전 SMTP 금지')))
             stack.enter_context(patch.object(bot.requests, 'post', no_paid_post))
             output = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             bot.main()
-        guard.complete()
-        queue.put('logs/'+jid+'.json', {'log': output.getvalue(), 'paid_ai_calls': 0})
+            prepared_seen = original_seen.decode() if self_test else seen_path.read_text()
+        if not staged:
+            raise RuntimeError('발송 계획 없음 — 정상 완료 금지')
+        packet = make_packet(job, result, staged['subject'], staged['html'], staged['targets'],
+                             staged['self_only'], prepared_seen)
+        store_packet(queue, packet)
+        artifact('previews/'+jid+'.json', {'html': staged['html'], 'self_test': self_test, 'paid_ai_calls': 0})
+        artifact('logs/'+jid+'.json', {'log': output.getvalue(), 'paid_ai_calls': 0})
         if file_hash('exposure_data.csv') != original_exposure:
             raise RuntimeError('잔고 파일 변경')
         if self_test and Path('seen_news.json').read_bytes() != original_seen:
             raise RuntimeError('본인 검수 중 운영 이력 변경')
-        snapshot = Path('seen_news.json').read_text()
-        guard.change(lambda j: j.update(status='verified' if self_test else 'delivery_complete',
-            verified_at=now().isoformat() if self_test else None,
-            delivered_at=now().isoformat(), paid_ai_calls=0, self_test=self_test,
-            seen_after_hash=file_hash('seen_news.json'), seen_after_snapshot=snapshot,
-            production_history_writes=0 if self_test else None))
-        print(json.dumps({'job_id': jid, 'status': 'verified' if self_test else 'delivery_complete',
-                          'paid_ai_calls': 0, 'self_test': self_test,
-                          'analysis_complete': not deferred_ids, 'deferred_count': len(deferred_ids),
-                          'smtp_accepted': len(guard.complete()['receipts'])}))
+        finish_packet(queue, job, result, packet, bot, guard, native_send)
     except Exception:
         # An authenticated connection failure before any DATA is safely retryable.
         def failed(j):
-            j['status'] = 'uncertain' if j.get('receipts') or j.get('attempted_count', 0) else 'pending'
+            if j.get('status') not in {'completed', 'verified', 'delivery_complete'}:
+                j['status'] = 'uncertain' if j.get('receipts') or j.get('attempted_count', 0) else 'pending'
         guard.change(failed)
         raise
     finally:
         bot.RISK_PROVIDER = None
+
+
+def finish_packet(queue, job, result, packet, bot, guard, native_send):
+    """SMTP uses only a persisted plan; history is published after all receipts."""
+    validate_packet(packet, job, result)
+    self_test = packet['self_test']
+    current_config(queue, self_test)
+    before, _ = queue.source('seen_news.json')
+    if hashlib.sha256(before).hexdigest() not in {packet['source_history_hash'], packet['seen_after_hash']}:
+        raise RuntimeError('발송 계획 이후 main 이력 변경 — 자동 합치기 금지')
+    targets = ([bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER] if packet['self_only']
+               else list(dict.fromkeys([bot.EMAIL_SENDER]+bot.EMAIL_RECEIVERS+bot.EMAIL_CC)))
+    from risk_delivery import address_key
+    if [address_key(t) for t in targets] != packet['expected_receipts']:
+        raise RuntimeError('고정본 작성 이후 수신자 변경 — 발송 금지')
+    guard.prepare(targets)
+    current, _ = guard.read()
+    if set(current.get('receipts', {})) != set(packet['expected_receipts']):
+        with contextlib.redirect_stdout(io.StringIO()), patch.object(bot.smtplib, 'SMTP_SSL', guard.factory):
+            native_send(packet['subject'], packet['html'], self_only=packet['self_only'])
+    guard.complete()
+    if not self_test:
+        Path('seen_news.json').write_text(packet['seen_after_snapshot'])
+    def finish(j):
+        expected = set(packet['expected_receipts'])
+        if (j.get('status') != 'sending' or set(j.get('receipts', {})) != expected
+                or any(v != 'accepted' for v in j['receipts'].values())):
+            raise RuntimeError('전원 접수 상태 변경 — 이력 완료 금지')
+        j.update(status='verified' if self_test else 'delivery_complete',
+                 verified_at=now().isoformat() if self_test else None,
+                 delivered_at=now().isoformat(), paid_ai_calls=0, self_test=self_test,
+                 seen_after_hash=packet['seen_after_hash'], seen_after_snapshot=packet['seen_after_snapshot'],
+                 outbox_hash=packet['packet_hash'], production_history_writes=0 if self_test else None)
+    guard.change(finish)
+    final = guard.complete()
+    print(json.dumps({'job_id': job['job_id'], 'status': final['status'], 'paid_ai_calls': 0,
+                      'self_test': self_test, 'analysis_complete': final.get('analysis_complete', True),
+                      'deferred_count': len(final.get('deferred_ids', [])),
+                      'smtp_accepted': len(final['receipts']), 'smtp_calls': guard.smtp_calls}))
+
+
+def recover(queue, jid):
+    """Explicit operator recovery; uncertain SMTP recipients remain blocked."""
+    if not JOB_ID.fullmatch(jid) or os.environ.get('GITHUB_REF') != 'refs/heads/main':
+        raise RuntimeError('운영 복구는 유효한 회차·main만 허용')
+    config = current_config(queue)
+    small, original_sha = getattr(queue, 'get_fresh', queue.get)('jobs/'+jid+'.json')
+    if small and small.get('status') == 'completed':
+        print(json.dumps({'job_id': jid, 'status': 'completed', 'noop': True, 'smtp_calls': 0, 'paid_ai_calls': 0}))
+        return
+    if (not small or small.get('mode') != 'production'
+            or small.get('status') not in {'pending', 'sending', 'uncertain', 'delivery_complete'}
+            or (not small.get('expected_receipts') and small.get('status') != 'pending')
+            or len(set(small.get('expected_receipts', []))) != len(small.get('expected_receipts', []))
+            or not set(small.get('receipts', {})) <= set(small.get('expected_receipts', []))
+            or any(v != 'accepted' for v in small.get('receipts', {}).values())
+            or small.get('attempted_count', 0) != len(small.get('receipts', {}))):
+        raise RuntimeError('SMTP 시도·접수 불확실 또는 복구 대상 아님 — 재발송 금지')
+    if now()-utc_time(small['created_at']) > timedelta(hours=24):
+        raise RuntimeError('24시간 초과 운영 복구 보류 — 기사 적시성 재검토 필요')
+    if not small.get('receipts') and utc_time(small['expires_at']) <= now():
+        raise RuntimeError('미발송 만료 회차는 복구 발송 금지 — 원문 이월 필요')
+    job = hydrate(queue, small)
+    result, _ = queue.get('results/'+jid+'.json')
+    if digest(job['input']) != job['input_hash'] or digest(job['body_manifest']) != job['body_manifest_hash']:
+        raise RuntimeError('복구 원본 입력·본문 해시 변경')
+    info = validate(result, job, job['input'], job['body_manifest'])
+    if (not info['consume_ready'] and job.get('continuity_version') != 1
+            or job.get('continuity_version') == 1 and policy().get('continuity', {}).get('version') != 1):
+        raise RuntimeError('복구 연속 처리 정책 미승인')
+    if digest(policy()) != job['policy_hash']:
+        raise RuntimeError('복구 정책 변경 — 재분석 없이 발송 금지')
+    frozen = read_exposure(queue, job, config)
+    if job.get('continuity_version') == 1 and frozen is None:
+        raise RuntimeError('복구 고정 잔고 없음')
+    bot = import_bot()
+    bot.RISK_PROVIDER = None
+    targets = list(dict.fromkeys([bot.EMAIL_SENDER]+bot.EMAIL_RECEIVERS+bot.EMAIL_CC))
+    packet, _ = queue.get('outbox/'+jid+'.json')
+    if packet is None:
+        packet = legacy_packet(queue, job, result, bot, targets)
+        store_packet(queue, packet)
+    validate_packet(packet, job, result)
+    before, _ = queue.source('seen_news.json')
+    if hashlib.sha256(before).hexdigest() not in {packet['source_history_hash'], packet['seen_after_hash']}:
+        raise RuntimeError('복구 전 main 이력 변경 — 자동 합치기 금지')
+    latest, latest_sha = getattr(queue, 'get_fresh', queue.get)('jobs/'+jid+'.json')
+    if latest_sha != original_sha or latest != small:
+        raise RuntimeError('복구 검증 중 회차 변경 — 발송 금지')
+    latest.update(status='sending', recovered_at=now().isoformat(), recovery_count=latest.get('recovery_count', 0)+1)
+    latest.setdefault('expected_receipts', packet['expected_receipts'])
+    queue.put('jobs/'+jid+'.json', latest, latest_sha)
+    guard = Delivery(queue, jid, smtplib.SMTP_SSL, lambda: current_config(queue), resume=True)
+    try:
+        finish_packet(queue, job, result, packet, bot, guard, bot.send_email)
+    except Exception:
+        guard.change(lambda j: j.update(status='uncertain') if j.get('status') == 'sending' else None)
+        raise
 
 
 def acknowledge(queue, jid):
@@ -483,7 +603,7 @@ def notify_error(error, context=''):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('operation', choices=['scheduled', 'collect-test', 'consume', 'ack', 'connection', 'rollback-check', 'notify-error'])
+    parser.add_argument('operation', choices=['scheduled', 'collect-test', 'consume', 'recover', 'ack', 'connection', 'rollback-check', 'notify-error'])
     parser.add_argument('--job-id')
     parser.add_argument('--self-test', action='store_true')
     args = parser.parse_args()
@@ -503,6 +623,8 @@ def main():
         collect(config, queue, args.operation == 'collect-test')
     elif args.operation == 'consume':
         consume(queue, args.job_id or '', args.self_test)
+    elif args.operation == 'recover':
+        recover(queue, args.job_id or '')
     elif args.operation == 'ack':
         acknowledge(queue, args.job_id or '')
     elif args.operation == 'rollback-check':

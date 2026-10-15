@@ -31,7 +31,7 @@ jobs:
           NO_RESULT_RECEIVER: ${{ secrets.NO_RESULT_RECEIVER }}
         run: python risk_subscription_request.py
       - name: Commit only confirmed production history
-        if: steps.consume.outputs.self_test == 'false'
+        if: steps.consume.outputs.needs_ack == 'true'
         run: |
           git config user.name github-actions
           git config user.email github-actions@github.com
@@ -44,7 +44,7 @@ jobs:
           done
           exit 1
       - name: Confirm main history and acknowledge delivery
-        if: steps.consume.outputs.self_test == 'false'
+        if: steps.consume.outputs.needs_ack == 'true'
         env:
           RISK_QUEUE_TOKEN: ${{ secrets.RISK_QUEUE_TOKEN }}
           JOB_ID: ${{ steps.consume.outputs.job_id }}

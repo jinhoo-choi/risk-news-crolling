@@ -315,7 +315,7 @@ class AtomicQueue(unittest.TestCase):
                 return {}
             raise AssertionError('unexpected request')
         queue.request = request
-        queue.get = lambda p: ({}, 'changed' if changed else 'sha')
+        queue.get = lambda p, ref='main': ({}, 'changed' if changed else 'sha')
         return queue, calls
 
     def test_delete_and_metadata_share_one_commit_and_nonforce_ref(self):
