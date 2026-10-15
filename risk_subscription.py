@@ -24,7 +24,7 @@ from risk_provider import Provider
 from risk_outbox import make_packet, validate_packet, store_packet, legacy_packet
 from risk_shards import split_job, hydrate
 from risk_continuity import (freeze_exposure, read_exposure, pending_reviews,
-                             prepare_reviews, finish_reviews, delivery_view)
+                             prepare_reviews, finish_reviews, delivery_view, delivery_verdicts)
 
 CONFIG = 'risk_subscription_config.json'
 POLICY = 'risk_policy.json'
@@ -350,7 +350,7 @@ def consume(queue, jid, self_test=False):
     metadata, current_sha = queue.get('jobs/'+jid+'.json')
     if current_sha != sha:
         raise RuntimeError('소비 검증 중 회차 상태 변경')
-    verdicts = {r['article_id']: r['relevant'] for r in result['classifications']}
+    verdicts = delivery_verdicts(job, result)
     deferred_ids = [aid for aid, value in verdicts.items() if value is None]
     values, expected, resolutions = ({}, {}, {}) if self_test else prepare_reviews(queue, job, verdicts)
     overdue_count = sum(utc_time(values['review/'+aid+'.json']['first_seen_at']) <= now()-timedelta(hours=24)

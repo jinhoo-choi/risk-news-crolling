@@ -119,6 +119,34 @@ class NativeContinuity(unittest.TestCase):
         self.assertEqual(queue.data['jobs/test.json']['status'], 'completed')
         self.assertEqual(queue.data['review/held.json']['status'], 'pending')
 
+    def test_missing_body_positive_is_held_without_blocking_verified_peer(self):
+        queue, smtp = self.mixed(), native_fixtures.SMTP()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        item = job['input']['items'][-1]
+        analysis = copy.deepcopy(result['analyses']['one'])
+        analysis.update(body_status='missing', base_grade='참고', confidence=0.6,
+                        fact_summary='[본문 미수집] 제목으로만 확인한 참고 사실.', customer_notice=None,
+                        evidence=[{'source_segment':'title', 'source_hash':hashlib.sha256(item['title'].encode()).hexdigest(),
+                                   'quote':item['title']}])
+        result['analyses']['held'] = analysis
+        result['classifications'][-1]['relevant'] = True
+        job['body_manifest'][-1].update(body='', body_status='missing')
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        original = copy.deepcopy(result)
+        self.run_consume(queue, smtp)
+        self.assertEqual(queue.data['jobs/test.json']['status'], 'delivery_complete')
+        self.assertEqual(queue.data['jobs/test.json']['deferred_ids'], ['held'])
+        self.assertEqual(queue.data['review/index.json']['pending'], ['held'])
+        self.assertNotIn(item['url'], self.bot.load_seen_urls())
+        self.assertEqual(queue.data['results/test.json'], original)
+        final = queue.data['filter-logs/test.json']['final']
+        self.assertTrue(final)
+        self.assertNotIn('held', [a['article_id'] for a in final])
+        self.ack(queue)
+        self.assertEqual(queue.data['jobs/test.json']['status'], 'completed')
+        self.assertFalse(queue.data['jobs/test.json']['analysis_complete'])
+        self.assertEqual(queue.data['review/held.json']['status'], 'pending')
+
     def test_all_null_sends_owner_status_without_claiming_no_risk(self):
         queue, smtp = self.fixture(), native_fixtures.SMTP()
         self.frozen(queue)
