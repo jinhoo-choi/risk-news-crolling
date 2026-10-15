@@ -241,6 +241,7 @@ def main():
                            "리스크고객수": "2", "리스크잔고(억)": "10"}]
         return data
     nm.load_exposure_data = _with_test_loans
+    nm.fetch_article_body = lambda url: "삼성전자 주가가 급락했다. " * 30
 
     # 지표 기록을 임시 경로로 우회 — 운영 파일(run_stats.jsonl) 보호
     _orig_save = nm.save_run_stats
@@ -334,7 +335,7 @@ def main():
         with contextlib.redirect_stdout(io.StringIO()):
             nm.main()
         if (len(routed) != 1 or routed[0][0] != "no_result" or
-                "해당 뉴스 없음" not in routed[0][1] or "가격 감시 범위" not in routed[0][2]):
+                "해당 뉴스 없음" not in routed[0][1] or "가격 감시 범위" in routed[0][2]):
             print(f"  FAIL coverage-only routing: {label}")
             return 1
         print(f"  OK   coverage-only keeps no-result route: {label}")

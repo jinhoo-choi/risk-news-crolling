@@ -580,11 +580,11 @@ def _build_price_alert_section_uncached(exposure_data: dict, ref_date: str = '')
     _degraded = {st: c for st, c in failures.items() if st not in _benign}
     reasons = ' · '.join(f'{STATUS_LABELS.get(status, "조회 오류")} {count}개'
                          for status, count in sorted(_degraded.items()))
-    coverage_html = '' if not _degraded else f'''<div style="margin-top:12px;padding:10px 14px;border:1px solid #e2e8f0;font-size:12px;color:#475569;">
-      <b>가격 감시 범위</b>: 당일 가격 확인 {coverage['priced']}/{total_count}종목 · 미조회 {coverage['missing']}종목<br>
-      위험고객 보유 종목: 가격 확인 {coverage['risk_priced']}/{coverage['risk_total']}종목
-      {'<br>' + reasons + '<br>미조회 종목은 하락 없음이 아닌 미확인 상태이며, 급락 종목 수·시장급락 판정에 포함되지 않습니다.'}
-      </div>'''
+    # Operational coverage belongs only to the owner, never executive HTML.
+    if _degraded:
+        _OWNER_WARNINGS.add(f"가격 조회 미완료 {sum(_degraded.values())}종목: {reasons}")
+    coverage_html = ''
+
 
     # PRICE_DROP_THRESHOLD 이하 필터
     alerted_raw = [
@@ -5051,7 +5051,6 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
         <tr>
           <td valign="middle">
             <p style="margin:0 0 4px 0;font-size:19px;font-weight:bold;color:#ffffff;">🤖 개인고객그룹 리스크 탐지봇</p>
-            <p style="margin:0 0 3px 0;font-size:10px;color:#c8d8f0;text-align:right;">{_model_label()}</p>
             <p style="margin:0;font-size:13px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (KST)</p>
           </td>
         </tr>
@@ -5096,7 +5095,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
   <tr>
     <td class="footer-td" style="padding:14px 22px;background:#fff;border-top:1px solid #e2e8f0;">
       <p style="margin:0;font-size:13px;color:#94a3b8;line-height:2.0;">
-        본 이메일은 Claude가 심층 분석·선별하여 발송합니다.<br>
+        리스크 관련 기사와 보유 현황을 분석·선별하여 발송합니다.<br>
         담당자 &nbsp;최진후 차장
       </p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
@@ -5139,7 +5138,6 @@ def build_empty_html(now) -> str:
   <tr>
     <td class="header-td" style="background:#3b5491;padding:22px 26px;">
       <p style="margin:0 0 6px 0;font-size:20px;font-weight:bold;color:#ffffff;">🤖 개인고객그룹 리스크 탐지봇
-        <span style="font-size:12px;color:#ffffff;padding:2px 8px;background:#5a7abf;margin-left:8px;">{_model_label()}</span>
       </p>
       <p style="margin:0;font-size:14px;color:#c8d8f0;">{now.strftime('%Y년 %m월 %d일 %H:%M')} 기준 (한국시간)</p>
     </td>
@@ -5152,7 +5150,7 @@ def build_empty_html(now) -> str:
   <tr>
     <td style="padding:14px 22px;border-top:1px solid #e2e8f0;">
       <p style="margin:0;font-size:13px;color:#94a3b8;line-height:2.0;">
-        본 이메일은 Claude가 심층 분석·선별하여 발송합니다.<br>
+        리스크 관련 기사와 보유 현황을 분석·선별하여 발송합니다.<br>
         담당자 &nbsp;최진후 차장
       </p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;">
@@ -5327,12 +5325,25 @@ def _build_msg(subject: str, html_body: str, to_addr: str) -> MIMEMultipart:
     return msg
 
 
+_OWNER_WARNINGS = set()
+
+
+def flush_owner_warnings():
+    """Send diagnostics outside delivery receipts; no executive recipient fallback."""
+    if not _OWNER_WARNINGS:
+        return
+    details = "\n".join(sorted(_OWNER_WARNINGS))
+    _OWNER_WARNINGS.clear()
+    send_email_error("운영 확인 사항", details)
+
+
 def send_email_error(error_msg: str, trace: str):
     """런타임 오류 발생 시 담당자에게 오류 내용 메일 발송"""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     now_str = now.strftime("%Y년 %m월 %d일 %H:%M")
-    receiver = NO_RESULT_RECEIVER if NO_RESULT_RECEIVER else EMAIL_SENDER
+    from risk_owner_verification import OWNER
+    receiver = OWNER
 
     html_body = f"""<html>
 <head><meta charset="utf-8"></head>
@@ -5404,16 +5415,17 @@ def _notify_partial_failure(subject: str, refused: dict, total: int):
     """일부/전원 수신자 거부 시 본인에게 경고 메일 별도 발송 (자기 자신도
     거부 대상에 포함돼 있으면 이 경고 자체도 실패할 수 있음 — 그 경우
     GitHub Actions 로그가 최후 수단)"""
+    from risk_owner_verification import OWNER
     _warn = _build_msg(
         f"⚠️ [리스크봇] 수신자 {len(refused)}/{total}명 거부됨 — {subject[:40]}",
         f"<p>본문 메일 발송 중 다음 수신자가 실패했습니다:</p><pre>{_esc(str(refused))}</pre>",
-        EMAIL_SENDER,
+        OWNER,
     )
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.ehlo()
             server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_SENDER, [EMAIL_SENDER], _warn.as_string())
+            server.sendmail(EMAIL_SENDER, [OWNER], _warn.as_string())
     except Exception as _e:
         print(f"  ⚠️ 거부 경고 메일 발송도 실패: {_e}")
 
@@ -5987,6 +5999,11 @@ def main():
                 future.result()
             except Exception as e:
                 print(f"  본문 크롤링 오류: {e}")
+
+    # Do not present title-only analysis as verified after hiding its caveat.
+    missing_bodies = sum(not a.get("body") or a.get("_body_failed") for a in filtered)
+    if missing_bodies:
+        raise AnalysisIncompleteError(f"본문 검증 미완료 {missing_bodies}건 — 발송 및 처리 이력 보류")
 
     # ── Claude 본문 기반 2차 검증 ────────────────────────────────────────────
     # 1차(Gemini) 통과 기사 중 본문이 있는 것만 재검증 — 오탐 최종 차단
@@ -6756,3 +6773,6 @@ if __name__ == "__main__":
         except Exception as _me:
             print(f"오류 메일 발송 실패: {_me}")
         raise
+
+    finally:
+        flush_owner_warnings()

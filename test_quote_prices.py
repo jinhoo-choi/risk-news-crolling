@@ -582,14 +582,9 @@ class MonitorPriceIntegrationTests(OfflineTestCase):
             "failures": {"not_listed": 1, "unsupported": 1, "provider_error": 1, "ambiguous": 1}})
         self.assertEqual(coverage["priced"] + sum(coverage["failures"].values()), coverage["total"])
         self.assertEqual(coverage["missing"], sum(coverage["failures"].values()))
-        self.assertIn("당일 가격 확인 2/6종목", html)
-        self.assertIn("가격 확인 1/5종목", html)
-        self.assertIn("미확인 상태", html)
-        for status in coverage["failures"]:
-            if status == "not_listed":  # (2026-10-11) 비상장은 상시 상태라 사유에서 제외
-                self.assertNotIn(prices.STATUS_LABELS[status], html)
-                continue
-            self.assertIn(prices.STATUS_LABELS[status], html)
+        self.assertNotIn("가격 감시 범위", html)
+        self.assertNotIn("미확인 상태", html)
+        self.assertTrue(monitor._OWNER_WARNINGS)
         self.assertEqual(monitor.build_price_alert_section.last_alerted_count, 1)
         self.assertEqual(monitor.build_price_alert_section.last_alerted_rbal, 7)
         self.assertCountEqual([args.args[0] for args in provider.call_args_list],
@@ -632,8 +627,8 @@ class MonitorPriceIntegrationTests(OfflineTestCase):
         coverage = monitor.build_price_alert_section.last_coverage
         self.assertEqual((coverage["total"], coverage["priced"], coverage["missing"]), (2, 0, 2))
         self.assertEqual((coverage["risk_total"], coverage["risk_priced"]), (2, 0))
-        self.assertIn("당일 가격 확인 0/2종목", html)
-        self.assertIn("시장급락 판정에 포함되지 않습니다", html)
+        self.assertEqual(html, "")
+        self.assertTrue(monitor._OWNER_WARNINGS)
         self.assertEqual(monitor.build_price_alert_section.last_alerted_count, 0)
         self.assertEqual(monitor.build_price_alert_section.last_alerted_rbal, 0)
         provider.assert_called_once_with("005930.KS")
@@ -700,7 +695,8 @@ class MonitorPriceIntegrationTests(OfflineTestCase):
                     # (2026-10-11) 전 종목 당일 가격 없음 = 주말·휴장·개장 전 → 박스 미노출
                     self.assertNotIn("가격 감시 범위", html)
                 else:
-                    self.assertIn("당일 가격 확인 0/1종목", html)
+                    self.assertNotIn("가격 감시 범위", html)
+                    self.assertTrue(monitor._OWNER_WARNINGS)
                 self.assertEqual(monitor.build_price_alert_section.last_alerted_count, 0)
 
     def test_unlisted_bond_ambiguous_and_unavailable_dedup_do_not_fetch(self):
@@ -710,7 +706,8 @@ class MonitorPriceIntegrationTests(OfflineTestCase):
         with patch.object(prices, "get_market_catalog", return_value=None):
             self.assertIsNone(monitor.get_entity_price_drop("시험가", exposure(exposure_row())))
             html = monitor.build_price_alert_section(exposure(exposure_row()))
-            self.assertIn(prices.STATUS_LABELS["market_unavailable"], html)
+            self.assertNotIn(prices.STATUS_LABELS["market_unavailable"], html)
+            self.assertTrue(monitor._OWNER_WARNINGS)
             self.assertEqual(monitor.build_price_alert_section.last_coverage["failures"],
                              {"market_unavailable": 1})
 

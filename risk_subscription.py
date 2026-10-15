@@ -386,7 +386,8 @@ def consume(queue, jid, self_test=False):
             subject += ' · '+label
         return subject, document
     def send(subject, html, self_only=False):
-        subject, html = review_notice(subject, html)
+        if deferred_ids:
+            html = html.replace("금일 리스크 뉴스 없음 — ", "")
         targets = [bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER] if self_only else list(dict.fromkeys([bot.EMAIL_SENDER]+bot.EMAIL_RECEIVERS+bot.EMAIL_CC))
         if self_test:
             targets, self_only = [bot.NO_RESULT_RECEIVER], True
@@ -395,12 +396,18 @@ def consume(queue, jid, self_test=False):
             raise RuntimeError('동일 회차 추가 메일 금지')
         staged.update(subject=subject, html=html, targets=targets, self_only=self_only)
         return True  # Stage native post-delivery history, without SMTP or main writes.
+    owner_review_notified = False
+    owner_review_staged = False
     def empty(subject, html):
+        nonlocal owner_review_staged
+        from risk_owner_verification import OWNER
+        bot.NO_RESULT_RECEIVER = OWNER
         subject, html = review_notice(subject, html, empty=True)
         if staged:
             raise RuntimeError('동일 회차 추가 메일 금지')
         staged.update(subject=('[TEST] ' if self_test else '')+subject, html=html,
-                      targets=[bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER], self_only=True)
+                      targets=[bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER], self_only=True, recipient_route='owner_status')
+        owner_review_staged = bool(deferred_ids)
     def save(*args, **kwargs):
         if args:
             held_urls = {a['url'] for a in job['input']['items'] if a['article_id'] in deferred_ids}
@@ -440,7 +447,7 @@ def consume(queue, jid, self_test=False):
         if not staged:
             raise RuntimeError('발송 계획 없음 — 정상 완료 금지')
         packet = make_packet(job, result, staged['subject'], staged['html'], staged['targets'],
-                             staged['self_only'], prepared_seen)
+                             staged['self_only'], prepared_seen, staged.get('recipient_route', 'configured'))
         store_packet(queue, packet)
         artifact('previews/'+jid+'.json', {'html': staged['html'], 'self_test': self_test, 'paid_ai_calls': 0})
         artifact('logs/'+jid+'.json', {'log': output.getvalue(), 'paid_ai_calls': 0})
@@ -449,6 +456,7 @@ def consume(queue, jid, self_test=False):
         if self_test and Path('seen_news.json').read_bytes() != original_seen:
             raise RuntimeError('본인 검수 중 운영 이력 변경')
         finish_packet(queue, job, result, packet, bot, guard, native_send)
+        owner_review_notified = owner_review_staged
     except Exception:
         # An authenticated connection failure before any DATA is safely retryable.
         def failed(j):
@@ -458,6 +466,11 @@ def consume(queue, jid, self_test=False):
         raise
     finally:
         bot.RISK_PROVIDER = None
+        # SMTP guard has been restored: diagnostics must not become delivery receipts.
+        bot.flush_owner_warnings()
+        if deferred_ids and not owner_review_notified:
+            notify_best_effort(RuntimeError(f'확인 보류 {len(deferred_ids)}건 · 24시간 이상 미확인 {overdue_count}건'),
+                               '검증 미완료 기사는 발송·정상 처리에서 제외하고 재확인합니다.')
 
 
 def finish_packet(queue, job, result, packet, bot, guard, native_send):
@@ -468,6 +481,9 @@ def finish_packet(queue, job, result, packet, bot, guard, native_send):
     before, _ = queue.source('seen_news.json')
     if hashlib.sha256(before).hexdigest() not in {packet['source_history_hash'], packet['seen_after_hash']}:
         raise RuntimeError('발송 계획 이후 main 이력 변경 — 자동 합치기 금지')
+    if packet.get('recipient_route') == 'owner_status':
+        from risk_owner_verification import OWNER
+        bot.NO_RESULT_RECEIVER = OWNER
     targets = ([bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER] if packet['self_only']
                else list(dict.fromkeys([bot.EMAIL_SENDER]+bot.EMAIL_RECEIVERS+bot.EMAIL_CC)))
     from risk_delivery import address_key

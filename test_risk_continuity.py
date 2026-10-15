@@ -106,12 +106,14 @@ class NativeContinuity(unittest.TestCase):
             return send(*args)
         smtp.sendmail = checked
         self.run_consume(queue, smtp)
-        self.assertEqual(len(smtp.calls), 3)
+        self.assertEqual(len(smtp.calls), 4)
+        self.assertEqual(smtp.calls[-1][0], ['111715@koreainvestment.com'])
+        self.assertEqual(len(queue.data['jobs/test.json']['receipts']), 3)
         self.assertEqual(queue.data['results/test.json'], original)
         self.assertNotIn('https://example.invalid/held', self.bot.load_seen_urls())
         self.assertFalse(queue.data['jobs/test.json']['analysis_complete'])
         html = queue.data['previews/test.json']['html']
-        self.assertIn('확인 보류 1건', html)
+        self.assertNotIn('확인 보류', html)
         self.assertIn('<table', html)
         self.ack(queue)
         self.assertEqual(queue.data['jobs/test.json']['status'], 'completed')
@@ -124,7 +126,7 @@ class NativeContinuity(unittest.TestCase):
         result['classifications'][0]['relevant'] = None
         result['analyses'] = {}
         self.run_consume(queue, smtp)
-        self.assertEqual([r[0] for r in smtp.calls], [['owner@example.invalid']])
+        self.assertEqual([r[0] for r in smtp.calls], [['111715@koreainvestment.com']])
         html = queue.data['previews/test.json']['html']
         self.assertIn('확인 보류 기사가 있습니다.', html)
         self.assertNotIn('해당하는 뉴스가 없습니다.', html)
@@ -136,7 +138,8 @@ class NativeContinuity(unittest.TestCase):
         self.seed_review(queue, 'held')
         queue.data['review/held.json']['first_seen_at'] = (now()-timedelta(days=2)).isoformat()
         self.run_consume(queue, smtp)
-        self.assertIn('24시간 이상 미확인 1건', queue.data['previews/test.json']['html'])
+        self.assertNotIn('미확인', queue.data['previews/test.json']['html'])
+        self.assertEqual(smtp.calls[-1][0], ['111715@koreainvestment.com'])
         self.assertIsNone(queue.data['results/test.json']['classifications'][-1]['relevant'])
         self.assertEqual(queue.data['jobs/test.json']['overdue_review_count'], 1)
 
@@ -185,6 +188,7 @@ class NativeContinuity(unittest.TestCase):
         self.assertEqual(queue.data['jobs/test.json']['status'], 'delivery_complete')
         self.assertEqual(queue.data['review/one.json']['status'], 'pending')
         self.assertEqual(len(smtp.calls), 3)
+        self.assertEqual(len(queue.data['jobs/test.json']['receipts']), 3)
 
     def test_owner_verification_null_does_not_write_production_review(self):
         queue, smtp = self.fixture('verification'), native_fixtures.SMTP()
