@@ -1,7 +1,7 @@
 {
-  "operation": "collect-review",
-  "job_id": "pending-review",
+  "operation": "consume",
+  "job_id": "risk-production-38714743758",
   "self_test": false,
   "dry_run": false,
-  "request_id": "owner-review-two-20261015T1850"
+  "request_id": "owner-table-resolve-20261015T1858"
 }
