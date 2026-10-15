@@ -51,6 +51,96 @@ class NativeContinuity(unittest.TestCase):
         queue.remote_seen = Path('seen_news.json').read_bytes()
         bridge.acknowledge(queue, 'test')
 
+
+    def replay(self, queue):
+        job = self.frozen(queue)
+        job['input']['snapshot_mode'] = 'review_replay'
+        result = queue.data['results/test.json']
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        return job
+
+    def crash_digest(self):
+        from unittest.mock import Mock
+        price = Mock(return_value='<div>MARKET_DIGEST_ONLY</div>')
+        price.last_alerted_count = 99
+        price.last_alerted_rbal = 9999
+        price.last_alerted_big = (99, 9999)
+        return price
+
+    def test_review_no_positive_cannot_send_market_digest_to_groups(self):
+        queue, smtp = self.fixture(), native_fixtures.SMTP()
+        self.replay(queue)
+        self.seed_review(queue)
+        result = queue.data['results/test.json']
+        result['classifications'][0]['relevant'] = False
+        result['analyses'] = {}
+        price = self.crash_digest()
+        with patch.object(self.bot, 'build_price_alert_section', price), \
+                patch.object(self.bot, 'load_competitor_notices') as notices:
+            self.run_consume(queue, smtp)
+        self.assertEqual([r[0] for r in smtp.calls], [['111715@koreainvestment.com']])
+        price.assert_not_called()
+        notices.assert_not_called()
+        self.assertNotIn('MARKET_DIGEST_ONLY', queue.data['outbox/test.json']['html'])
+        self.ack(queue)
+        self.assertEqual(queue.data['review/one.json']['status'], 'resolved')
+        self.assertEqual(queue.data['jobs/test.json']['status'], 'completed')
+
+    def test_review_native_removes_all_cards_without_group_digest(self):
+        queue, smtp = self.fixture(), native_fixtures.SMTP()
+        self.replay(queue)
+        price = self.crash_digest()
+        with patch.object(self.bot, 'build_price_alert_section', price), \
+                patch.object(self.bot, 'load_competitor_notices') as notices, \
+                patch.object(self.bot, 'filter_articles_for_scope', return_value=[]):
+            self.run_consume(queue, smtp)
+        self.assertEqual([r[0] for r in smtp.calls], [['111715@koreainvestment.com']])
+        price.assert_not_called()
+        notices.assert_not_called()
+        self.assertNotIn('MARKET_DIGEST_ONLY', queue.data['outbox/test.json']['html'])
+
+    def test_review_verified_urgent_news_still_delivers_and_acks(self):
+        queue, smtp = self.fixture(), native_fixtures.SMTP()
+        self.replay(queue)
+        self.seed_review(queue)
+        price = self.crash_digest()
+        with patch.object(self.bot, 'build_price_alert_section', price), \
+                patch.object(self.bot, 'load_competitor_notices') as notices:
+            self.run_consume(queue, smtp)
+        self.assertEqual([r[0] for r in smtp.calls],
+                         [['sender@example.invalid'], ['group@example.invalid'], ['cc@example.invalid']])
+        self.assertIn('https://example.invalid/test/one', queue.data['outbox/test.json']['html'])
+        price.assert_not_called()
+        notices.assert_not_called()
+        self.ack(queue)
+        self.assertEqual(queue.data['review/one.json']['status'], 'resolved')
+        self.assertTrue(queue.data['jobs/test.json']['ack'])
+
+    def test_natural_no_news_market_alert_still_reaches_existing_groups(self):
+        queue, smtp = self.fixture(), native_fixtures.SMTP()
+        job = self.frozen(queue)
+        job['input']['snapshot_mode'] = 'natural_collection'
+        result = queue.data['results/test.json']
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        result['classifications'][0]['relevant'] = False
+        result['analyses'] = {}
+        price = self.crash_digest()
+        with patch.object(self.bot, 'build_price_alert_section', price):
+            self.run_consume(queue, smtp)
+        self.assertEqual([r[0] for r in smtp.calls],
+                         [['sender@example.invalid'], ['group@example.invalid'], ['cc@example.invalid']])
+        price.assert_called()
+        self.assertIn('MARKET_DIGEST_ONLY', queue.data['outbox/test.json']['html'])
+
+    def test_review_loan_only_frozen_packet_is_rejected(self):
+        queue = self.fixture()
+        job = self.replay(queue)
+        with self.assertRaisesRegex(RuntimeError, '검증 기사 없는 전체 발송 금지'):
+            bridge.make_packet(job, queue.data['results/test.json'], 'market digest',
+                               '<html><body>MARKET_DIGEST_ONLY</body></html>',
+                               ['group@example.invalid'], False, Path('seen_news.json').read_text())
+
+
     def test_current_balance_change_uses_snapshot_and_preserves_main_csv(self):
         queue = self.fixture()
         self.frozen(queue)

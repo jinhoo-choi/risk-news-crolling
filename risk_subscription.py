@@ -428,6 +428,10 @@ def consume(queue, jid, self_test=False):
     try:
         provider.install(bot)
         with contextlib.ExitStack() as stack:
+            if job['input'].get('snapshot_mode') == 'review_replay':
+                # Review only the saved articles; market/notice digests belong to natural runs.
+                stack.enter_context(patch.object(bot, 'build_price_alert_section', lambda *a, **k: ''))
+                stack.enter_context(patch.object(bot, 'load_competitor_notices', return_value=[]))
             frozen = read_exposure(queue, job, config)
             if frozen is not None:
                 directory = stack.enter_context(tempfile.TemporaryDirectory())
