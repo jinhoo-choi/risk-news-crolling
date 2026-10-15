@@ -1642,10 +1642,10 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
     return results
 
 def load_competitor_notices() -> list:
-    """기존 최근 2일 범위에서 제목에 신용·대출·오류가 포함된 공지 로드."""
+    """KST 오늘 공식 등록된 신용·대출·오류 공지만 로드. 수집일 대체 금지."""
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
-    valid_dates = {(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(2)}
+    today = now.strftime("%Y-%m-%d")
     result = []
     data_dir = "data"
     if not os.path.exists(data_dir):
@@ -1661,10 +1661,10 @@ def load_competitor_notices() -> list:
             with open(fpath, "r", encoding="utf-8-sig") as f:
                 reader = _csv.DictReader(f)
                 for row in reader:
-                    date = row.get("date", "")
+                    date = row.get("published_date", "")
                     title = row.get("title", "")
                     company = row.get("company", "")
-                    if date not in valid_dates:
+                    if date != today:
                         continue
                     if matches_notice_title(title):
                         result.append({
