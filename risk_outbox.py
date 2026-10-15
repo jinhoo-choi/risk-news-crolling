@@ -63,6 +63,13 @@ def validate_packet(value, job, result):
             or not isinstance(value.get('seen_after_snapshot'), str)
             or sha(value['seen_after_snapshot']) != value.get('seen_after_hash')):
         raise RuntimeError('발송 고정본 본문·이력 형식 오류')
+    if job['input'].get('snapshot_mode') == 'review_replay' and not value['self_only']:
+        # Also guard frozen/recovery packets: a review may deliver verified news, never a digest alone.
+        linked = {a.get('href') for a in BeautifulSoup(value['html'], 'html.parser').find_all('a')}
+        verified = {a['url'] for a in job['input']['items']
+                    if result['analyses'].get(a['article_id'], {}).get('body_status') == 'verified'}
+        if not linked.intersection(verified):
+            raise RuntimeError('재검토 회차의 검증 기사 없는 전체 발송 금지')
     after = validate_seen_data(strict_json(value['seen_after_snapshot']))
     seen_urls = {u for k, entry in after.items() if k != '_event_history'
                  for u in (entry if isinstance(entry, list) else entry.get('urls', []))}
