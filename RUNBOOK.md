@@ -246,3 +246,5 @@ awk -F',' 'NR>1 && $20!="" && $20+0<140' exposure_data.csv | wc -l   # 영
 구독 수집은 기사 본문을 최대 12,000자로 확보하며 매체별 본문 컨테이너를 먼저 읽는다. 기존 API 경로의 600자 상한은 유지한다.
 담당자의 명시적인 보류 해소 요청에는 기존 risk_subscription_request.json과 소비 워크플로를 재사용해 operation=collect-review, job_id=pending-review, self_test=false, dry_run=false로 영속 보류만 재수집할 수 있다. 이 단계는 새로운 뉴스 검색·운영 SMTP·seen·ACK 없이 새 유효 production 입력만 만든다. 기존 미종결 전송 잠금과 고정 잔고·원본·정책 해시 검증은 유지한다.
 재판정 뒤 기존 consume→이력 push→ACK 순서가 완료돼야 보류를 resolved로 바꾼다. 본문을 확보하지 못한 건은 null로 남기며 만료·횟수만으로 false 처리하지 않는다.
+
+continuity_version=1 회차에서는 true 분석이라도 body_status가 verified가 아니면 발송 단계의 별도 보류로 유지한다. 원본 분류·분석은 수정하지 않고, 해당 기사를 native 입력·seen·보류 해결 대상에서 제외한다. 검증을 마친 나머지 기사는 기존 절차로 처리하며 보류는 다음 회차에 재검토한다. 기존 API·legacy 본문 검증 차단은 유지한다.
