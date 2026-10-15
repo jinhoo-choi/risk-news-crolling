@@ -280,6 +280,27 @@ class Recovery(unittest.TestCase):
 
 
 class Request(unittest.TestCase):
+    def test_owner_diagnostic_after_summary_preserves_history_ack_output(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'output'
+            value = {'operation':'consume', 'job_id':'test', 'self_test':False,
+                     'dry_run':False, 'request_id':'review-summary'}
+            summary = json.dumps({'job_id':'test', 'status':'delivery_complete', 'paid_ai_calls':0})
+            stdout = summary + '\n담당자 오류 알림 SMTP accepted 1건; 운영 영수증 변경0/API0\n'
+            with patch.object(request.Path, 'read_text', return_value=json.dumps(value)), \
+                    patch.object(request.subprocess, 'run', return_value=SimpleNamespace(stdout=stdout)), \
+                    patch.dict(os.environ, GITHUB_OUTPUT=str(path)):
+                request.main()
+            self.assertIn('needs_ack=true', path.read_text())
+            self.assertIn('job_id=test', path.read_text())
+
+    def test_missing_or_duplicate_summary_never_guesses_completion(self):
+        summary = json.dumps({'job_id':'test', 'status':'delivery_complete', 'paid_ai_calls':0})
+        for output in ['담당자 알림만 있음', summary + '\n' + summary]:
+            with self.subTest(output=output), self.assertRaisesRegex(RuntimeError, '요약 누락·중복'):
+                request.read_summary(output)
+
     def test_review_wake_is_fixed_collection_only_without_ack(self):
         value = {'operation': 'collect-review', 'job_id': 'pending-review', 'self_test': False,
                  'dry_run': False, 'request_id': 'review-test'}
