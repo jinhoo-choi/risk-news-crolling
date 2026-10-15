@@ -1,5 +1,6 @@
 """Durable per-recipient SMTP reservations; no retry after uncertain DATA."""
 import hashlib
+import uuid
 from email import message_from_string
 from email.utils import getaddresses
 
@@ -11,16 +12,23 @@ def address_key(address):
 
 
 class Delivery:
-    def __init__(self, queue, job_id, real_smtp, check_config):
+    def __init__(self, queue, job_id, real_smtp, check_config, resume=False):
         self.queue, self.path = queue, 'jobs/'+job_id+'.json'
         self.real_smtp, self.check_config = real_smtp, check_config
         self.targets = []
+        self.resume = resume
+        self.smtp_calls = 0
+
+    def read(self):
+        return getattr(self.queue, 'get_fresh', self.queue.get)(self.path)
 
     def change(self, fn):
-        job, sha = self.queue.get(self.path)
+        job, sha = self.read()
         if not job or not sha:
             raise RuntimeError('전송 선기록 읽기 실패')
         fn(job)
+        # Makes a confirmed write distinguishable from another worker's reserve.
+        job['delivery_revision'] = uuid.uuid4().hex
         self.queue.put(self.path, job, sha)
         return job
 
@@ -31,10 +39,22 @@ class Delivery:
         if not self.targets:
             raise RuntimeError('수신자 없음')
         keys = [address_key(t) for t in self.targets]
-        self.change(lambda j: j.update(expected_receipts=keys))
+        def prepare(job):
+            if job.get('status') != 'sending':
+                raise RuntimeError('발송 상태 변경 — 수신자 준비 중단')
+            if self.resume:
+                if (keys != job.get('expected_receipts')
+                        or any(v != 'accepted' for v in job.get('receipts', {}).values())
+                        or not set(job.get('receipts', {})) <= set(keys)
+                        or job.get('attempted_count', 0) != len(job.get('receipts', {}))):
+                    raise RuntimeError('기존 수신자·접수 상태 불일치 — 복구 금지')
+            elif job.get('receipts') or job.get('attempted_count', 0):
+                raise RuntimeError('발송 시작 수신자 재준비 금지')
+            job['expected_receipts'] = keys
+        self.change(prepare)
 
     def complete(self):
-        job, _ = self.queue.get(self.path)
+        job, _ = self.read()
         expected = set(job.get('expected_receipts', []))
         receipts = job.get('receipts', {})
         if not expected or set(receipts) != expected or any(v != 'accepted' for v in receipts.values()):
@@ -67,6 +87,12 @@ class Delivery:
                     raise RuntimeError('SMTP envelope과 헤더 불일치')
                 guard.check_config()
                 key = address_key(addr)
+                if guard.resume:
+                    previous, _ = guard.read()
+                    if previous.get('status') != 'sending':
+                        raise RuntimeError('복구 상태 변경 — 발송 중단')
+                    if previous.get('receipts', {}).get(key) == 'accepted':
+                        return {}  # No SMTP DATA for already accepted recipients.
                 def reserve(job):
                     if job.get('status') != 'sending' or key in job.get('receipts', {}):
                         raise RuntimeError('시작·접수·미확인 수신자 재전송 금지')
@@ -74,13 +100,19 @@ class Delivery:
                     job['attempted_count'] = job.get('attempted_count', 0)+1
                 guard.change(reserve)
                 try:
+                    guard.smtp_calls += 1
                     refused = server.sendmail(sender, recipients, raw)
                 except Exception:
                     guard.change(lambda j: (j['receipts'].__setitem__(key, 'uncertain'), j.update(status='uncertain')))
                     raise RuntimeError('SMTP DATA 접수 불확실 — 자동 재시도 금지') from None
                 state = 'rejected' if refused else 'accepted'
-                guard.change(lambda j: (j['receipts'].__setitem__(key, state),
-                    j.update(status='uncertain') if refused else None))
+                def record(job):
+                    if job.get('status') != 'sending' or job.get('receipts', {}).get(key) != 'sending':
+                        raise RuntimeError('접수 선기록 변경 — 자동 복구 금지')
+                    job['receipts'][key] = state
+                    if refused:
+                        job['status'] = 'uncertain'
+                guard.change(record)
                 if refused:
                     raise RuntimeError('SMTP 수신자 거부 — 이력 저장·자동 재시도 금지')
                 return refused

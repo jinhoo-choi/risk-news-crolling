@@ -18,6 +18,14 @@ POLICY = 'risk-subscription-v1'
 JOB_ID = re.compile(r'^[A-Za-z0-9_-]{1,80}$')
 
 
+class QueueConflict(RuntimeError):
+    """A confirmed HTTP 409; not an ambiguous network/write failure."""
+
+    def __init__(self, request_id='unconfirmed', kind='conflict', method='PUT', code=409):
+        self.request_id, self.kind = request_id, kind
+        super().__init__('비공개 큐 '+method+' HTTP '+str(code)+'; kind='+kind+'; request_id='+request_id)
+
+
 def now():
     return datetime.now(timezone.utc)
 
@@ -40,6 +48,7 @@ class Queue:
             data=json.dumps(data).encode() if data is not None else None,
             method=method, headers={'Authorization': 'Bearer ' + self.token,
                 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json',
+                'Cache-Control': 'no-cache',
                 'X-GitHub-Api-Version': '2022-11-28'})
         attempts = 3 if method == 'GET' else 1
         for attempt in range(attempts):
@@ -47,6 +56,18 @@ class Queue:
                 with urllib.request.urlopen(request, timeout=30) as response:
                     return json.load(response)
             except urllib.error.HTTPError as error:
+                if (error.code == 409 and method == 'PUT'
+                        or error.code in {409, 422} and method == 'PATCH' and suffix == '/git/refs/heads/main'):
+                    # Never expose GitHub's raw response (it may contain private data).
+                    request_id = error.headers.get('X-GitHub-Request-Id', '') if error.headers else ''
+                    if not re.fullmatch(r'[A-Za-z0-9:-]{1,100}', request_id):
+                        request_id = 'unconfirmed'
+                    try:
+                        message = json.loads(error.read(8192)).get('message', '').lower()
+                        kind = 'sha_conflict' if 'sha' in message else 'ref_conflict' if 'reference' in message else 'conflict'
+                    except (ValueError, AttributeError, TypeError):
+                        kind = 'conflict'
+                    raise QueueConflict(request_id, kind, method, error.code) from None
                 if error.code == 404 and method == 'GET':
                     return None
                 if error.code in {429, 500, 502, 503, 504} and attempt+1 < attempts:
@@ -74,10 +95,10 @@ class Queue:
             raise RuntimeError('운영 설정·이력 읽기 실패')
         return base64.b64decode(obj['content']), obj['sha']
 
-    def get(self, path):
+    def get(self, path, ref='main'):
         if '..' in path or path.startswith('/'):
             raise ValueError('큐 경로 오류')
-        obj = self.request('/contents/' + PREFIX + '/' + urllib.parse.quote(path, safe='/') + '?ref=main')
+        obj = self.request('/contents/' + PREFIX + '/' + urllib.parse.quote(path, safe='/') + '?ref='+urllib.parse.quote(ref, safe=''))
         if obj is None:
             return None, None
         if obj.get('type') != 'file':
@@ -95,6 +116,12 @@ class Queue:
             raise RuntimeError('비공개 큐 blob 해시 불일치')
         return strict_json(raw.decode()), obj['sha']
 
+    def get_fresh(self, path):
+        # Pin a commit: a cached Contents response for the moving main ref must
+        # never erase a receipt written by the preceding SMTP recipient.
+        head = self.request('/git/ref/heads/main')['object']['sha']
+        return self.get(path, ref=head)
+
     def put(self, path, value, sha=None):
         if '..' in path or path.startswith('/'):
             raise ValueError('큐 경로 오류')
@@ -102,7 +129,18 @@ class Queue:
                 'content': base64.b64encode(json.dumps(value, ensure_ascii=False, indent=2).encode()).decode()}
         if sha:
             body['sha'] = sha
-        return self.request('/contents/' + PREFIX + '/' + urllib.parse.quote(path, safe='/'), 'PUT', body)
+        for attempt in range(3):
+            try:
+                return self.request('/contents/' + PREFIX + '/' + urllib.parse.quote(path, safe='/'), 'PUT', body)
+            except QueueConflict:
+                current, current_sha = self.get_fresh(path)
+                if current_sha and current == value:
+                    return {'content': {'sha': current_sha}, 'confirmed_existing': True}
+                # Same file SHA, different branch head: retry the *same* CAS.
+                # A changed file/receipt is a conflict, never overwrite/merge it.
+                if current_sha != sha or attempt == 2:
+                    raise
+                time.sleep(attempt+1)
 
     def list_input_entries(self, job_id=None):
         """List live input trees, including jobs no longer present in index.json."""
@@ -127,7 +165,7 @@ class Queue:
         return tree['tree']
 
     def put_many(self, values, expected, deletions=()):
-        """Publish values/input deletions atomically, without retrying writes."""
+        """Publish atomically; rebase only confirmed ref races with intact leases."""
         deletions = list(deletions)
         for path in deletions:
             parts = path.split('/')
@@ -136,12 +174,6 @@ class Queue:
                     or not parts[2].endswith('.json') or not expected.get(path)
                     or path in values):
                 raise ValueError('큐 입력 삭제 경로·SHA 오류')
-        ref = self.request('/git/ref/heads/main')
-        head = ref['object']['sha']
-        commit = self.request('/git/commits/'+head)
-        for path, wanted in expected.items():
-            if self.get(path)[1] != wanted:
-                raise RuntimeError('큐 원본 SHA 변경 — 일괄 쓰기 보류')
         entries = []
         for path, value in values.items():
             if '..' in path or path.startswith('/'):
@@ -150,11 +182,25 @@ class Queue:
                             'content': json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False)})
         entries.extend({'path': PREFIX+'/'+path, 'mode': '100644', 'type': 'blob', 'sha': None}
                        for path in deletions)
-        tree = self.request('/git/trees', 'POST', {'base_tree': commit['tree']['sha'], 'tree': entries})
-        new = self.request('/git/commits', 'POST', {'message':'chore: private risk queue shards [skip ci]',
-                          'tree':tree['sha'], 'parents':[head]})
-        self.request('/git/refs/heads/main', 'PATCH', {'sha':new['sha'], 'force':False})
-        return new['sha']
+        for attempt in range(3):
+            head = self.request('/git/ref/heads/main')['object']['sha']
+            commit = self.request('/git/commits/'+head)
+            for path, wanted in expected.items():
+                if self.get(path, ref=head)[1] != wanted:
+                    raise RuntimeError('큐 원본 SHA 변경 — 일괄 쓰기 보류')
+            tree = self.request('/git/trees', 'POST', {'base_tree': commit['tree']['sha'], 'tree': entries})
+            new = self.request('/git/commits', 'POST', {'message':'chore: private risk queue shards [skip ci]',
+                              'tree':tree['sha'], 'parents':[head]})
+            try:
+                self.request('/git/refs/heads/main', 'PATCH', {'sha':new['sha'], 'force':False})
+                return new['sha']
+            except QueueConflict:
+                current = self.request('/git/ref/heads/main')['object']['sha']
+                if current == new['sha']:
+                    return new['sha']
+                if current == head or attempt == 2:
+                    raise
+                time.sleep(attempt+1)
 
 
 def connection(queue):
