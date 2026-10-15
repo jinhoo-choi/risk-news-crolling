@@ -25,9 +25,15 @@ class Queue:
         self.remote_seen = Path('seen_news.json').read_bytes()
         self.engine = 'subscription'
     def get(self, path):
-        return copy.deepcopy(self.data.get(path)), 'sha' if path in self.data else None
+        return copy.deepcopy(self.data.get(path)), digest(self.data[path]) if path in self.data else None
     def put(self, path, value, sha=None):
+        if sha is not None and self.get(path)[1] != sha:
+            raise RuntimeError('queue changed')
         self.data[path] = copy.deepcopy(value)
+    def put_many(self, values, expected, deletions=()):
+        if any(self.get(path)[1] != sha for path, sha in expected.items()):
+            raise RuntimeError('queue changed')
+        self.data.update(copy.deepcopy(values))
     def source(self, path):
         if path == 'risk_subscription_config.json':
             return json.dumps({'engine': self.engine, 'policy_version': 'risk-subscription-v1'}).encode(), 'sha'
@@ -158,7 +164,8 @@ class Integration(unittest.TestCase):
     def test_expiration_cleanup_never_unlocks_uncertain(self):
         queue = self.fixture()
         queue.data['jobs/test.json']['expires_at'] = (now()-timedelta(seconds=1)).isoformat()
-        expire_and_check(queue)
+        with patch('risk_subscription.notify_error'):
+            expire_and_check(queue)
         self.assertEqual(queue.data['jobs/test.json']['status'], 'expired')
         queue.data['jobs/test.json']['status'] = 'uncertain'
         with self.assertRaises(RuntimeError): expire_and_check(queue)

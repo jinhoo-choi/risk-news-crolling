@@ -1,7 +1,7 @@
 name: Risk subscription consume (API0)
 on:
   push:
-    branches: [main, codex/risk-subscription-20261014]
+    branches: [main]
     paths: [risk_subscription_request.json]
 permissions:
   contents: write
