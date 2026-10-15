@@ -18,13 +18,14 @@ def sha(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def make_packet(job, result, subject, document, targets, self_only, seen):
+def make_packet(job, result, subject, document, targets, self_only, seen, recipient_route="configured"):
     value = {'schema_version': 1, 'job_id': job['job_id'],
              'input_hash': job['input_hash'], 'policy_hash': job['policy_hash'],
              'body_manifest_hash': job['body_manifest_hash'], 'result_hash': digest(result),
              'source_history_hash': job['input']['history_hash'],
              'expected_receipts': [address_key(t) for t in targets],
              'subject': subject, 'html': document, 'self_only': self_only,
+             'recipient_route': recipient_route,
              'self_test': job['mode'] == 'verification', 'paid_ai_calls': 0,
              'seen_after_snapshot': seen, 'seen_after_hash': sha(seen),
              'created_at': now().isoformat()}
@@ -49,6 +50,13 @@ def validate_packet(value, job, result):
             or any(not isinstance(t, str) or not re.fullmatch(r'[0-9a-f]{64}', t) for t in targets)
             or (job.get('expected_receipts') and targets != job['expected_receipts'])):
         raise RuntimeError('발송 고정본 수신자 불일치')
+    route = value.get('recipient_route', 'configured')
+    if route not in {'configured', 'owner_status'}:
+        raise RuntimeError('발송 고정본 수신 경로 오류')
+    if route == 'owner_status':
+        from risk_owner_verification import OWNER
+        if not value['self_only'] or targets != [address_key(OWNER)]:
+            raise RuntimeError('담당자 상태 고정본 수신자 오류')
     if (not isinstance(value.get('subject'), str) or not value['subject']
             or '\r' in value['subject'] or '\n' in value['subject']
             or not isinstance(value.get('html'), str) or not value['html']

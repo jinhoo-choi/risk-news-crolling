@@ -132,6 +132,26 @@ class Recovery(unittest.TestCase):
         with patch.object(smtplib, 'SMTP_SSL', lambda *a, **k: smtp):
             bridge.recover(q, 'test')
 
+    def test_owner_status_recovery_restores_only_signed_owner_route(self):
+        from risk_continuity import freeze_exposure
+        from risk_owner_verification import OWNER
+        q, smtp = self.fixture(), fixtures.SMTP()
+        job = q.data['jobs/test.json']
+        q.data.update(freeze_exposure(job, Path('exposure_data.csv').read_bytes(), now().isoformat()))
+        q.data['results/test.json']['classifications'][0]['relevant'] = None
+        q.data['results/test.json']['analyses'] = {}
+        with patch.object(bridge, 'finish_packet', side_effect=RuntimeError('offline before SMTP')), \
+             patch.object(bridge, 'notify_best_effort'), self.assertRaisesRegex(RuntimeError, 'offline'):
+            self.run_consume(q, smtp)
+        self.assertEqual(smtp.calls, [])
+        frozen = copy.deepcopy(q.data['outbox/test.json'])
+        self.assertEqual(frozen['recipient_route'], 'owner_status')
+        self.bot.NO_RESULT_RECEIVER = 'executive-admin@example.invalid'
+        self.resume(q, smtp)
+        self.assertEqual([c[0] for c in smtp.calls], [[OWNER]])
+        self.assertEqual(q.data['outbox/test.json'], frozen)
+        self.assertEqual(q.data['jobs/test.json']['status'], 'delivery_complete')
+
     def test_immutable_plan_and_history_exist_before_any_smtp(self):
         q, smtp = self.fixture(), fixtures.SMTP()
         send = smtp.sendmail

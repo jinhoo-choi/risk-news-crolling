@@ -44,6 +44,10 @@ class SMTP:
     def __init__(self, fail_at=0, login_fail=False):
         self.calls = []
         self.fail_at, self.login_fail = fail_at, login_fail
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        return False
     def ehlo(self):
         pass
     def login(self, *args):
@@ -125,7 +129,7 @@ class Integration(unittest.TestCase):
         self.assertEqual([c[0] for c in smtp.calls], [['sender@example.invalid'],['group@example.invalid'],['cc@example.invalid']])
         self.assertEqual(queue.data['jobs/test.json']['status'], 'delivery_complete')
         self.assertNotEqual(self.before, Path('seen_news.json').read_bytes())
-        self.assertIn('ChatGPT 구독 · 모델 미확인', queue.data['previews/test.json']['html'])
+        self.assertNotIn('모델 미확인', queue.data['previews/test.json']['html'])
         with self.assertRaises(RuntimeError):
             acknowledge(queue, 'test')
         queue.remote_seen = Path('seen_news.json').read_bytes()
@@ -170,7 +174,7 @@ class Integration(unittest.TestCase):
         queue.data['jobs/test.json']['status'] = 'uncertain'
         with self.assertRaises(RuntimeError): expire_and_check(queue)
 
-    def test_body_missing_direct_title_stays_reference_owner_only(self):
+    def test_body_missing_holds_delivery_and_seen_history(self):
         queue, smtp = self.fixture(), SMTP()
         job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
         body = job['body_manifest'][0]
@@ -181,10 +185,27 @@ class Integration(unittest.TestCase):
         a.update(base_grade='참고',confidence=0.6,body_status='missing',
                  fact_summary='[본문 미수집] 한국투자증권 일부 잔고 조회 장애 보도.',
                  evidence=[{'source_segment':'title','source_hash':hashlib.sha256(title.encode()).hexdigest(),'quote':title}])
-        self.run_consume(queue, smtp)
-        self.assertEqual([c[0] for c in smtp.calls], [['owner@example.invalid']])
-        self.assertTrue(all(a['grade'] == '참고' and not a.get('_force_urgent')
-                            for a in queue.data['filter-logs/test.json']['final']))
+        with self.assertRaisesRegex(RuntimeError, '본문 검증 미완료'):
+            self.run_consume(queue, smtp)
+        self.assertEqual(smtp.calls, [])
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+        self.assertEqual(queue.data['jobs/test.json']['status'], 'pending')
+
+    def test_price_diagnostics_use_fixed_owner_without_receipts(self):
+        smtp = SMTP()
+        self.bot.NO_RESULT_RECEIVER = 'executive@example.invalid'
+        self.bot._OWNER_WARNINGS.add('가격 조회 미완료 2종목')
+        with patch.object(smtplib, 'SMTP_SSL', lambda *a, **k: smtp):
+            self.bot.flush_owner_warnings()
+            self.bot.flush_owner_warnings()
+        self.assertEqual([c[0] for c in smtp.calls], [['111715@koreainvestment.com']])
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+        from email import message_from_string
+        message = message_from_string(smtp.calls[0][1])
+        from email.utils import parseaddr
+        self.assertEqual(parseaddr(message['To'])[1], '111715@koreainvestment.com')
+        self.assertIsNone(message['Cc'])
+        self.assertIsNone(message['Bcc'])
 
     def test_terminal_request_is_noop_without_smtp_or_history_write(self):
         queue=self.fixture('verification')
