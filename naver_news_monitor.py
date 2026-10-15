@@ -1952,6 +1952,19 @@ def fetch_article_body(url: str) -> str:
         res.raise_for_status()
         soup = BeautifulSoup(res_text, "html.parser")
         limit = 12000 if os.environ.get('RISK_ENGINE') == 'subscription' else 600
+        if re.match(r'https?://(?:www\.)?news1\.kr/', url):
+            state = soup.select_one('script#__NEXT_DATA__')
+            if state:
+                try:
+                    parts = json.loads(state.get_text())['props']['pageProps']['articleView']['contentArrange']
+                except (ValueError, KeyError, TypeError):
+                    parts = []
+                if isinstance(parts, list):
+                    text = ' '.join(BeautifulSoup(part['content'], 'html.parser').get_text(' ', strip=True)
+                                    for part in parts if isinstance(part, dict) and part.get('type') == 'text'
+                                    and isinstance(part.get('content'), str))
+                    if text.strip():
+                        return text[:limit]
         for unwanted in soup.select('script, style, nav, footer, aside, button'):
             unwanted.decompose()
         def article_text(tag):

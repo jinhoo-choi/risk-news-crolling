@@ -240,6 +240,31 @@ class Integration(unittest.TestCase):
 
 
 class BodyExtraction(unittest.TestCase):
+    def test_news1_embedded_public_article_text_excludes_images_and_ads(self):
+        from unittest.mock import MagicMock
+        import risk_subscription as bridge
+        bot = bridge.import_bot()
+        state = {'props':{'pageProps':{'articleView':{'contentArrange':[
+            {'type':'image','content':'사진 설명'}, {'type':'div','content':'광고'},
+            {'type':'text','content':'<p>실제 사건 첫 문단.</p>'},
+            {'type':'text','content':'<p>뒤쪽 HPE 급락 사실 문단.</p>'}]}}}}
+        response = MagicMock()
+        response.headers = {}
+        response.text = '<script id="__NEXT_DATA__" type="application/json">' + json.dumps(state) + '</script><div id="articleBodyContent">사진 설명</div>'
+        with patch.object(bot.requests.Session, 'get', return_value=response):
+            self.assertEqual(bot.fetch_article_body('https://www.news1.kr/world/123'),
+                             '실제 사건 첫 문단. 뒤쪽 HPE 급락 사실 문단.')
+
+    def test_news1_malformed_state_falls_back_to_article_container(self):
+        from unittest.mock import MagicMock
+        import risk_subscription as bridge
+        bot = bridge.import_bot()
+        response = MagicMock()
+        response.headers = {}
+        response.text = '<script id="__NEXT_DATA__">invalid</script><div id="articleBodyContent">확인된 기사 본문</div>'
+        with patch.object(bot.requests.Session, 'get', return_value=response):
+            self.assertEqual(bot.fetch_article_body('https://www.news1.kr/world/123'), '확인된 기사 본문')
+
     def test_image_only_article_promotion_is_not_body(self):
         from unittest.mock import MagicMock
         import risk_subscription as bridge
