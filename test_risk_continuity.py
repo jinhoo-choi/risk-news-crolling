@@ -47,6 +47,51 @@ class NativeContinuity(unittest.TestCase):
         values, expected, _ = continuity.prepare_reviews(queue, job, {aid: None})
         queue.put_many(values, expected)
 
+    def test_owner_exclusion_removes_only_requested_article_without_rewriting_result(self):
+        queue, smtp = self.mixed(), native_fixtures.SMTP()
+        self.seed_review(queue, 'held')
+        original = copy.deepcopy(queue.data['results/test.json'])
+        source = queue.source
+        def excluded_source(path):
+            raw, sha = source(path)
+            if path == bridge.CONFIG:
+                config = json.loads(raw)
+                config['excluded_article_ids'] = ['held']
+                raw = json.dumps(config).encode()
+            return raw, sha
+        queue.source = excluded_source
+        self.run_consume(queue, smtp)
+        job = queue.data['jobs/test.json']
+        self.assertEqual(job['owner_excluded_ids'], ['held'])
+        self.assertEqual(job['deferred_ids'], [])
+        self.assertEqual(queue.data['results/test.json'], original)
+        self.assertNotIn('https://example.invalid/held', self.bot.load_seen_urls())
+        self.assertNotIn('held', [a['article_id'] for a in queue.data['filter-logs/test.json']['raw']])
+        self.ack(queue)
+        self.assertEqual(queue.data['review/index.json']['pending'], [])
+
+    def test_exclusion_added_between_recipients_stops_remaining_smtp(self):
+        queue, smtp = self.fixture(), native_fixtures.SMTP()
+        excluded, source, send = [], queue.source, smtp.sendmail
+        def live_source(path):
+            raw, sha = source(path)
+            if path == bridge.CONFIG:
+                config = json.loads(raw)
+                config['excluded_article_ids'] = list(excluded)
+                raw = json.dumps(config).encode()
+            return raw, sha
+        def first_only(*args):
+            result = send(*args)
+            excluded.append('one')
+            return result
+        queue.source, smtp.sendmail = live_source, first_only
+        with self.assertRaisesRegex(RuntimeError, '담당자가 제외한 기사'):
+            self.run_consume(queue, smtp)
+        self.assertEqual(len(smtp.calls), 1)
+        self.assertEqual(list(queue.data['jobs/test.json']['receipts'].values()), ['accepted'])
+        self.assertEqual(queue.data['jobs/test.json']['status'], 'uncertain')
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+
     def ack(self, queue):
         queue.remote_seen = Path('seen_news.json').read_bytes()
         bridge.acknowledge(queue, 'test')
@@ -354,6 +399,22 @@ class ReplayCollection(unittest.TestCase):
         self.bot.is_hard_excluded = lambda *a: (False, '')
         self.bot.fetch_article_body = lambda *a: ''
         return queue
+
+    def test_owner_excluded_backlog_is_not_collected_again(self):
+        queue = self.seed()
+        source = queue.source
+        def excluded_source(path):
+            raw, sha = source(path)
+            if path == bridge.CONFIG:
+                config = json.loads(raw)
+                config['excluded_article_ids'] = ['held']
+                raw = json.dumps(config).encode()
+            return raw, sha
+        queue.source = excluded_source
+        with patch.object(bridge, 'prune_terminal_inputs'):
+            with self.assertRaisesRegex(RuntimeError, '재검토할 영속 보류 없음'):
+                bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
+        self.assertNotIn('jobs/risk-production-hardening-test.json', queue.data)
 
     def test_sixty_day_old_review_replays_with_original_body_outside_collection_window(self):
         queue = self.seed()
