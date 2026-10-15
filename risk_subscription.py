@@ -58,7 +58,7 @@ def import_bot():
     return bot
 
 
-def current_config(queue, verification=False):
+def current_config(queue, verification=False, articles=(), document=''):
     raw, _ = queue.source(CONFIG)
     config = json.loads(raw)
     if config.get('engine') not in {'subscription', 'api', 'paused'}:
@@ -67,6 +67,14 @@ def current_config(queue, verification=False):
         raise RuntimeError('구독 운영이 아님 — 발송 보류')
     if config.get('policy_version') != 'risk-subscription-v1':
         raise RuntimeError('분석 정책 버전 오류')
+    excluded = config.get('excluded_article_ids', [])
+    if (not isinstance(excluded, list)
+            or any(not isinstance(aid, str) or not JOB_ID.fullmatch(aid) for aid in excluded)
+            or len(excluded) != len(set(excluded))):
+        raise RuntimeError('담당자 발송 제외 목록 오류')
+    if any(a['article_id'] in excluded and (a['url'] in document or html.escape(a['url'], quote=True) in document)
+           for a in articles):
+        raise RuntimeError('담당자가 제외한 기사 포함 — 발송 금지')
     return config
 
 
@@ -167,6 +175,8 @@ def collect(config, queue, verification=False, reviews_only=False):
     exposure_raw = Path('exposure_data.csv').read_bytes()
     captured_at = now().isoformat()
     reviews = [] if verification else pending_reviews(queue)
+    excluded = set(current_config(queue, verification).get('excluded_article_ids', []))
+    reviews = [r for r in reviews if r['article_id'] not in excluded]
     if reviews_only and not reviews:
         raise RuntimeError('재검토할 영속 보류 없음')
     replay = {r['article_id']: r for r in reviews}
@@ -206,8 +216,11 @@ def collect(config, queue, verification=False, reviews_only=False):
         article['article_id'] = hashlib.sha256((article['url']+'\0'+article['title']).encode()).hexdigest()[:24]
         article['description'] = article.get('desc', '')
         article['published_at'] = article.get('pubDate', '')
+        if article['article_id'] in excluded:
+            continue
         if not bot.is_hard_excluded(article['title'], article.get('desc', ''), article['url'])[0]:
             items.append(article)
+    raw = [a for a in raw if a['article_id'] not in excluded]
     item_ids = {a['article_id'] for a in items}
     raw_ids = {a['article_id'] for a in raw}
     for record in reviews:
@@ -343,14 +356,15 @@ def consume(queue, jid, self_test=False):
             except Exception:
                 guard.change(lambda j: j.update(status='uncertain' if j.get('receipts') else 'pending'))
                 raise
-    view, answers = delivery_view(job, result)
+    excluded_ids = set(config.get('excluded_article_ids', []))
+    view, answers = delivery_view(job, result, excluded_ids)
     provider = Provider(view, answers)
     original_seen = Path('seen_news.json').read_bytes()
     original_exposure = file_hash('exposure_data.csv')
     metadata, current_sha = queue.get('jobs/'+jid+'.json')
     if current_sha != sha:
         raise RuntimeError('소비 검증 중 회차 상태 변경')
-    verdicts = delivery_verdicts(job, result)
+    verdicts = delivery_verdicts(job, result, excluded_ids)
     deferred_ids = [aid for aid, value in verdicts.items() if value is None]
     values, expected, resolutions = ({}, {}, {}) if self_test else prepare_reviews(queue, job, verdicts)
     overdue_count = sum(utc_time(values['review/'+aid+'.json']['first_seen_at']) <= now()-timedelta(hours=24)
@@ -358,6 +372,7 @@ def consume(queue, jid, self_test=False):
     metadata.update(status='sending', self_test=self_test, sending_at=now().isoformat())
     metadata.update(deferred_ids=deferred_ids, review_resolutions=resolutions,
                     analysis_complete=not deferred_ids, overdue_review_count=overdue_count)
+    metadata['owner_excluded_ids'] = sorted(excluded_ids.intersection(verdicts))
     if values or resolutions:
         values['jobs/'+jid+'.json'], expected['jobs/'+jid+'.json'] = metadata, sha
         queue.put_many(values, expected)
@@ -485,7 +500,8 @@ def finish_packet(queue, job, result, packet, bot, guard, native_send):
     """SMTP uses only a persisted plan; history is published after all receipts."""
     validate_packet(packet, job, result)
     self_test = packet['self_test']
-    current_config(queue, self_test)
+    guard.check_config = lambda: current_config(queue, self_test, job['input']['items'], packet['html'])
+    guard.check_config()
     before, _ = queue.source('seen_news.json')
     if hashlib.sha256(before).hexdigest() not in {packet['source_history_hash'], packet['seen_after_hash']}:
         raise RuntimeError('발송 계획 이후 main 이력 변경 — 자동 합치기 금지')

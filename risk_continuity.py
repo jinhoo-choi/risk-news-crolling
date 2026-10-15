@@ -112,6 +112,8 @@ def prepare_reviews(queue, job, verdicts, reason='analysis_pending'):
             record, sha = read_review(queue, aid)
         elif record is not None and record.get('status') != 'resolved':
             raise RuntimeError('보류 원본과 색인 불일치')
+        if record and record.get('status') == 'resolved' and record.get('resolution_kind') == 'owner_excluded':
+            continue  # Expiry/replay must not reopen an explicit owner no-send decision.
         previous = record or {}
         origins = list(dict.fromkeys(previous.get('origin_jobs', [])+[job['job_id']]))
         same = previous.get('last_job_id') == job['job_id'] and previous.get('status') == 'pending'
@@ -155,19 +157,21 @@ def finish_reviews(queue, resolutions, job_id):
     return values, expected
 
 
-def delivery_verdicts(job, result):
+def delivery_verdicts(job, result, excluded_ids=()):
     """Continuity jobs hold missing-body positives until native body checks can pass."""
     verdicts = {r['article_id']: r['relevant'] for r in result['classifications']}
     if job.get('continuity_version') == 1:
         for aid, analysis in result['analyses'].items():
             if analysis['body_status'] != 'verified':
                 verdicts[aid] = None
+    for aid in set(excluded_ids).intersection(verdicts):
+        verdicts[aid] = False  # Owner delivery decision; saved analysis stays unchanged.
     return verdicts
 
 
-def delivery_view(job, result):
+def delivery_view(job, result, excluded_ids=()):
     """Exclude deferred rows from native processing, keeping saved answers immutable."""
-    deferred = {aid for aid, value in delivery_verdicts(job, result).items() if value is None}
+    deferred = {aid for aid, value in delivery_verdicts(job, result, excluded_ids).items() if value is None} | set(excluded_ids)
     view, answers = copy.deepcopy(job), copy.deepcopy(result)
     view['input']['raw_articles'] = [a for a in view['input']['raw_articles'] if a['article_id'] not in deferred]
     view['input']['items'] = [a for a in view['input']['items'] if a['article_id'] not in deferred]

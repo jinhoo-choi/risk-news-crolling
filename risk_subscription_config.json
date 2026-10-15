@@ -7,5 +7,8 @@
   "queue_prefix": "subscription/risk",
   "job_ttl_minutes": 180,
   "paid_api_fallback": false,
-  "baseline_commit": "abcbe02c12fe6dc3eb8e6412b7df31546ad0f693"
+  "baseline_commit": "abcbe02c12fe6dc3eb8e6412b7df31546ad0f693",
+  "excluded_article_ids": [
+    "c001815e71e5a12536dcc4fa"
+  ]
 }
