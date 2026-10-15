@@ -6,6 +6,20 @@ from pathlib import Path
 from risk_queue import JOB_ID
 
 
+def read_summary(stdout):
+    summaries = []
+    for line in stdout.splitlines():
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and {'job_id', 'status', 'paid_ai_calls'} <= value.keys():
+            summaries.append(value)
+    if len(summaries) != 1:
+        raise RuntimeError('소비 결과 요약 누락·중복')
+    return summaries[0]
+
+
 def main():
     value = json.loads(Path('risk_subscription_request.json').read_text())
     if set(value) != {'operation','job_id','self_test','dry_run','request_id'}:
@@ -25,7 +39,7 @@ def main():
         command.append('--self-test')
     process = subprocess.run(command, check=True, capture_output=True, text=True)
     print(process.stdout, end='')
-    summary = json.loads(process.stdout.strip().splitlines()[-1])
+    summary = read_summary(process.stdout)
     if value['operation'] == 'collect-review':
         if (summary.get('status') != 'pending' or summary.get('paid_ai_calls') != 0
                 or not JOB_ID.fullmatch(summary.get('job_id', ''))):
