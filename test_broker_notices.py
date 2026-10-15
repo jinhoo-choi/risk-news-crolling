@@ -22,11 +22,11 @@ def response(kind, *, status=200, body=None):
     res.status_code = status
     res.url = next(x['url'] for x in b.BROKERS if x['type'] == kind)
     if body is None:
-        suffix = '.html' if kind in ('miraeasset', 'nhqv') else '.json'
+        suffix = '.html' if kind in ('miraeasset', 'nhqv', 'shinhan') else '.json'
         text = (FIXTURES / (kind + suffix)).read_text(encoding='utf-8')
         res._content = text.encode('euc-kr' if suffix == '.html' else 'utf-8')
     else:
-        res._content = body.encode('utf-8')
+        res._content = body.encode('euc-kr' if kind == 'shinhan' else 'utf-8')
     res.encoding = 'utf-8'
     return res
 
@@ -84,7 +84,7 @@ class BrokerNoticeTests(unittest.TestCase):
             self.assertEqual(b.parse_notices(response(kind, body=json.dumps(data)), self.brokers[kind]), [])
 
     def test_unexpected_structure_is_error_not_zero(self):
-        for kind in ('miraeasset', 'nhqv', 'samsung', 'toss'):
+        for kind in ('miraeasset', 'nhqv', 'samsung', 'toss', 'shinhan'):
             with self.subTest(kind=kind):
                 state = {}
                 with patch.object(b.requests, 'get', return_value=response(kind, body='<html>로그인</html>')):
@@ -115,7 +115,6 @@ class BrokerNoticeTests(unittest.TestCase):
 
     def test_legacy_paths_and_parser_are_preserved(self):
         urls = {'kb': 'https://www.kbsec.com/go.able?linkcd=s10503',
-                'shinhan': 'https://www.shinhaninvest.com/siw/customer-service/notice/list.do',
                 'kiwoom': 'https://www.kiwoom.com/h/customer/board/VNoticeTypeHView'}
         for kind, url in urls.items():
             self.assertEqual(self.brokers[kind]['url'], url)
@@ -152,7 +151,7 @@ class BrokerNoticeTests(unittest.TestCase):
         html = '<tbody><tr><td><a href="/1"><b>오</b>류 정정 안내</a></td></tr>' \
                '<tr><td><a href="/2" title="신용">일반 행사 안내</a></td></tr>' \
                '<tr><td><a href="/3">대&nbsp;출 조건 안내</a></td></tr></tbody>'
-        for kind in ('kb', 'shinhan', 'kiwoom'):
+        for kind in ('kb', 'kiwoom'):
             state = {}
             with patch.object(b.requests, 'get', return_value=response(kind, body=html)):
                 rows = b.crawl_broker(self.brokers[kind], state)
@@ -176,7 +175,7 @@ class BrokerNoticeTests(unittest.TestCase):
 
     def test_public_fixtures_raw_and_retained_counts(self):
         for kind, raw_count, retained_count in [('miraeasset', 10, 3), ('samsung', 10, 1),
-                                               ('nhqv', 12, 1), ('toss', 20, 1)]:
+                                               ('nhqv', 12, 1), ('toss', 20, 1), ('shinhan', 21, 4)]:
             with self.subTest(kind=kind):
                 state = {}
                 with patch.object(b.requests, 'get', return_value=response(kind)):
@@ -335,7 +334,7 @@ class BrokerNoticeTests(unittest.TestCase):
             kind = next(x['type'] for x in b.BROKERS if x['url'] == url)
             if kind in errors:
                 return response(kind, status=404, body='Not Found')
-            if kind in ('kb', 'shinhan', 'kiwoom'):
+            if kind in ('kb', 'kiwoom'):
                 return response(kind, body='<tbody></tbody>')
             return response(kind)
         old = os.getcwd()
@@ -360,6 +359,86 @@ class BrokerNoticeTests(unittest.TestCase):
     def test_single_failure_preserves_successful_sources(self):
         rc, report, _, saved = self.run_main({'miraeasset'})
         self.assertEqual((rc, report['failed_sources'], saved), (1, 1, 6))
+
+    def test_shinhan_failure_is_degraded_without_saving_failed_source(self):
+        rc, report, _, saved = self.run_main({'shinhan'})
+        self.assertEqual((rc, report['status'], report['failed_sources'], saved),
+                         (1, 'degraded', 1, 6))
+        self.assertEqual(report['sources'][4]['status'], 'error')
+
+    def test_shinhan_public_board_links_encoding_and_pinned_dedup(self):
+        items = b.parse_notices(response('shinhan'), self.brokers['shinhan'])
+        self.assertEqual(len(items), 21)  # 7 pinned + 15 ordinary, one repeated ID.
+        self.assertEqual(items[0]['title'], '비대면 타사출고 서비스 정상화 안내')
+        ids = [parse_qs(urlparse(x['url']).query)['messageId'][0] for x in items]
+        self.assertEqual(ids.count('942506'), 1)
+        self.assertEqual(len(set(ids)), len(ids))
+        self.assertTrue(all(x['date'] == b.datetime.now(b.KST).strftime('%Y-%m-%d') for x in items))
+        for item in items:
+            link = urlparse(item['url'])
+            self.assertEqual((link.scheme, link.netloc, link.path),
+                             ('https', 'bbs2.shinhansec.com', '/siw/board/message/view.do'))
+            self.assertEqual(parse_qs(link.query)['boardName'], ['nNoticeCFM'])
+        matched = [x for x in items if matches_notice_title(x['title'])]
+        self.assertEqual([parse_qs(urlparse(x['url']).query)['messageId'][0] for x in matched],
+                         ['942553', '942493', '942444', '942389'])
+
+    def test_shinhan_wrong_board_broken_links_dates_and_unconfirmed_empty_fail(self):
+        text = (FIXTURES / 'shinhan.html').read_text(encoding='utf-8')
+        variants = [text.replace('nNoticeCFM', 'otherBoard'),
+                    text.replace('javascript:view(', 'javascript:changed('),
+                    text.replace('2026.10.15', 'not-a-date'),
+                    text.replace('비대면 타사출고 서비스 정상화 안내', ''),
+                    '<input name="boardName" value="nNoticeCFM"><table class="bbs_list_type1"></table>']
+        for body in variants:
+            with self.subTest(body=body[:80]), self.assertRaises(ValueError):
+                b.parse_notices(response('shinhan', body=body), self.brokers['shinhan'])
+
+    def test_shinhan_transient_read_failures_retry_once(self):
+        for error in (requests.ConnectTimeout('connect'), requests.ReadTimeout('read'),
+                      requests.ConnectionError('connection reset')):
+            state = {}
+            with self.subTest(error=type(error).__name__), \
+                 patch.object(b.requests, 'get', side_effect=[error, response('shinhan')]) as get, \
+                 patch.object(b.time, 'sleep') as sleep:
+                self.assertEqual(len(b.crawl_broker(self.brokers['shinhan'], state)), 4)
+            self.assertEqual((get.call_count, state['attempts'], state['status']), (2, 2, 'ok'))
+            self.assertEqual(state['parser'], 'shinhan_board')
+            sleep.assert_called_once_with(1)
+            self.assertTrue(all(c.kwargs['timeout'] == (5, 15) for c in get.call_args_list))
+
+    def test_shinhan_persistent_timeout_stops_after_two_reads(self):
+        state = {}
+        with patch.object(b.requests, 'get', side_effect=requests.ConnectTimeout('connect')) as get, \
+             patch.object(b.time, 'sleep') as sleep:
+            self.assertEqual(b.crawl_broker(self.brokers['shinhan'], state), [])
+        self.assertEqual((get.call_count, state['attempts'], state['status'], state['error_type']),
+                         (2, 2, 'error', 'ConnectTimeout'))
+        sleep.assert_called_once_with(1)
+
+    def test_shinhan_http_structure_and_tls_errors_are_not_retried(self):
+        for effect, expected in ((response('shinhan', status=404), 'HTTPError'),
+                                 (response('shinhan', status=503), 'HTTPError'),
+                                 (response('shinhan', body='<html>오류</html>'), 'ValueError'),
+                                 (requests.exceptions.SSLError('certificate'), 'SSLError')):
+            state = {}
+            args = {'side_effect': effect} if isinstance(effect, Exception) else {'return_value': effect}
+            with patch.object(b.requests, 'get', **args) as get, patch.object(b.time, 'sleep') as sleep:
+                self.assertEqual(b.crawl_broker(self.brokers['shinhan'], state), [])
+            self.assertEqual((get.call_count, state['status'], state['error_type']), (1, 'error', expected))
+            sleep.assert_not_called()
+
+    def test_other_six_sources_keep_single_read_and_timeout(self):
+        for broker in b.BROKERS:
+            if broker['type'] == 'shinhan':
+                continue
+            state = {}
+            with self.subTest(company=broker['company']), \
+                 patch.object(b.requests, 'get', side_effect=requests.ConnectTimeout('connect')) as get, \
+                 patch.object(b.time, 'sleep') as sleep:
+                self.assertEqual(b.crawl_broker(broker, state), [])
+            get.assert_called_once_with(broker['url'], headers=b.HEADERS, timeout=10)
+            sleep.assert_not_called()
 
     def test_healthy_run_and_legacy_empty_are_distinguished(self):
         rc, report, summary, saved = self.run_main(set())

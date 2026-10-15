@@ -203,10 +203,10 @@ awk -F',' 'NR>1 && $20!="" && $20+0<140' exposure_data.csv | wc -l   # 영
 
 ## 경쟁사 공지 수집 상태 (2026-10-07)
 
-- 공지 수집은 `broker_notices.py`. KB·신한·키움 URL 및 공통 파서, CSV `date,company,title,url`, `(company,title)` 중복 제거, 30일 보관은 유지한다. `date`는 기존처럼 수집일이다.
+- 공지 수집은 `broker_notices.py`. KB·키움 URL 및 공통 파서, CSV `date,company,title,url`, `(company,title)` 중복 제거, 30일 보관은 유지한다. 신한은 아래 10/15 복구 경로를 사용한다. `date`는 기존처럼 수집일이다.
 - **1개 이상 소스의 HTTP/연결/응답 구조/CSV 저장 오류 → `degraded`, exit 1.** 모든 소스를 시도한 뒤 판정한다. 정상 수집분은 저장한다.
 - `broker_notices_status.json`: KST 확인시각, 전체 상태, 실패 소스 수, 소스별 HTTP/최종 URL/상태/원본 파싱 건수(`count`)/필터 일치 건수(`retained_count`)/오류. Actions Summary에도 표로 기록한다. `broker-notices-status-{run_id}` artifact로 7일 보관한다. JSON은 CSV 수집 폴더 밖에 둔다.
-- `ok`: 필터 전 1건 이상 파싱(키워드 일치 0건이어도 정상). `empty`: HTTP 성공·필터 전 0건. KB·신한·키움의 기존 공통 파서는 목록 완전성을 검증하지 않으며 `legacy_generic`으로 구분한다. 기존 키움 0건이 실제 무공지라는 의미는 아니다.
+- `ok`: 필터 전 1건 이상 파싱(키워드 일치 0건이어도 정상). `empty`: HTTP 성공·필터 전 0건. KB·키움의 기존 공통 파서는 목록 완전성을 검증하지 않으며 `legacy_generic`으로 구분한다. 기존 키움 0건이 실제 무공지라는 의미는 아니다.
 - 공지 작업의 `continue-on-error`는 제거했다. 실패하더라도 artifact 업로드와 정상 CSV 커밋 단계는 `always()`로 수행한다. 본 뉴스 작업은 기존 `needs` 및 `if: always()`를 유지하므로 공지 오류 때문에 중단되지 않는다.
 
 ### 공개 응답 확인
@@ -232,6 +232,15 @@ awk -F',' 'NR>1 && $20!="" && $20+0<140' exposure_data.csv | wc -l   # 영
 - 메일 로더도 같은 필터로 기존 CSV를 읽으므로 과거의 넓은 키워드(`증거금률`, `한도 축소` 등)만 포함한 공지는 출력하지 않는다. 최근 2일 범위와 `(company,title)` 중복 제거는 유지한다.
 - 로그와 Actions Summary는 원본 파싱 건수/키워드 일치 건수를 분리한다. `count`는 이전과 같은 필터 전 건수, `retained_count`는 이번 수집 중 필터 일치 건수이며 CSV 전체 행 수나 신규 추가 건수가 아니다. 키워드 일치 0건은 crawler 실패가 아니다.
 - 고정 공개 fixture의 원본/일치 건수: 미래에셋 10/3, 삼성 10/1, NH 12/1, 토스 20/1. 현재 운영 수집량을 뜻하지 않는다. 오프라인 회귀에서 7개 소스 OR 필터, 본문만 일치하는 공지 제외, 공백/entity/HTML 제목 처리, null 제목, 혼합 목록, 건강한 0건, 기존 CSV 정리·실패 시 보존, 메일 로더 동일 필터를 검사한다.
+
+### 신한 공지 경로 (2026-10-15)
+
+- 공식 [새소식 화면](https://ir.shinhaninvest.com/siw/customer-center/notification/nNoticeCFM/view.do)의 `SIDATA`가 게시판 호스트 `bbs2.shinhansec.com`을 지정한다. `nNoticeCFM.js`는 `/siw/board/message/list.do?boardName=nNoticeCFM&frameName=noticeCFMFrm`을, `page.js`는 해당 호스트의 iframe URL을 만든다. 로그인 없는 이 공식 공개 HTML 목록을 직접 GET한다.
+- 목록 주소: `https://bbs2.shinhansec.com/siw/board/message/list.do?boardName=nNoticeCFM&frameName=noticeCFMFrm`. EUC-KR, `boardName=nNoticeCFM`, `table.bbs_list_type1`, `.subject a`의 `javascript:view(messageId,messageNumber)`, 제목·등록일 구조를 검증한다. 고정/일반 목록의 동일 messageId는 1개로 정리한다. 메뉴/오류 화면·미확인 빈 목록·구조 불일치는 error다. HTTP 200만으로 성공을 판정하지 않는다.
+- 신한 GET의 연결/읽기/연결리셋 오류만 1초 뒤 **1회** 재시도한다(총 2회, connect/read timeout 5/15초). TLS 인증·HTTP 오류·파싱 오류는 재시도하지 않는다. `attempts`를 상태 JSON에 남긴다. 다른 6곳의 주소·파서·단일 GET/10초 및 제목 OR 키워드는 그대로다. 실패 시 기존 CSV를 보존하고 전체는 degraded/exit 1이다.
+- CSV의 `date`는 기존과 같은 수집일이다. 경로 복구 시 과거 미수집 공지가 현재 목록에 남아 있으면 새 수집일로 들어갈 수 있다. 과거 수집·발송 이력을 임의로 만들어 넣지 않는다.
+- `tests/fixtures/broker_notices/shinhan.html`은 공식 목록에서 boardName과 목록 테이블만 추출했다. 고정글 7+일반 15-중복 ID 1=21건, 제목 키워드 일치 4건인 고정 fixture다. 현재 운영 건수를 뜻하지 않는다. `test_broker_notices.py`는 총 32건으로 실제 링크/인코딩/중복, 구조 오류, 1회 재시도/상한, HTTP/TLS 무재시도, 부분 실패 degraded, 다른 6곳 보존을 검증한다.
+- KB·키움은 기존 공통 파서다. KB의 파싱 건수와 키움의 empty만으로 목록 완전성을 보증하지 않는다. 전체 success는 현재 구현상 오류 소스가 없다는 의미다. 운영 장애의 누락 대조와 복구 결과는 담당자에게만 보고한다.
 
 ### 동일 사건 재보도 중복 방지 (2026-10-11)
 
