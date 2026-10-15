@@ -45,7 +45,7 @@ BROKERS = [
     },
     {
         "company": "신한투자증권",
-        "url": "https://www.shinhaninvest.com/siw/customer-service/notice/list.do",
+        "url": "https://bbs2.shinhansec.com/siw/board/message/list.do?boardName=nNoticeCFM&frameName=noticeCFMFrm",
         "type": "shinhan",
     },
     {
@@ -104,10 +104,39 @@ def parse_generic(html: str, base_url: str, company: str) -> list:
 
 
 def parse_notices(res, broker: dict) -> list:
-    """수정한 4개 소스의 실제 목록만 파싱. 구조 불일치는 성공으로 숨기지 않는다."""
+    """실제 목록만 파싱. 구조 불일치는 성공으로 숨기지 않는다."""
     kind, company = broker["type"], broker["company"]
     today = datetime.now(KST).strftime("%Y-%m-%d")
     results = []
+    if kind == "shinhan":
+        # 공식 새소식 페이지의 nNoticeCFM iframe. 메뉴/오류 페이지는 목록이 아니다.
+        soup = BeautifulSoup(res.content, "html.parser", from_encoding="euc-kr")
+        board = soup.select_one('input[name="boardName"]')
+        table = soup.select_one("table.bbs_list_type1")
+        if board is None or board.get("value") != "nNoticeCFM" or table is None:
+            raise ValueError("신한 공지 목록 구조 불일치")
+        seen = set()
+        for a in table.select(".subject a"):
+            match = re.fullmatch(r"javascript:view\('(\d+)'\s*,\s*'(\d+)'\)", a.get("onclick", ""))
+            if not match:
+                raise ValueError("신한 공지 링크 구조 불일치")
+            post_id, number = match.groups()
+            title = a.get_text(strip=True)
+            cells = a.find_parent("tr").find_all("td", recursive=False)
+            if not title or "\ufffd" in title or len(cells) != 5 or not re.fullmatch(
+                    r"\d{4}\.\d{2}\.\d{2}", cells[3].get_text(strip=True)):
+                raise ValueError("신한 공지 제목/등록일 구조 불일치")
+            # 고정글과 일반 목록에 같은 ID가 다른 messageNumber로 중복 노출된다.
+            if post_id in seen:
+                continue
+            link = urljoin(broker["url"], "view.do") + "?" + urlencode({
+                "boardName": "nNoticeCFM", "messageId": post_id,
+                "messageNumber": number, "frameName": "noticeCFMFrm"})
+            results.append({"date": today, "company": company, "title": title, "url": link})
+            seen.add(post_id)
+        if not results:
+            raise ValueError("신한 공지 목록 미확인 빈 응답")
+        return results
     if kind in ("samsung", "toss"):
         data = res.json()
         if kind == "toss":
@@ -184,7 +213,20 @@ def crawl_broker(broker: dict, status=None) -> list:
         status = {}
     status.update(company=company, url=url, status="error", count=0, retained_count=0, http_status=None)
     try:
-        res = requests.get(url, headers=HEADERS, timeout=10)
+        attempts = 2 if broker["type"] == "shinhan" else 1
+        for attempt in range(attempts):
+            status["attempts"] = attempt + 1
+            try:
+                res = requests.get(url, headers=HEADERS,
+                                   timeout=(5, 15) if broker["type"] == "shinhan" else 10)
+                break
+            except requests.exceptions.SSLError:
+                raise
+            except (requests.ConnectionError, requests.Timeout):
+                # 공개 GET의 일시 연결/읽기 오류만 1회 재시도. HTTP/파싱 오류는 재시도하지 않는다.
+                if attempt + 1 == attempts:
+                    raise
+                time.sleep(1)
         status.update(http_status=res.status_code, response_url=res.url)
         res.raise_for_status()
         raw_items = parse_notices(res, broker)
@@ -192,7 +234,9 @@ def crawl_broker(broker: dict, status=None) -> list:
         # Source health is determined before filtering: no keyword hit is healthy.
         status.update(status="ok" if raw_items else "empty", count=len(raw_items),
                       retained_count=len(items))
-        if broker["type"] in ("kb", "shinhan", "kiwoom"):
+        if broker["type"] == "shinhan":
+            status["parser"] = "shinhan_board"
+        elif broker["type"] in ("kb", "kiwoom"):
             status["parser"] = "legacy_generic"
         print(f"  [{company}] 원본 {len(raw_items)}건 / 키워드 일치 {len(items)}건")
         return items
@@ -267,7 +311,7 @@ def main():
         error = s.get("error", "").replace("|", "\\|").replace("\n", " ")
         summary.append(f"| {s['company']} | {s['status']} | {s['http_status']} | {s['count']} | {s['retained_count']} | {error} |")
     summary.append("제목에 신용·대출·오류 중 하나라도 포함된 공지만 저장합니다. 키워드 일치 0건은 수집 실패가 아닙니다.")
-    summary.append("KB·신한·키움은 기존 공통 파서 유지. empty는 HTTP 성공·0건이며 목록 완전성 보증은 아닙니다.")
+    summary.append("KB·키움은 기존 공통 파서 유지. empty는 HTTP 성공·0건이며 목록 완전성 보증은 아닙니다. 신한은 공식 게시판 구조를 검증합니다.")
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
             f.write("\n".join(summary) + "\n")
