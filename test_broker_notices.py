@@ -55,7 +55,7 @@ class BrokerNoticeTests(unittest.TestCase):
                 self.assertEqual(len(items), count)
                 self.assertEqual(items[0]['title'], title)
                 self.assertEqual(parse_qs(urlparse(items[0]['url']).query)[key], [value])
-                self.assertTrue(all(set(x) == {'date', 'company', 'title', 'url'} for x in items))
+                self.assertTrue(all(set(x) == {'date', 'company', 'title', 'url', 'published_date'} for x in items))
                 self.assertTrue(all(x['url'].startswith('https://') for x in items))
                 self.assertFalse(any('.pdf' in x['title'] for x in items))
 
@@ -70,6 +70,56 @@ class BrokerNoticeTests(unittest.TestCase):
                 self.assertEqual(items[0]['title'], title)
                 self.assertEqual(parse_qs(urlparse(items[0]['url']).query)[key], [value])
         self.assertIn('[국내] 종목등급 및 증거금률 변경 안내', [x['title'] for x in items])
+
+    def test_official_publication_dates_are_not_collection_dates(self):
+        for kind, expected in [('miraeasset', '2026-10-06'), ('nhqv', '2026-04-15')]:
+            items = b.parse_notices(response(kind), self.brokers[kind])
+            self.assertEqual(items[0]['published_date'], expected)
+        matched = [x for x in b.parse_notices(response('shinhan'), self.brokers['shinhan'])
+                   if matches_notice_title(x['title'])]
+        self.assertEqual([x['published_date'] for x in matched],
+                         ['2026-10-15', '2026-10-14', '2026-10-13', '2026-10-12'])
+
+    def test_json_uses_publication_field_not_update_or_title_date(self):
+        for kind, field in [('samsung', 'procDTime2'), ('toss', 'displayDt')]:
+            data = response(kind).json()
+            row = data['list'][0] if kind == 'samsung' else data['result']['list'][0]
+            row[field] = '2026-10-15T16:30:00Z'
+            row['updatedAt'] = '2026-10-17T09:00:00'
+            items = b.parse_notices(response(kind, body=json.dumps(data)), self.brokers[kind])
+            self.assertEqual(items[0]['published_date'], '2026-10-16')
+            row[field] = None
+            items = b.parse_notices(response(kind, body=json.dumps(data)), self.brokers[kind])
+            self.assertEqual(items[0]['published_date'], '')
+
+    def test_date_validation_and_kst_boundary(self):
+        for value in ('2026-10-16', '2026.10.16', '2026/10/16', '20261016',
+                      '2026-10-16 00:00:00.0', '2026-10-15T15:00:00Z'):
+            self.assertEqual(b.publication_date(value), '2026-10-16')
+        self.assertEqual(b.publication_date('2026-10-15T14:59:59Z'), '2026-10-15')
+        for value in (None, '', 20261016, '2026-02-30', '대출 변경(2026/10/16)'):
+            self.assertEqual(b.publication_date(value), '')
+
+    def test_legacy_parser_requires_a_separate_unambiguous_row_date(self):
+        html = '<tbody><tr><td><a href="/1">대출 변경(2026/10/16)</a></td><td>2026.10.15</td></tr>' \
+               '<tr><td><a href="/2">신용 변경(2026/10/16)</a></td></tr></tbody>'
+        items = b.parse_generic(html, 'https://example.invalid', 'KB증권')
+        self.assertEqual([x['published_date'] for x in items], ['2026-10-15', ''])
+
+    def test_legacy_csv_gets_verified_date_and_newest_same_title_url(self):
+        today = b.datetime.now(b.KST).strftime('%Y-%m-%d')
+        base = dict(date=today, company='신한투자증권', title='신용 변경', url='https://example.invalid/old')
+        with tempfile.TemporaryDirectory() as tmp, patch.object(b, 'DATA_DIR', tmp):
+            path = Path(tmp)/'신한투자증권.csv'
+            with open(path, 'w', encoding='utf-8-sig', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=list(base))
+                writer.writeheader()
+                writer.writerow(base)
+            current = dict(base, published_date=today, url='https://example.invalid/new')
+            b.save_csv(base['company'], [current])
+            b.save_csv(base['company'], [dict(base, published_date='2020-01-01')])
+            with open(path, encoding='utf-8-sig') as f:
+                self.assertEqual(list(csv.DictReader(f)), [current])
 
     def test_samsung_fixed_rows_are_included_once(self):
         res = response('samsung')
@@ -121,14 +171,14 @@ class BrokerNoticeTests(unittest.TestCase):
             res = response(kind, body='<table><tbody><tr><td><a href="/notice/1">기존 공지사항 안내</a></td></tr></tbody></table>')
             self.assertEqual(b.parse_notices(res, self.brokers[kind]), b.parse_generic(res.text, url, self.brokers[kind]['company']))
 
-    def test_csv_schema_and_existing_dedup_unchanged(self):
-        item = {'date': b.datetime.now(b.KST).strftime('%Y-%m-%d'), 'company': '삼성증권', 'title': '신용 테스트 공지', 'url': 'https://example.com/1'}
+    def test_csv_published_date_and_existing_dedup(self):
+        item = {'date': b.datetime.now(b.KST).strftime('%Y-%m-%d'), 'company': '삼성증권', 'title': '신용 테스트 공지', 'url': 'https://example.com/1', 'published_date': ''}
         with tempfile.TemporaryDirectory() as tmp, patch.object(b, 'DATA_DIR', tmp):
             b.save_csv(item['company'], [item])
             b.save_csv(item['company'], [dict(item, url='https://example.com/2')])
             with open(Path(tmp)/'삼성증권.csv', encoding='utf-8-sig') as f:
                 reader = csv.DictReader(f)
-                self.assertEqual(reader.fieldnames, ['date', 'company', 'title', 'url'])
+                self.assertEqual(reader.fieldnames, ['date', 'company', 'title', 'url', 'published_date'])
                 self.assertEqual(list(reader), [item])
 
     def test_exact_or_keywords_and_title_normalization(self):
@@ -208,14 +258,14 @@ class BrokerNoticeTests(unittest.TestCase):
 
     def write_rows(self, path, rows):
         with open(path, 'w', encoding='utf-8-sig', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=['date', 'company', 'title', 'url'])
+            writer = csv.DictWriter(f, fieldnames=['date', 'company', 'title', 'url', 'published_date'])
             writer.writeheader()
             writer.writerows(rows)
 
     def test_csv_filters_new_and_existing_even_without_new_hits(self):
         today = b.datetime.now(b.KST).strftime('%Y-%m-%d')
         old = (b.datetime.now(b.KST) - b.timedelta(days=31)).strftime('%Y-%m-%d')
-        base = dict(date=today, company='삼성증권', title='신용융자 안내', url='https://example.invalid/1')
+        base = dict(date=today, company='삼성증권', title='신용융자 안내', url='https://example.invalid/1', published_date='')
         irrelevant = dict(base, title='일반 이벤트')
         matching = dict(base, title='시스템 오류 정정', url='https://example.invalid/2')
         for incoming in ([], [irrelevant], [base], [irrelevant, matching]):
@@ -235,7 +285,7 @@ class BrokerNoticeTests(unittest.TestCase):
         today = b.datetime.now(b.KST).strftime('%Y-%m-%d')
         cutoff = (b.datetime.now(b.KST) - b.timedelta(days=30)).strftime('%Y-%m-%d')
         old = (b.datetime.now(b.KST) - b.timedelta(days=31)).strftime('%Y-%m-%d')
-        base = dict(date=today, company='삼성증권', title='신용융자 안내', url='https://example.invalid/1')
+        base = dict(date=today, company='삼성증권', title='신용융자 안내', url='https://example.invalid/1', published_date='')
         with tempfile.TemporaryDirectory() as tmp, patch.object(b, 'DATA_DIR', tmp):
             path = Path(tmp)/'삼성증권.csv'
             boundary = dict(base, date=cutoff, title='대출 조건 안내')
@@ -252,7 +302,7 @@ class BrokerNoticeTests(unittest.TestCase):
             b.save_csv('삼성증권', [])
             with open(path, encoding='utf-8-sig') as f:
                 reader = csv.DictReader(f)
-                self.assertEqual(reader.fieldnames, ['date', 'company', 'title', 'url'])
+                self.assertEqual(reader.fieldnames, ['date', 'company', 'title', 'url', 'published_date'])
                 self.assertEqual(list(reader), [])
 
     def test_main_cleans_healthy_no_match_but_preserves_failed_source_csv(self):
@@ -292,7 +342,7 @@ class BrokerNoticeTests(unittest.TestCase):
                 b.save_csv('삼성증권', [])
             self.assertEqual(path.read_bytes(), b'\xff\xfe\x00')
 
-    def test_output_uses_same_title_filter_on_legacy_csvs(self):
+    def test_output_requires_today_publication_date_and_shared_title_filter(self):
         # Import the actual monitor with synthetic settings, without repository maps.
         env = {k: 'offline@example.invalid' for k in (
             'EMAIL_SENDER', 'EMAIL_PASSWORD', 'EMAIL_RECEIVER', 'ANTHROPIC_API_KEY',
@@ -307,7 +357,7 @@ class BrokerNoticeTests(unittest.TestCase):
         today = b.datetime.now(b.KST).strftime('%Y-%m-%d')
         yesterday = (b.datetime.now(b.KST) - b.timedelta(days=1)).strftime('%Y-%m-%d')
         stale = (b.datetime.now(b.KST) - b.timedelta(days=2)).strftime('%Y-%m-%d')
-        base = dict(date=today, company='삼성증권', title='신용 안내', url='https://example.invalid/1')
+        base = dict(date=today, company='삼성증권', title='신용 안내', url='https://example.invalid/1', published_date=today)
         good = [base, dict(base, title='담보대출 안내', date=yesterday),
                 dict(base, title='주문 오류 안내'), dict(base, title='신 용 거래 안내')]
         old = os.getcwd()
@@ -316,16 +366,29 @@ class BrokerNoticeTests(unittest.TestCase):
                 os.chdir(tmp)
                 Path('data').mkdir()
                 bad = [dict(base, title=t) for t in ('이벤트 안내', '증거금률 변경', '담보 변경', '전산장애', None)]
-                self.write_rows('data/legacy.csv', good + bad + [dict(base, title='대출 오래된 공지', date=stale)])
+                excluded = [dict(base, title='대출 오래된 공지', published_date=stale),
+                            dict(base, title='대출 어제 등록', published_date=yesterday),
+                            dict(base, title='대출 등록일 미확인', published_date=''),
+                            dict(base, title='대출 미래 공지', published_date=(b.datetime.now(b.KST)+b.timedelta(days=1)).strftime('%Y-%m-%d'))]
+                self.write_rows('data/dated.csv', good + bad + excluded)
+                # Actual old four-column rows must not inherit collection date.
+                with open('data/legacy.csv', 'w', encoding='utf-8-sig', newline='') as f:
+                    writer = csv.DictWriter(f, fieldnames=['date', 'company', 'title', 'url'])
+                    writer.writeheader()
+                    writer.writerow({k: v for k, v in dict(base, title='대출 구형 행').items() if k != 'published_date'})
                 self.write_rows('data/삼성증권.csv', [base])
                 self.write_rows('data/broker_notices_merged.csv', [dict(base, title='신용 중복 합본')])
                 notices = monitor.load_competitor_notices()
-                self.assertEqual(notices, good)
+                self.assertEqual(notices, [{k: v for k, v in item.items() if k != 'published_date'}
+                                           | {'date': item['published_date']} for item in good])
                 html = monitor.build_competitor_html(notices, today)
                 self.assertIn('경쟁사 신용·대출·오류 공지', html)
                 self.assertIn('주문 오류 안내', html)
                 self.assertNotIn('증거금률 변경', html)
                 self.assertNotIn('대출 오래된 공지', html)
+                for item in excluded:
+                    self.assertNotIn(item['title'], html)
+                self.assertNotIn('대출 구형 행', html)
             finally:
                 os.chdir(old)
 
