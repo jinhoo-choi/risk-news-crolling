@@ -92,6 +92,19 @@ def validate(result, job, inputs, manifest):
     true_ids = {key for key, verdict in verdicts.items() if verdict is True}
     if set(result['analyses']) != true_ids:
         raise ValueError('확정 후보 분석 누락·추가')
+    if job.get('event_grouping_version') == 1 and 'event_groups' not in result:
+        raise ValueError('동일 사건 전건 비교 결과 누락')
+    grouped = set()
+    for group in result.get('event_groups', []):
+        members = set(group['article_ids'])
+        if not members <= true_ids or members & grouped:
+            raise ValueError('동일 사건 그룹의 미분석·중복 ID')
+        analyses = [result['analyses'][aid] for aid in members]
+        if any(a['body_status'] != 'verified' for a in analyses):
+            raise ValueError('동일 사건 그룹 본문 미검증')
+        if len({a['event_type'] for a in analyses}) != 1:
+            raise ValueError('서로 다른 위험 유형의 동일 사건 병합 금지')
+        grouped.update(members)
     for key, verdict in verdicts.items():
         visible = re.sub(r'\[(?:링크|URL)[^\]]*\]', '', bodies[key]['body'])
         if bodies[key]['body_status'] in ('verified', 'alternate_verified') and not any(c.isalnum() for c in visible):

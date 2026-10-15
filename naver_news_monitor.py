@@ -3132,6 +3132,11 @@ def dedup_deterministic(articles: list) -> list:
         if url:
             seen_urls_local.add(url)
 
+        # Reviewed subscription groups compete after final scoring, not input order.
+        if a.get('_subscription_event_group') is not None:
+            result.append(a)
+            continue
+
         if _is_next_stage_det(a.get("title", "")):
             seen_norms.append(title_norm)
             seen_entities.append(entity)
@@ -3339,6 +3344,28 @@ def display_risk_score(article: dict):
         return ""
     lo, hi = _GRADE_SCORE_BAND.get(article.get("grade", "참고"), (0.0, 5.0))
     return round(lo + (hi - lo) * min(max(raw, 0.0), 10.0) / 10.0, 1)
+
+
+def dedup_same_mail_events(articles: list) -> list:
+    """Keep the highest final score in each source-reviewed subscription event.
+
+    A shared sector, keyword or blank entity is never sufficient to merge cards.
+    Group membership comes only from the validated, private subscription result.
+    Do not merge entities/exposures or record discarded cards as delivered events.
+    """
+    best = {}
+    def rank(article):
+        return (display_risk_score(article) or 0, article.get('_risk_score') or 0,
+                get_media_boost(article.get('url', '')))
+    for article in articles:
+        group = article.get('_subscription_event_group')
+        if group is not None and (group not in best or rank(article) > rank(best[group])):
+            best[group] = article
+    result = [a for a in articles if a.get('_subscription_event_group') is None
+              or best[a['_subscription_event_group']] is a]
+    if len(result) != len(articles):
+        print(f"  [동일사건 최고점수] {len(articles)}건 → {len(result)}건")
+    return result
 
 def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> list:
     """등급별 상한 초과 시 리스크 점수 기반으로 하위 등급 강등"""
@@ -3642,6 +3669,18 @@ def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> li
 
     result = []
 
+    def event_slots(rows):
+        # Grouped candidates await final verification; count one event per slot.
+        groups = {}
+        slot = -1
+        for article in rows:
+            group = article.get('_subscription_event_group')
+            if group is None or group not in groups:
+                slot += 1
+                if group is not None:
+                    groups[group] = slot
+            yield groups[group] if group is not None else slot, article
+
     for a in urgent[:]:
         conf = a.get("_ai_confidence") or 0
         # _force_urgent 플래그 있으면 confidence 강등 면제
@@ -3661,7 +3700,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> li
             ref.append(a)
             print(f"  [confidence 강등] 주의→참고 (conf={conf:.2f}): {a['title'][:30]}")
 
-    for i, a in enumerate(urgent):
+    for i, a in event_slots(urgent):
         # _force_urgent는 GRADE_LIMITS 상한도 면제
         if a.get("_force_urgent") or i < GRADE_LIMITS["긴급"]:
             result.append(a)
@@ -3673,7 +3712,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> li
             print(f"  [강등] 긴급→주의: {a['title'][:35]}")
 
     caution_sorted = sorted(caution, key=lambda x: x.get("_risk_score") or 0, reverse=True)
-    for i, a in enumerate(caution_sorted):
+    for i, a in event_slots(caution_sorted):
         if i < GRADE_LIMITS["주의"]:
             result.append(a)
         else:
@@ -3683,7 +3722,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> li
             print(f"  [강등] 주의→참고: {a['title'][:35]}")
 
     ref_sorted = sorted(ref, key=lambda x: x.get("_risk_score") or 0, reverse=True)
-    for i, a in enumerate(ref_sorted):
+    for i, a in event_slots(ref_sorted):
         if i < GRADE_LIMITS["참고"]:
             result.append(a)
         else:
@@ -3811,7 +3850,9 @@ def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> li
 
         # event_key 기반 dedup — 같은 entity+event_type 조합
         # event_key 없으면 (entity, grade) fallback
-        if event_key:
+        if a.get('_subscription_event_group') is not None:
+            eg_key = None
+        elif event_key:
             eg_key = ("ek", event_key, grade)
         elif entity:
             eg_key = ("et", entity, event_type or "", grade)
@@ -5794,7 +5835,7 @@ def main():
         # 예: 금양 상폐 긴급 이미 있으면 금양 상폐 주의·참고 차단
         GRADE_ORDER = {"긴급": 0, "주의": 1, "참고": 2}
         ev_key = (entity, event_type) if entity and event_type else None
-        if ev_key:
+        if ev_key and a.get('_subscription_event_group') is None:
             # 비교 대상(filtered_final)의 entity도 정규화 — 별칭이 다른 동일 사건 누락 방지
             existing_grades = [GRADE_ORDER[x["grade"]] for x in filtered_final
                                if canonicalize_entity(x.get("entity", "") or "", _entity_canon, exposure_data) == entity
@@ -5816,19 +5857,21 @@ def main():
     for a in filtered:
         # 별칭 정규화 키 사용 — 같은 메일 안에서 JTBC/중앙일보로 갈려 2장 나가는 것 방지
         ent = canonicalize_entity(a.get("entity", "") or "", _entity_canon, exposure_data)
-        if not ent:
+        if not ent or a.get('_subscription_event_group') is not None:
             continue
         score = a.get("_risk_score", 0) or 0
         if ent not in _entity_best or score > (_entity_best[ent].get("_risk_score", 0) or 0):
             _entity_best[ent] = a
 
     _best_ids = {id(a) for a in _entity_best.values()}
-    _removed = [a for a in filtered if a.get("entity") and id(a) not in _best_ids]
+    _removed = [a for a in filtered if a.get("entity") and id(a) not in _best_ids
+                and a.get('_subscription_event_group') is None]
     for a in _removed:
         print(f"  [entity dedup] 동일 entity 낮은점수 제거: [{a['grade']}] {a['title'][:45]}")
 
     # entity 없는 기사(시장 전체 이슈 등)는 그대로 유지
-    filtered = [a for a in filtered if not a.get("entity") or id(a) in _best_ids]
+    filtered = [a for a in filtered if not a.get("entity") or id(a) in _best_ids
+                or a.get('_subscription_event_group') is not None]
     if _removed:
         print(f"  entity dedup: {len(_removed)}건 제거 → {len(filtered)}건")
     # ──────────────────────────────────────────────────────────────────────────
@@ -6594,6 +6637,12 @@ JSON만 출력:
 
     subject = f"❗ [리스크 탐지] {now_str_full} 기준"
 
+    # Final verified grades/scores must be fixed before representative selection,
+    # scope, summary and rendered counts; late score changes cannot select a loser.
+    for a in filtered:
+        a["_risk_score"] = calc_risk_score(a, exposure_data)
+    filtered = dedup_same_mail_events(filtered)
+
     # 발송 범위를 요약보다 먼저 확정한다 (2026-08-19).
     # 기존엔 요약을 filtered(선별 전체)로 만들고 그 뒤에 참고 등급을 걷어냈다.
     # 그래서 메일에 실리지 않은 기사가 요약문에만 등장했다.
@@ -6677,12 +6726,6 @@ JSON만 출력:
         ai_summary = _sum_text.strip()
     except Exception:
         ai_summary = ""
-
-    # ── 발송 직전 리스크점수 최종 확정 ──
-    # 이후 단계(강등·검증)에서 등급이 바뀐 카드의 점수 괴리를 방지하기 위해
-    # build_email_html(카드 표시) 이전에 재산출 → 카드 점수 = 발송 판단 점수 일치.
-    for a in filtered:
-        a["_risk_score"] = calc_risk_score(a, exposure_data)
 
     # ── 전체 발송 여부 결정 ──
     # 원칙: 긴급·주의 카드 중 최고 리스크점수가 임계값 이상이면 전체 발송.

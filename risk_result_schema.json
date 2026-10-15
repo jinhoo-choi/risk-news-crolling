@@ -58,6 +58,39 @@
     },
     "body_manifest_hash": {
       "$ref": "#/$defs/hash"
+    },
+    "event_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "article_ids",
+          "reason",
+          "reviewed"
+        ],
+        "properties": {
+          "article_ids": {
+            "type": "array",
+            "minItems": 2,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            }
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "reviewed": {
+            "const": true
+          }
+        }
+      },
+      "description": "전건 비교 후 동일 사건 그룹. 같은 원인·거래일의 반복 보도만 묶고 독립 사건은 분리한다. 대표기사는 코드의 최종 점수로 선정한다."
     }
   },
   "$defs": {

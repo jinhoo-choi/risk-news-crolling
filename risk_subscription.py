@@ -265,6 +265,8 @@ def collect(config, queue, verification=False, reviews_only=False):
            'input': inputs, 'input_hash': digest(inputs), 'body_manifest': manifest,
            'body_manifest_hash': digest(manifest), 'policy_version': 'risk-subscription-v1',
            'policy_hash': digest(rules), 'receipts': {}, 'paid_ai_calls': 0}
+    if rules.get('event_grouping_version') == 1:
+        job['event_grouping_version'] = 1
     if not verification:
         current_config(queue)
     frozen = freeze_exposure(job, exposure_raw, captured_at)
