@@ -112,6 +112,8 @@ def prepare_reviews(queue, job, verdicts, reason='analysis_pending'):
             record, sha = read_review(queue, aid)
         elif record is not None and record.get('status') != 'resolved':
             raise RuntimeError('보류 원본과 색인 불일치')
+        if record and record.get('status') == 'resolved' and record.get('resolution_kind') == 'owner_excluded':
+            continue  # Expiry/replay must not reopen an explicit owner no-send decision.
         previous = record or {}
         origins = list(dict.fromkeys(previous.get('origin_jobs', [])+[job['job_id']]))
         same = previous.get('last_job_id') == job['job_id'] and previous.get('status') == 'pending'

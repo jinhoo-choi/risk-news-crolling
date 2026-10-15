@@ -92,6 +92,18 @@ class NativeContinuity(unittest.TestCase):
         self.assertEqual(queue.data['jobs/test.json']['status'], 'uncertain')
         self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
 
+    def test_expired_input_does_not_reopen_owner_excluded_review(self):
+        queue = self.fixture()
+        self.frozen(queue)
+        self.seed_review(queue)
+        queue.data['review/one.json'].update(status='resolved', resolution_kind='owner_excluded')
+        queue.data['review/index.json']['pending'] = []
+        original = copy.deepcopy(queue.data['review/one.json'])
+        values, expected, resolutions = continuity.prepare_reviews(
+            queue, queue.data['jobs/test.json'], {'one':None}, reason='expired_unprocessed')
+        self.assertEqual((values, expected, resolutions), ({}, {}, {}))
+        self.assertEqual(queue.data['review/one.json'], original)
+
     def ack(self, queue):
         queue.remote_seen = Path('seen_news.json').read_bytes()
         bridge.acknowledge(queue, 'test')
