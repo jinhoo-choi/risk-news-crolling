@@ -158,7 +158,8 @@ class Integration(unittest.TestCase):
     def test_expiration_cleanup_never_unlocks_uncertain(self):
         queue = self.fixture()
         queue.data['jobs/test.json']['expires_at'] = (now()-timedelta(seconds=1)).isoformat()
-        expire_and_check(queue)
+        with patch('risk_subscription.notify_error'):
+            expire_and_check(queue)
         self.assertEqual(queue.data['jobs/test.json']['status'], 'expired')
         queue.data['jobs/test.json']['status'] = 'uncertain'
         with self.assertRaises(RuntimeError): expire_and_check(queue)

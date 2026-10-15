@@ -104,8 +104,38 @@ class Queue:
             body['sha'] = sha
         return self.request('/contents/' + PREFIX + '/' + urllib.parse.quote(path, safe='/'), 'PUT', body)
 
-    def put_many(self, values, expected):
-        """Publish shards and their job/index atomically, without retrying writes."""
+    def list_input_entries(self, job_id=None):
+        """List live input trees, including jobs no longer present in index.json."""
+        if job_id is not None and not JOB_ID.fullmatch(job_id):
+            raise ValueError('큐 회차 ID 오류')
+        head = self.request('/git/ref/heads/main')['object']['sha']
+        tree_sha = self.request('/git/commits/'+head)['tree']['sha']
+        parts = (PREFIX+'/inputs').split('/') + ([job_id] if job_id else [])
+        for part in parts:
+            tree = self.request('/git/trees/'+tree_sha)
+            if tree.get('truncated'):
+                raise RuntimeError('큐 입력 트리 목록 불완전 — 정리 보류')
+            entry = next((e for e in tree['tree'] if e['path'] == part), None)
+            if entry is None:
+                return []
+            if entry['type'] != 'tree':
+                raise RuntimeError('큐 입력 디렉터리 형식 오류')
+            tree_sha = entry['sha']
+        tree = self.request('/git/trees/'+tree_sha)
+        if tree.get('truncated'):
+            raise RuntimeError('큐 입력 트리 목록 불완전 — 정리 보류')
+        return tree['tree']
+
+    def put_many(self, values, expected, deletions=()):
+        """Publish values/input deletions atomically, without retrying writes."""
+        deletions = list(deletions)
+        for path in deletions:
+            parts = path.split('/')
+            if (len(parts) != 3 or parts[0] != 'inputs' or not JOB_ID.fullmatch(parts[1])
+                    or not JOB_ID.fullmatch(parts[2].removesuffix('.json'))
+                    or not parts[2].endswith('.json') or not expected.get(path)
+                    or path in values):
+                raise ValueError('큐 입력 삭제 경로·SHA 오류')
         ref = self.request('/git/ref/heads/main')
         head = ref['object']['sha']
         commit = self.request('/git/commits/'+head)
@@ -118,6 +148,8 @@ class Queue:
                 raise ValueError('큐 분할 경로 오류')
             entries.append({'path': PREFIX+'/'+path, 'mode': '100644', 'type': 'blob',
                             'content': json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False)})
+        entries.extend({'path': PREFIX+'/'+path, 'mode': '100644', 'type': 'blob', 'sha': None}
+                       for path in deletions)
         tree = self.request('/git/trees', 'POST', {'base_tree': commit['tree']['sha'], 'tree': entries})
         new = self.request('/git/commits', 'POST', {'message':'chore: private risk queue shards [skip ci]',
                           'tree':tree['sha'], 'parents':[head]})

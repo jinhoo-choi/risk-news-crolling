@@ -26,6 +26,13 @@ POLICY = 'risk_policy.json'
 TERMINAL = {'completed', 'verified', 'expired', 'cancelled'}
 
 
+def notify_best_effort(error, context=''):
+    try:
+        notify_error(error, context)
+    except Exception:
+        print('담당자 오류 알림 실패; 수집 계속/API0')
+
+
 def file_hash(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -70,14 +77,66 @@ def expire_and_check(queue):
         if job.get('status') == 'pending' and not job.get('receipts') and not job.get('attempted_count', 0) and utc_time(job['expires_at']) <= now():
             job.update(status='expired', expired_at=now().isoformat())
             queue.put('jobs/'+jid+'.json', job, old_sha)
+            if job.get('mode') == 'production':
+                notify_best_effort(RuntimeError('운영 구독 회차 만료 — 기사 누락 가능; 수집 범위 확인 필요'),
+                                   'job_id='+jid+'\ncreated_at='+str(job.get('created_at', 'unconfirmed')))
             continue
         raise RuntimeError('미종결 구독 회차 존재 — 새 회차·재전송 금지')
     return index, sha
 
 
+def prune_terminal_inputs(queue, retention_days=7):
+    """Remove only old terminal input shards; keep metadata/receipts and Git history."""
+    if type(retention_days) is not int or retention_days < 1:
+        raise ValueError('입력 보존기간은 1일 이상 정수')
+    cutoff = now()-timedelta(days=retention_days)
+    for entry in queue.list_input_entries():
+        jid = entry['path']
+        if entry['type'] != 'tree' or not JOB_ID.fullmatch(jid):
+            raise RuntimeError('큐 입력 회차 디렉터리 오류')
+        path = 'jobs/'+jid+'.json'
+        job, sha = queue.get(path)
+        if not job or job.get('job_id') != jid or job.get('status') not in TERMINAL:
+            continue
+        if any(v != 'accepted' for v in job.get('receipts', {}).values()):
+            continue
+        if job['status'] in {'expired', 'cancelled'} and job.get('attempted_count', 0):
+            continue
+        ended = job.get(job['status']+'_at')
+        if not ended:
+            continue  # Never infer the age of terminal state from creation time.
+        try:
+            if utc_time(ended) >= cutoff:
+                continue
+        except (ValueError, TypeError):
+            continue
+        shards = queue.list_input_entries(jid)
+        expected, deletions = {path: sha}, []
+        for shard in shards:
+            name = shard['path']
+            if (shard['type'] != 'blob' or '/' in name or not name.endswith('.json')
+                    or not JOB_ID.fullmatch(name.removesuffix('.json'))):
+                raise RuntimeError('큐 입력 분할 파일 목록 오류 — 정리 보류')
+            part = 'inputs/'+jid+'/'+name
+            deletions.append(part)
+            expected[part] = shard['sha']
+        if not deletions:
+            continue
+        job.update(inputs_pruned_at=now().isoformat(), input_retention_days=retention_days,
+                   inputs_pruned_files=len(deletions), inputs_pruned_bytes=sum(s.get('size', 0) for s in shards))
+        queue.put_many({path: job}, expected, deletions=deletions)
+
+
 def collect(config, queue, verification=False):
     queue.preflight()
     index, sha = expire_and_check(queue)
+    if not verification:
+        current_config(queue)
+        try:
+            prune_terminal_inputs(queue, config.get('input_retention_days', 7))
+        except Exception:
+            notify_best_effort(RuntimeError('종결 회차 입력 정리 실패 — 자동 재시도 없이 수집 계속'),
+                               '미종결 회차·원본 메타데이터·영수증은 정리 대상에서 제외합니다.')
     bot = import_bot()
     for state_file in ('seen_news.json', 'exposure_data.csv'):
         data, _ = queue.source(state_file)
@@ -93,6 +152,7 @@ def collect(config, queue, verification=False):
         try:
             response = get(url, **kwargs)
             response.raise_for_status()
+            response.json()  # A 200 response alone does not prove collection succeeded.
             with lock:
                 failures.pop(query, None)
             return response
