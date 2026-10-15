@@ -240,6 +240,21 @@ class Integration(unittest.TestCase):
 
 
 class BodyExtraction(unittest.TestCase):
+    def test_image_only_article_promotion_is_not_body(self):
+        from unittest.mock import MagicMock
+        import risk_subscription as bridge
+        bot = bridge.import_bot()
+        response = MagicMock()
+        response.headers = {}
+        promotion = '<p>Google 검색에서 매일경제 기사를 더 자주 볼 수 있습니다.</p>'
+        response.text = '<article><img src="table.jpg">' + promotion + '</article>'
+        with patch.object(bot.requests.Session, 'get', return_value=response):
+            self.assertEqual(bot.fetch_article_body('https://example.invalid/table'), '')
+        response.text = '<article>' + promotion + '<p>예시기업이 공시를 통해 납입 기한 변경을 발표했다.</p></article>'
+        with patch.object(bot.requests.Session, 'get', return_value=response):
+            self.assertEqual(bot.fetch_article_body('https://example.invalid/news'),
+                             '예시기업이 공시를 통해 납입 기한 변경을 발표했다.')
+
     def test_article_containers_keep_late_facts_and_exclude_footer(self):
         from unittest.mock import MagicMock
         import risk_subscription as bridge

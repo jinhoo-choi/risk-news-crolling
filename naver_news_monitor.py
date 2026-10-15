@@ -1954,15 +1954,20 @@ def fetch_article_body(url: str) -> str:
         limit = 12000 if os.environ.get('RISK_ENGINE') == 'subscription' else 600
         for unwanted in soup.select('script, style, nav, footer, aside, button'):
             unwanted.decompose()
+        def article_text(tag):
+            text = tag.get_text(separator=" ", strip=True)
+            # Image-only articles may expose just this search-promotion paragraph.
+            return text.replace('Google 검색에서 매일경제 기사를 더 자주 볼 수 있습니다.', '').strip()
         for selector in ["#dic_area", "#articleBodyContents", "#newsView",
                          "#articleBodyContent", ".article-view__body", ".vtxt.detailCont",
                          ".article-body", "#articeBody", "article"]:
             tag = soup.select_one(selector)
             if tag:
-                text = tag.get_text(separator=" ", strip=True)
-                return text[:limit]
+                text = article_text(tag)
+                if text:
+                    return text[:limit]
         paragraphs = soup.find_all("p")
-        text = " ".join(p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 20)
+        text = " ".join(article_text(p) for p in paragraphs if len(article_text(p)) > 20)
         return text[:limit]
     except Exception:
         return ""
