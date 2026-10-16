@@ -3350,12 +3350,14 @@ def dedup_same_mail_events(articles: list) -> list:
     """Keep the highest final score in each source-reviewed subscription event.
 
     A shared sector, keyword or blank entity is never sufficient to merge cards.
-    Group membership comes only from the validated, private subscription result.
+    Groups use validated subscription evidence, including the market-statistic
+    guard for successive releases of the same market-wide series.
     Do not merge entities/exposures or record discarded cards as delivered events.
     """
     best = {}
     def rank(article):
         return (display_risk_score(article) or 0, article.get('_risk_score') or 0,
+                article.get('_subscription_stat_date', ''),
                 get_media_boost(article.get('url', '')))
     for article in articles:
         group = article.get('_subscription_event_group')

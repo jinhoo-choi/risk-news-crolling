@@ -6,6 +6,9 @@ The saved result is the analysis; these are not independent model reviews.
 import copy
 import hashlib
 import json
+import re
+from datetime import timedelta
+from email.utils import parsedate_to_datetime
 
 
 class Response:
@@ -28,6 +31,44 @@ class Provider:
         self.calls = {}
         self.event_groups = {aid: str(i) for i, group in enumerate(result.get('event_groups', []))
                              for aid in group['article_ids']}
+        self.stat_dates = {}
+        source = {a['article_id']: a for a in job['input']['items']}
+        for aid, analysis in self.analyses.items():
+            body = self.bodies[aid]['body']
+            # Successive releases of this one market-wide statistic are one mail
+            # item, even if the model split them by reference day or omitted a group.
+            # Named-company liquidations, forecasts and other statistics stay apart.
+            if (analysis['body_status'] != 'verified' or analysis['entity'] or analysis['entities']
+                    or analysis['event_type'] != '반대매매'
+                    or analysis['judgment']['확정여부'] != '확정'
+                    or not re.search(r'미수금.{0,30}반대매매', analysis['fact_summary'])
+                    or not re.search(r'금융투자협회|금투협', body)
+                    or not re.search(r'미수금.{0,40}반대매매|반대매매.{0,40}미수금', body, re.S)):
+                continue
+            quotes = [e['quote'] for e in analysis['evidence']
+                      if e['source_segment'] == 'body' and e['quote'] in body]
+            if not any(re.search(r'\d[\d,.\s]*(?:억|만)\s*원', q) for q in quotes):
+                continue
+            self.event_groups[aid] = 'market:금투협:미수금반대매매'
+            dates = []
+            try:
+                published = parsedate_to_datetime(source[aid]['pubDate']).date()
+                for quote in quotes:
+                    for year, month, day in re.findall(
+                            r'(?:(20\d{2})년\s*)?(?:(\d{1,2})월\s*)?(?<!\d)(\d{1,2})일', quote):
+                        try:
+                            date = published.replace(year=int(year or published.year),
+                                                     month=int(month or published.month), day=int(day))
+                            if date > published and not year:
+                                date = (date.replace(year=date.year-1) if month else
+                                        (published.replace(day=1)-timedelta(days=1)).replace(day=int(day)))
+                            if date <= published:
+                                dates.append(date.isoformat())
+                        except ValueError:
+                            continue
+            except (KeyError, TypeError, ValueError, OverflowError):
+                pass  # Unknown source date never becomes the publication date.
+            self.stat_dates[aid] = max(dates, default='')
 
     def analysis(self, article):
         return self.analyses[article['article_id']]
@@ -44,9 +85,12 @@ class Provider:
                        related_stocks=copy.deepcopy(a['related_stocks']),
                        _subscription_direct_entities=copy.deepcopy(a.get('direct_event_entities', [])))
         article.pop('_subscription_event_group', None)
+        article.pop('_subscription_stat_date', None)
         group = self.event_groups.get(article['article_id'])
         if group is not None:
             article['_subscription_event_group'] = group
+        if article['article_id'] in self.stat_dates:
+            article['_subscription_stat_date'] = self.stat_dates[article['article_id']]
 
     def response(self, route, article=None, articles=None, offset=0):
         self.calls[route] = self.calls.get(route, 0)+1

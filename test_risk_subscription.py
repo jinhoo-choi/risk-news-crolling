@@ -204,6 +204,97 @@ class Integration(unittest.TestCase):
         a['_risk_score'] = b['_risk_score']
         self.assertEqual(self.bot.dedup_same_mail_events([a,b]), [a])
 
+    def market_statistics_fixture(self):
+        queue = self.grouped_fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        item, body = copy.deepcopy(job['input']['items'][0]), copy.deepcopy(job['body_manifest'][0])
+        analysis = copy.deepcopy(result['analyses']['one'])
+        job['input']['items'], job['body_manifest'] = [], []
+        result['classifications'], result['analyses'] = [], {}
+        for aid, day in [('one',14), ('two',14), ('three',15), ('four',15)]:
+            quote = f'지난 {day}일 위탁매매 미수금 대비 실제 반대매매 금액은 804억원으로 집계됐다.'
+            text = '금융투자협회에 따르면 '+quote
+            row = dict(item, article_id=aid, title=f'빚투 반대매매 급증 {aid}',
+                       url='https://example.invalid/test/'+aid,
+                       description=text, desc=text,
+                       pubDate='Fri, 16 Oct 2026 17:37:00 +0900')
+            job['input']['items'].append(row)
+            job['body_manifest'].append(dict(body, article_id=aid, body=text,
+                source_url=row['url'], body_hash=hashlib.sha256(text.encode()).hexdigest()))
+            answer = copy.deepcopy(analysis)
+            answer.update(entity='', entities=[], event_type='반대매매', confidence=0.96,
+                          fact_summary=f'{day}일 미수금 반대매매가 804억원으로 집계됐다.',
+                          action='시장 강제처분 실적과 보유 주식 평가손을 확인한다.', customer_notice=None,
+                          judgment={'핵심사건':'반대매매','손실주체':'주주','당사연관':'무관','확정여부':'확정'},
+                          evidence=[{'source_segment':'body','source_hash':hashlib.sha256(text.encode()).hexdigest(),
+                                     'quote':quote}])
+            result['classifications'].append({'article_id':aid,'relevant':True,'reason':'시장 실제 반대매매 집계.'})
+            result['analyses'][aid] = answer
+        job['input']['raw_articles'] = copy.deepcopy(job['input']['items'])
+        result['event_groups'] = [{'article_ids':ids,'reason':'같은 집계일 통계 반복 보도.','reviewed':True}
+                                  for ids in [['one','two'],['three','four']]]
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        return queue
+
+    def test_successive_market_statistics_render_one_card_and_record_only_winner(self):
+        for missing_groups in (False, True):
+            with self.subTest(missing_groups=missing_groups):
+                Path('seen_news.json').write_bytes(self.before)
+                queue, smtp = self.market_statistics_fixture(), SMTP()
+                if missing_groups:
+                    queue.data['results/test.json']['event_groups'] = []
+                self.run_consume(queue, smtp)
+                final = queue.data['filter-logs/test.json']['final']
+                self.assertEqual([a['article_id'] for a in final], ['three'])
+                document = queue.data['previews/test.json']['html']
+                self.assertIn('https://example.invalid/test/three', document)
+                for aid in ('one','two','four'):
+                    self.assertNotIn('https://example.invalid/test/'+aid, document)
+                self.assertIn('1건 선별', document)
+                self.assertEqual(len(smtp.calls), 3)
+                queue.remote_seen = Path('seen_news.json').read_bytes()
+                acknowledge(queue, 'test')
+                self.assertTrue(queue.data['jobs/test.json']['ack'])
+
+    def test_market_statistics_higher_score_precedes_newer_source_date(self):
+        queue, smtp = self.market_statistics_fixture(), SMTP()
+        queue.data['results/test.json']['analyses']['one']['confidence'] = 0.99
+        self.run_consume(queue, smtp)
+        self.assertEqual([a['article_id'] for a in queue.data['filter-logs/test.json']['final']], ['one'])
+
+    def test_market_statistic_guard_does_not_merge_other_risks_or_invent_source_dates(self):
+        from risk_provider import Provider
+        for case in ('named','credit','forecast','missing','other_statistic','no_source_amount','no_authority'):
+            queue = self.market_statistics_fixture()
+            job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+            result['event_groups'] = []
+            answer, body = result['analyses']['one'], job['body_manifest'][0]
+            if case == 'named':
+                answer.update(entity='가상기업', entities=['가상기업'])
+            elif case == 'credit':
+                answer['event_type'] = '유동성위기'
+            elif case == 'forecast':
+                answer['judgment']['확정여부'] = '가능성'
+            elif case == 'missing':
+                answer['body_status'] = 'missing'
+            elif case == 'other_statistic':
+                answer['fact_summary'] = '신용융자 반대매매가 증가했다.'
+            elif case == 'no_source_amount':
+                answer['evidence'][0]['quote'] = '금융투자협회에 따르면'
+            else:
+                body['body'] = body['body'].replace('금융투자협회', '다른 기관')
+            with self.subTest(case=case):
+                provider = Provider(job, result)
+                self.assertNotIn('one', provider.stat_dates)
+                self.assertNotIn('one', provider.event_groups)
+        queue = self.market_statistics_fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        result['analyses']['one']['evidence'][0]['quote'] = '804억원으로 집계됐다.'
+        provider = Provider(job, result)
+        self.assertEqual(provider.stat_dates['one'], '')
+        self.assertEqual(provider.stat_dates['three'], '2026-10-15')
+
     def test_duplicate_candidates_use_one_grade_slot_without_displacing_other_events(self):
         rows, exposure = [], {}
         for i in range(5):
