@@ -20,6 +20,7 @@ from risk_queue import Queue, now
 from risk_result_validator import validate, utc_time
 
 OWNER = '111715@koreainvestment.com'  # Same owner as existing test_send_self.py.
+ERROR_EMAIL = 'myboy3743@gmail.com'  # Runtime/operational alerts only; verification stays unchanged.
 
 
 def snapshot():
