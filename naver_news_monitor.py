@@ -5406,8 +5406,8 @@ def send_email_error(error_msg: str, trace: str):
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     now_str = now.strftime("%Y년 %m월 %d일 %H:%M")
-    from risk_owner_verification import OWNER
-    receiver = OWNER
+    from risk_owner_verification import ERROR_EMAIL
+    receiver = ERROR_EMAIL
 
     html_body = f"""<html>
 <head><meta charset="utf-8"></head>
@@ -5479,17 +5479,17 @@ def _notify_partial_failure(subject: str, refused: dict, total: int):
     """일부/전원 수신자 거부 시 본인에게 경고 메일 별도 발송 (자기 자신도
     거부 대상에 포함돼 있으면 이 경고 자체도 실패할 수 있음 — 그 경우
     GitHub Actions 로그가 최후 수단)"""
-    from risk_owner_verification import OWNER
+    from risk_owner_verification import ERROR_EMAIL
     _warn = _build_msg(
         f"⚠️ [리스크봇] 수신자 {len(refused)}/{total}명 거부됨 — {subject[:40]}",
         f"<p>본문 메일 발송 중 다음 수신자가 실패했습니다:</p><pre>{_esc(str(refused))}</pre>",
-        OWNER,
+        ERROR_EMAIL,
     )
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.ehlo()
             server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_SENDER, [OWNER], _warn.as_string())
+            server.sendmail(EMAIL_SENDER, [ERROR_EMAIL], _warn.as_string())
     except Exception as _e:
         print(f"  ⚠️ 거부 경고 메일 발송도 실패: {_e}")
 

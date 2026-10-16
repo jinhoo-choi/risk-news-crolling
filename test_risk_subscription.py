@@ -283,14 +283,16 @@ class Integration(unittest.TestCase):
         with patch.object(smtplib, 'SMTP_SSL', lambda *a, **k: smtp):
             self.bot.flush_owner_warnings()
             self.bot.flush_owner_warnings()
-        self.assertEqual([c[0] for c in smtp.calls], [['111715@koreainvestment.com']])
+            self.bot._notify_partial_failure('offline', {'exec@example.invalid': (550, b'refused')}, 1)
+        self.assertEqual([c[0] for c in smtp.calls], [['myboy3743@gmail.com']] * 2)
         self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
         from email import message_from_string
-        message = message_from_string(smtp.calls[0][1])
         from email.utils import parseaddr
-        self.assertEqual(parseaddr(message['To'])[1], '111715@koreainvestment.com')
-        self.assertIsNone(message['Cc'])
-        self.assertIsNone(message['Bcc'])
+        for _, raw in smtp.calls:
+            message = message_from_string(raw)
+            self.assertEqual(parseaddr(message['To'])[1], 'myboy3743@gmail.com')
+            self.assertIsNone(message['Cc'])
+            self.assertIsNone(message['Bcc'])
 
     def test_terminal_request_is_noop_without_smtp_or_history_write(self):
         queue=self.fixture('verification')
