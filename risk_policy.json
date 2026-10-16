@@ -10,7 +10,7 @@
     "sha256": "55bd2cb926f9bd43ba334c6150ed18b45d4a4f7f80815bddf47468fa1880406a"
   },
   "completeness": "input.items 모든 article_id를 정확히 한 번 true/false/null과 근거로 판정하고 true 전건을 분석한다. null은 정상/false로 간주하지 않는다. continuity_version=1 회차는 null 원본을 영속 보류 저장한 뒤 검증된 건만 기존 규칙으로 발송한다. 보류 ID는 seen에서 제외하고 14시간 수집창 밖에서도 다음 회차에 다시 검토하며 자동 강등·횟수 상한·자동 정상 종결하지 않는다. legacy/verification 회차는 null이 있으면 전체 소비를 보류한다.",
-  "body_rules": "원문·출처·실제 사건 문단을 확인한다. 메뉴·광고·스크립트를 사실로 쓰지 않는다. 본문 미수집도 제목/description만으로 확실한 사실은 판정할 수 있으나 true이면 참고·confidence 0.6 이하·fact_summary에 [본문 미수집]·customer_notice null로 제한한다. 불충분하면 null. 대체 본문 독립 검증은 미구현이므로 발송하지 않는다. truncation이면 확인할 사건/주체 문단이 확보된지 확인하고, 없으면 null. 수집기의 verified는 물리적 본문 확보를 뜻한다. 메뉴·광고 등 읽을 수 없는 본문이면 결과에서 unreadable로 낮추고 제목/description 근거만 쓰며 참고·0.6 이하·본문 미수집 표시·고객 안내 null 제한을 지킨다. 반대 방향의 확보 상태 승격은 금지한다.",
+  "body_rules": "본문이 확보되고 실제 사건 문단이 확인된 기사를 우선 분석·발송한다. 같은 사건은 본문 확인이 가능한 매체의 적격 기사를 우선 검토한다. 본문 미확보 자체는 별도 오류알림 사유로 보지 않으며 본문 확인 전 발송하지 않는다. 원문·출처·실제 사건 문단을 확인한다. 메뉴·광고·스크립트를 사실로 쓰지 않는다. 본문 미수집도 제목/description만으로 확실한 사실은 판정할 수 있으나 true이면 참고·confidence 0.6 이하·fact_summary에 [본문 미수집]·customer_notice null로 제한한다. 불충분하면 null. 대체 본문 독립 검증은 미구현이므로 발송하지 않는다. truncation이면 확인할 사건/주체 문단이 확보된지 확인하고, 없으면 null. 수집기의 verified는 물리적 본문 확보를 뜻한다. 메뉴·광고 등 읽을 수 없는 본문이면 결과에서 unreadable로 낮추고 제목/description 근거만 쓰며 참고·0.6 이하·본문 미수집 표시·고객 안내 null 제한을 지킨다. 반대 방향의 확보 상태 승격은 금지한다.",
   "precision": "작성된 사실·의견·회생 신청과 개시 결정·실제 부실과 절차성 거래정지/자진 상폐를 구분한다. 시장 전체 반대매매의 entity는 빈 문자열을 유지한다. 당사 장애는 원문 귀속과 최근 발생일이 확인될 때만 긴급 예외이며 과거 회고는 참고이다. 요약·조치·고객 안내에 원문에 없는 숫자, 손실, 원인, 피해자 수를 만들지 않는다.",
   "writing": "fact_summary 160자 이하. action 120자 이하 최대 3조치. customer_notice 190자 이하 5줄. 고객이 보유 상품 확인·관련 공시 확인을 할 수 있는 편한 존댓말. 매수·매도·추가 납입 권유, 대출이 없는 종목의 담보/OB 조치, 허구의 회사 입장·복구/보상 약속 금지. 적격 긴급 사건은 고객케어 초안을 작성하고 경쟁사/당사 전산·제재는 기존 차단 기준에 따라 null.",
   "native_rules": "기존 HTML, 점수 계산, 표시 점수, 발송 범위, 100억 노출 기준, 5.5 전체 발송 게이트, 사건 이력·최종 상한을 그대로 소비 코드가 적용한다. 최종 점수를 모델이 덮어쓰지 않는다. 인사이트봇의 발행어음 6.5 기준을 적용하지 않는다.",
@@ -20,8 +20,8 @@
   "continuity": {
     "version": 1,
     "exposure_snapshot": "수집 시 CSV 원본·SHA256·기준일을 같은 비공개 커밋에 고정하고 소비 때 검증한 별도 임시 파일로만 렌더한다. main CSV는 변경하지 않는다. 기본 7일 초과 또는 미래 기준일은 발송하지 않는다.",
-    "deferred_review": "review/index.json과 개별 원본/본문 레코드를 SMTP 전에 원자적으로 저장한다. null은 발송/seen 제외하며 반복 보류를 기존 메일에 명시한다. 해결 판정은 main 이력 저장·전원 SMTP accepted·ACK와 같은 커밋에서만 닫는다. expired 미처리 원본도 먼저 보류 저장하고 종결한다.",
-    "completion": "completed는 해당 회차 발송·이력 ACK의 완료다. analysis_complete=false 또는 deferred_ids가 있으면 전체 분석 완료라고 보고하지 않는다. 보류 원본은 별도 pending이며 해결 전 삭제하지 않는다."
+    "deferred_review": "review/index.json과 개별 원본/본문 레코드를 SMTP 전에 원자적으로 저장한다. null은 발송/seen 제외하며 본문 미확보·unreadable만 있는 보류는 내부 재수집 대상으로 보존하고 별도 오류메일·보류 경고를 보내지 않는다. 본문을 확보했으나 귀속·사실 검증이 미완료인 보류는 기존 담당자 알림을 유지한다. 해결 판정은 main 이력 저장·전원 SMTP accepted·ACK와 같은 커밋에서만 닫는다. expired 미처리 원본도 먼저 보류 저장하고 종결한다.",
+    "completion": "completed는 해당 회차 발송·이력 ACK의 완료다. analysis_complete=false 또는 deferred_ids가 있으면 전체 분석 완료라고 보고하지 않는다. 보류 원본은 별도 pending이며 해결 전 삭제하지 않는다. 본문 미확보만의 보류는 일상 보고의 오류·미해결 경고에서 제외한다. body_deferred_count를 별도로 구분하고 본문 확인된 기사 기준으로 처리 상태를 보고하되 전체 기사 본문을 확보했다고 쓰지 않는다."
   },
   "event_grouping_version": 1
 }

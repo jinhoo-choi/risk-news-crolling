@@ -252,6 +252,10 @@ def collect(config, queue, verification=False, reviews_only=False):
     items = [a for a in items if a['url'] not in current_seen or a['article_id'] in replay]
     allowed_ids = {a['article_id'] for a in items}
     manifest = [b for b in manifest if b['article_id'] in allowed_ids]
+    # Put readable sources first without dropping IDs or changing their verdicts.
+    body_ready = {b['article_id'] for b in manifest if b['body_status'] == 'verified'}
+    items.sort(key=lambda a: a['article_id'] not in body_ready)
+    manifest.sort(key=lambda b: b['article_id'] not in body_ready)
     created = now()
     jid = ('risk-verification-' if verification else 'risk-production-')+os.environ.get('GITHUB_RUN_ID', created.strftime('%Y%m%dT%H%M%S'))
     if not JOB_ID.fullmatch(jid) or queue.get('jobs/'+jid+'.json')[0]:
@@ -368,12 +372,20 @@ def consume(queue, jid, self_test=False):
         raise RuntimeError('소비 검증 중 회차 상태 변경')
     verdicts = delivery_verdicts(job, result, excluded_ids)
     deferred_ids = [aid for aid, value in verdicts.items() if value is None]
+    bodies = {b['article_id']: b for b in job['body_manifest']}
+    body_deferred_ids = {aid for aid in deferred_ids
+                         if bodies[aid]['body_status'] in {'missing', 'unreadable'}
+                         or result['analyses'].get(aid, {}).get('body_status') in {'missing', 'unreadable'}}
+    alert_deferred_ids = [aid for aid in deferred_ids if aid not in body_deferred_ids]
     values, expected, resolutions = ({}, {}, {}) if self_test else prepare_reviews(queue, job, verdicts)
     overdue_count = sum(utc_time(values['review/'+aid+'.json']['first_seen_at']) <= now()-timedelta(hours=24)
                         for aid in deferred_ids)
+    alert_overdue_count = sum(utc_time(values['review/'+aid+'.json']['first_seen_at']) <= now()-timedelta(hours=24)
+                              for aid in alert_deferred_ids)
     metadata.update(status='sending', self_test=self_test, sending_at=now().isoformat())
     metadata.update(deferred_ids=deferred_ids, review_resolutions=resolutions,
                     analysis_complete=not deferred_ids, overdue_review_count=overdue_count)
+    metadata['body_deferred_ids'] = sorted(body_deferred_ids)
     metadata['owner_excluded_ids'] = sorted(excluded_ids.intersection(verdicts))
     if values or resolutions:
         values['jobs/'+jid+'.json'], expected['jobs/'+jid+'.json'] = metadata, sha
@@ -391,11 +403,15 @@ def consume(queue, jid, self_test=False):
         if previous != value:
             queue.put(path, value, old_sha)
     def review_notice(subject, document, empty=False):
-        if not deferred_ids:
+        if not alert_deferred_ids:
+            if empty and body_deferred_ids:
+                subject = subject.replace('신규 뉴스 없음', '본문 확인된 발송 후보 없음').replace('해당 뉴스 없음', '본문 확인된 발송 후보 없음')
+                document = document.replace('AI 리스크 탐지 결과<br>해당하는 뉴스가 없습니다.',
+                                            '본문 확인된 기사에서<br>발송 조건에 해당하는 뉴스가 없습니다.')
             return subject, document
-        label = '확인 보류 '+str(len(deferred_ids))+'건'
-        if overdue_count:
-            label += ' · 24시간 이상 미확인 '+str(overdue_count)+'건'
+        label = '확인 보류 '+str(len(alert_deferred_ids))+'건'
+        if alert_overdue_count:
+            label += ' · 24시간 이상 미확인 '+str(alert_overdue_count)+'건'
         banner = '<div style="padding:12px;color:#92400e;background:#fffbeb">'+html.escape(label)+' — 판정 미완료 기사는 발송·정상 처리에서 제외하고 다음 회차에 다시 확인합니다.</div>'
         document = re.sub(r'(<body\b[^>]*>)', lambda m: m[1]+banner, document, count=1)
         document = document.replace('금일 리스크 뉴스 없음', '검증 완료 발송 후보 없음')
@@ -428,7 +444,7 @@ def consume(queue, jid, self_test=False):
             raise RuntimeError('동일 회차 추가 메일 금지')
         staged.update(subject=('[TEST] ' if self_test else '')+subject, html=html,
                       targets=[bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER], self_only=True, recipient_route='owner_status')
-        owner_review_staged = bool(deferred_ids)
+        owner_review_staged = bool(alert_deferred_ids)
     def save(*args, **kwargs):
         if args:
             held_urls = {a['url'] for a in job['input']['items'] if a['article_id'] in deferred_ids}
@@ -493,8 +509,8 @@ def consume(queue, jid, self_test=False):
         bot.RISK_PROVIDER = None
         # SMTP guard has been restored: diagnostics must not become delivery receipts.
         bot.flush_owner_warnings()
-        if deferred_ids and not owner_review_notified:
-            notify_best_effort(RuntimeError(f'확인 보류 {len(deferred_ids)}건 · 24시간 이상 미확인 {overdue_count}건'),
+        if alert_deferred_ids and not owner_review_notified:
+            notify_best_effort(RuntimeError(f'확인 보류 {len(alert_deferred_ids)}건 · 24시간 이상 미확인 {alert_overdue_count}건'),
                                '검증 미완료 기사는 발송·정상 처리에서 제외하고 재확인합니다.')
 
 
@@ -538,6 +554,7 @@ def finish_packet(queue, job, result, packet, bot, guard, native_send):
     print(json.dumps({'job_id': job['job_id'], 'status': final['status'], 'paid_ai_calls': 0,
                       'self_test': self_test, 'analysis_complete': final.get('analysis_complete', True),
                       'deferred_count': len(final.get('deferred_ids', [])),
+                      'body_deferred_count': len(final.get('body_deferred_ids', [])),
                       'smtp_accepted': len(final['receipts']), 'smtp_calls': guard.smtp_calls}))
 
 
@@ -618,7 +635,8 @@ def acknowledge(queue, jid):
         queue.put('jobs/'+jid+'.json', job, sha)
     print(json.dumps({'job_id': jid, 'status': 'completed', 'paid_ai_calls': 0, 'history_saved': True,
                       'ack': True, 'analysis_complete': job.get('analysis_complete', True),
-                      'deferred_count': len(job.get('deferred_ids', []))}))
+                      'deferred_count': len(job.get('deferred_ids', [])),
+                      'body_deferred_count': len(job.get('body_deferred_ids', []))}))
 
 
 def notify_error(error, context=''):
