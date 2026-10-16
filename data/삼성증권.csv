@@ -1,4 +1,4 @@
-﻿date,company,title,url
-2026-10-07,삼성증권,신용/대출 종목 변경 안내,https://www.samsungpop.com/mbw/customer/noticeEvent.do?cmd=noticeView&MenuSeqNo=24568
-2026-10-12,삼성증권,신용거래 및 증권담보융자의 약관과 거래설명서 개정 안내,https://www.samsungpop.com/mbw/customer/noticeEvent.do?cmd=noticeView&MenuSeqNo=24607
-2026-10-14,삼성증권,신용보증금률 및 담보유지비율 변경 안내,https://www.samsungpop.com/mbw/customer/noticeEvent.do?cmd=noticeView&MenuSeqNo=24626
+﻿date,company,title,url,published_date
+2026-10-07,삼성증권,신용/대출 종목 변경 안내,https://www.samsungpop.com/mbw/customer/noticeEvent.do?cmd=noticeView&MenuSeqNo=24568,
+2026-10-12,삼성증권,신용거래 및 증권담보융자의 약관과 거래설명서 개정 안내,https://www.samsungpop.com/mbw/customer/noticeEvent.do?cmd=noticeView&MenuSeqNo=24607,
+2026-10-14,삼성증권,신용보증금률 및 담보유지비율 변경 안내,https://www.samsungpop.com/mbw/customer/noticeEvent.do?cmd=noticeView&MenuSeqNo=24626,2026-10-14
