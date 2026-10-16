@@ -26,6 +26,14 @@ class QueueConflict(RuntimeError):
         super().__init__('비공개 큐 '+method+' HTTP '+str(code)+'; kind='+kind+'; request_id='+request_id)
 
 
+class QueueReadUnavailable(RuntimeError):
+    """Only a transient GET failure; never evidence to retry a write."""
+
+    def __init__(self, message, code=0, request_id='unconfirmed'):
+        self.code, self.request_id = code, request_id
+        super().__init__(message)
+
+
 def now():
     return datetime.now(timezone.utc)
 
@@ -56,12 +64,12 @@ class Queue:
                 with urllib.request.urlopen(request, timeout=30) as response:
                     return json.load(response)
             except urllib.error.HTTPError as error:
+                request_id = error.headers.get('X-GitHub-Request-Id', '') if error.headers else ''
+                if not re.fullmatch(r'[A-Za-z0-9:-]{1,100}', request_id):
+                    request_id = 'unconfirmed'
                 if (error.code == 409 and method == 'PUT'
                         or error.code in {409, 422} and method == 'PATCH' and suffix == '/git/refs/heads/main'):
                     # Never expose GitHub's raw response (it may contain private data).
-                    request_id = error.headers.get('X-GitHub-Request-Id', '') if error.headers else ''
-                    if not re.fullmatch(r'[A-Za-z0-9:-]{1,100}', request_id):
-                        request_id = 'unconfirmed'
                     try:
                         message = json.loads(error.read(8192)).get('message', '').lower()
                         kind = 'sha_conflict' if 'sha' in message else 'ref_conflict' if 'reference' in message else 'conflict'
@@ -73,11 +81,16 @@ class Queue:
                 if error.code in {429, 500, 502, 503, 504} and attempt+1 < attempts:
                     time.sleep(attempt+1)
                     continue
-                raise RuntimeError(f'비공개 큐 {method} HTTP {error.code}') from None
-            except urllib.error.URLError:
+                message = f'비공개 큐 {method} HTTP {error.code}; request_id={request_id}'
+                if method == 'GET' and error.code in {429, 500, 502, 503, 504}:
+                    raise QueueReadUnavailable(message, error.code, request_id) from None
+                raise RuntimeError(message) from None
+            except (urllib.error.URLError, TimeoutError):
                 if attempt+1 < attempts:
                     time.sleep(attempt+1)
                     continue
+                if method == 'GET':
+                    raise QueueReadUnavailable('비공개 큐 GET 네트워크 실패') from None
                 raise RuntimeError('비공개 큐 네트워크 실패 — 쓰기 자동 재시도 없음') from None
 
     def preflight(self):

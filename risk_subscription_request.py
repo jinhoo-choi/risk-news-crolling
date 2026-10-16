@@ -1,5 +1,6 @@
 """Public wake file contains metadata only; fixed CLI operations and flags."""
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -37,7 +38,19 @@ def main():
         command += ['--job-id', value['job_id']]
     if value['self_test']:
         command.append('--self-test')
-    process = subprocess.run(command, check=True, capture_output=True, text=True)
+    try:
+        process = subprocess.run(command, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as error:
+        # Child stdout/stderr may contain private articles. Expose only fixed
+        # outbox phase/result metadata, never the captured traceback or payload.
+        for line in (error.stdout or '').splitlines():
+            if re.fullmatch(r'RISK_OUTBOX_VERIFY (?:phase=put outcome=unconfirmed|'
+                            r'phase=read source=(?:put_commit|fresh) attempt=[1-3] '
+                            r'outcome=(?:verified|missing|mismatch|unavailable|blocked) '
+                            r'commit=(?:[0-9a-f]{40}|unconfirmed) http=(?:0|[1-5][0-9]{2}) '
+                            r'request_id=[A-Za-z0-9:-]{1,100})', line):
+                print(line)
+        raise
     print(process.stdout, end='')
     summary = read_summary(process.stdout)
     if value['operation'] == 'collect-review':

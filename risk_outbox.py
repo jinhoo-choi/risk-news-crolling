@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import tempfile
+import time
 import unicodedata
 from pathlib import Path
 from unittest.mock import patch
@@ -11,7 +12,7 @@ from unittest.mock import patch
 from bs4 import BeautifulSoup
 from risk_analysis_guard import strict_json, validate_seen_data
 from risk_delivery import address_key
-from risk_queue import digest, now
+from risk_queue import QueueReadUnavailable, digest, now
 
 
 def sha(text):
@@ -81,14 +82,44 @@ def validate_packet(value, job, result):
 
 def store_packet(queue, value):
     path = 'outbox/'+value['job_id']+'.json'
-    existing, _ = queue.get(path)
+    fresh = getattr(queue, 'get_fresh', queue.get)
+    existing, _ = fresh(path)
     if existing is not None:
         if existing != value:
             raise RuntimeError('기존 발송 고정본 덮어쓰기 금지')
         return
-    queue.put(path, value)
-    if getattr(queue, 'get_fresh', queue.get)(path)[0] != value:
-        raise RuntimeError('발송 고정본 저장 확인 실패 — SMTP 금지')
+    try:
+        written = queue.put(path, value)
+    except Exception:
+        print('RISK_OUTBOX_VERIFY phase=put outcome=unconfirmed')
+        raise  # An uncertain PUT must never become an automatic write/SMTP retry.
+    commit = written.get('commit', {}).get('sha') if isinstance(written, dict) else None
+    if commit is not None and not re.fullmatch(r'[0-9a-f]{40}', commit):
+        raise RuntimeError('발송 고정본 PUT 커밋 형식 오류 — SMTP 금지')
+    # Verify the exact PUT commit, not a possibly stale view of moving main.
+    # The conflict-confirmed-existing path has no new commit: fresh read only.
+    source = 'put_commit' if commit else 'fresh'
+    for attempt in range(1, 4):
+        code, request_id = 0, 'unconfirmed'
+        outcome = 'blocked'
+        try:
+            saved, _ = queue.get(path, ref=commit) if commit else fresh(path)
+        except QueueReadUnavailable as error:
+            outcome = 'unavailable'
+            code, request_id = error.code, error.request_id
+        else:
+            outcome = 'verified' if saved == value else 'missing' if saved is None else 'mismatch'
+        finally:
+            print(f'RISK_OUTBOX_VERIFY phase=read source={source} attempt={attempt} '
+                  f'outcome={outcome} commit={commit or "unconfirmed"} '
+                  f'http={code} request_id={request_id}')
+        if outcome == 'verified':
+            return
+        if outcome == 'mismatch':
+            raise RuntimeError('발송 고정본 저장 내용 불일치 — SMTP 금지')
+        if attempt < 3:
+            time.sleep(attempt)
+    raise RuntimeError('발송 고정본 저장 확인 실패 — SMTP 금지; PUT 반환 후 조회 '+outcome)
 
 
 def legacy_packet(queue, job, result, bot, targets):

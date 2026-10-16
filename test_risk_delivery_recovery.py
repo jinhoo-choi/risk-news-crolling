@@ -1,5 +1,6 @@
 """Real native delivery + queue conflicts; all SMTP/HTTP are local mocks."""
 import copy
+import contextlib
 import io
 import json
 import os
@@ -13,12 +14,31 @@ from unittest.mock import Mock, patch
 import risk_subscription as bridge
 import risk_subscription_request as request
 from risk_delivery import address_key
-from risk_outbox import sha
-from risk_queue import Queue, QueueConflict, digest, now
+from risk_outbox import sha, store_packet
+from risk_queue import Queue, QueueConflict, QueueReadUnavailable, digest, now
 import test_risk_subscription as fixtures
 
 
 class Conflicts(unittest.TestCase):
+    def test_transient_get_exhaustion_keeps_safe_http_diagnostics(self):
+        q = object.__new__(Queue); q.token = 'not-a-real-secret'
+        error = urllib.error.HTTPError('https://api.github.com', 503, 'Unavailable',
+            {'X-GitHub-Request-Id': 'ABCD:1234'}, io.BytesIO(b'PRIVATE RESPONSE'))
+        with patch('risk_queue.urllib.request.urlopen', side_effect=error) as call, \
+                patch('risk_queue.time.sleep'), self.assertRaises(QueueReadUnavailable) as raised:
+            q.request('/contents/test')
+        self.assertEqual(call.call_count, 3)
+        self.assertEqual((raised.exception.code, raised.exception.request_id), (503, 'ABCD:1234'))
+        self.assertNotIn('PRIVATE', str(raised.exception))
+
+    def test_timeout_put_is_never_retried_or_treated_as_read(self):
+        q = object.__new__(Queue); q.token = 'not-a-real-secret'
+        with patch('risk_queue.urllib.request.urlopen', side_effect=TimeoutError) as call, \
+                self.assertRaises(RuntimeError) as raised:
+            q.request('/contents/test', 'PUT', {})
+        self.assertNotIsInstance(raised.exception, QueueReadUnavailable)
+        self.assertEqual(call.call_count, 1)
+
     def test_same_file_branch_conflict_retries_identical_cas(self):
         q = object.__new__(Queue)
         q.request = Mock(side_effect=[QueueConflict('request-id'), {'ok': True}])
@@ -101,6 +121,82 @@ class Conflicts(unittest.TestCase):
         self.assertEqual(len(refs), 2)
         self.assertTrue(all(r['force'] is False for r in refs))
         self.assertEqual(q.get.call_args.kwargs, {'ref': 'other-bot'})
+
+
+class Outbox(unittest.TestCase):
+    def queue(self):
+        q = object.__new__(Queue)
+        q.get_fresh = Mock(return_value=(None, None))
+        q.get = Mock()
+        q.put = Mock(return_value={'commit': {'sha': 'a'*40}})
+        return q
+
+    def test_put_commit_is_verified_even_if_main_still_reports_missing(self):
+        q = self.queue(); value = {'job_id': 'test'}
+        q.get.return_value = (value, 'blob')
+        store_packet(q, value)
+        q.get.assert_called_once_with('outbox/test.json', ref='a'*40)
+        q.get_fresh.assert_called_once_with('outbox/test.json')
+        q.put.assert_called_once_with('outbox/test.json', value)
+
+    def test_missing_or_transient_read_rechecks_without_rewriting(self):
+        for first in [(None, None), QueueReadUnavailable('temporary', 503, 'ABCD:1234')]:
+            with self.subTest(first=first):
+                q = self.queue(); value = {'job_id': 'test'}
+                q.get.side_effect = [first, (value, 'blob')]
+                with patch('risk_outbox.time.sleep') as sleep:
+                    store_packet(q, value)
+                self.assertEqual(q.get.call_count, 2)
+                self.assertEqual(q.get.call_args_list[0], q.get.call_args_list[1])
+                self.assertEqual(q.put.call_count, 1)
+                sleep.assert_called_once_with(1)
+
+    def test_persistently_missing_read_is_bounded_and_fails_closed(self):
+        q = self.queue(); q.get.return_value = (None, None)
+        with patch('risk_outbox.time.sleep'), self.assertRaisesRegex(RuntimeError, 'SMTP 금지'):
+            store_packet(q, {'job_id': 'test'})
+        self.assertEqual(q.get.call_count, 3)
+        self.assertEqual(q.put.call_count, 1)
+
+    def test_changed_content_or_integrity_or_auth_error_never_retries(self):
+        for response in [({'job_id': 'test', 'html': 'other'}, 'blob'),
+                         RuntimeError('비공개 큐 blob 해시 불일치'),
+                         RuntimeError('비공개 큐 GET HTTP 403')]:
+            with self.subTest(response=response):
+                q = self.queue()
+                q.get.side_effect = [response]
+                with patch('risk_outbox.time.sleep') as sleep, self.assertRaises(RuntimeError):
+                    store_packet(q, {'job_id': 'test'})
+                self.assertEqual(q.get.call_count, 1)
+                self.assertEqual(q.put.call_count, 1)
+                sleep.assert_not_called()
+
+    def test_failed_or_unknown_put_never_becomes_read_or_write_retry(self):
+        for error in [RuntimeError('PUT HTTP 403'), RuntimeError('PUT response lost'), QueueConflict()]:
+            with self.subTest(error=error):
+                q = self.queue(); q.put.side_effect = error
+                with self.assertRaises(RuntimeError): store_packet(q, {'job_id': 'test'})
+                self.assertEqual(q.put.call_count, 1)
+                q.get.assert_not_called()
+                self.assertEqual(q.get_fresh.call_count, 1)
+
+    def test_existing_packet_is_immutable_and_never_republished(self):
+        for existing in [{'job_id': 'test'}, {'job_id': 'test', 'html': 'other'}]:
+            q = self.queue(); q.get_fresh.return_value = (existing, 'blob')
+            if existing == {'job_id': 'test'}:
+                store_packet(q, existing)
+            else:
+                with self.assertRaisesRegex(RuntimeError, '덮어쓰기 금지'):
+                    store_packet(q, {'job_id': 'test'})
+            q.put.assert_not_called()
+
+    def test_conflict_confirmed_existing_still_requires_fresh_read(self):
+        q = self.queue(); value = {'job_id': 'test'}
+        q.put.return_value = {'confirmed_existing': True, 'content': {'sha': 'blob'}}
+        q.get_fresh.side_effect = [(None, None), (value, 'blob')]
+        store_packet(q, value)
+        self.assertEqual(q.get_fresh.call_count, 2)
+        q.get.assert_not_called()
 
 
 class Recovery(unittest.TestCase):
@@ -220,6 +316,74 @@ class Recovery(unittest.TestCase):
         self.run_consume(q, smtp)
         self.assertEqual(len(smtp.calls), 3)
 
+    def test_put_saved_but_read_missing_blocks_then_recovers_exactly_once(self):
+        q, smtp = self.fixture(), fixtures.SMTP()
+        def missing(path):
+            return (None, None) if path.startswith('outbox/') else q.get(path)
+        with patch.object(q, 'get_fresh', missing, create=True), patch('risk_outbox.time.sleep'), \
+                self.assertRaisesRegex(RuntimeError, '저장 확인 실패'):
+            self.run_consume(q, smtp)
+        frozen = copy.deepcopy(q.data['outbox/test.json'])
+        self.assertEqual(smtp.calls, [])
+        self.assertEqual(q.data['jobs/test.json']['receipts'], {})
+        self.assertEqual(q.data['jobs/test.json']['status'], 'pending')
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+        with patch.object(self.bot, 'main', side_effect=AssertionError('rerender forbidden')):
+            self.run_consume(q, smtp)
+        self.assertEqual(len(smtp.calls), 3)
+        q.remote_seen = Path('seen_news.json').read_bytes()
+        bridge.acknowledge(q, 'test')
+        completed = copy.deepcopy(q.data['jobs/test.json'])
+        self.resume(q, smtp)
+        self.run_consume(q, smtp)
+        self.assertEqual(len(smtp.calls), 3)
+        self.assertEqual(q.data['outbox/test.json'], frozen)
+        self.assertEqual(q.data['jobs/test.json'], completed)
+
+    def test_transient_post_put_get_never_sends_before_exact_readback(self):
+        q, smtp = self.fixture(), fixtures.SMTP(); reads = []
+        def fresh(path):
+            if path.startswith('outbox/') and path in q.data:
+                reads.append(path)
+                if len(reads) == 1: raise QueueReadUnavailable('temporary')
+            return q.get(path)
+        send = smtp.sendmail
+        def inspect(*args):
+            self.assertEqual(len(reads), 2)
+            return send(*args)
+        smtp.sendmail = inspect
+        with patch.object(q, 'get_fresh', fresh, create=True), patch('risk_outbox.time.sleep'):
+            self.run_consume(q, smtp)
+        self.assertEqual(len(smtp.calls), 3)
+
+    def test_ambiguous_put_after_storage_stops_without_any_smtp(self):
+        q, smtp = self.fixture(), fixtures.SMTP(); put = q.put; outbox_writes = []
+        def lost_response(path, value, old=None):
+            result = put(path, value, old)
+            if path.startswith('outbox/'):
+                outbox_writes.append(path)
+                raise RuntimeError('PUT response lost')
+            return result
+        with patch.object(q, 'put', lost_response), self.assertRaisesRegex(RuntimeError, 'response lost'):
+            self.run_consume(q, smtp)
+        self.assertEqual(outbox_writes, ['outbox/test.json'])
+        self.assertEqual(smtp.calls, [])
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+        self.resume(q, smtp)
+        self.assertEqual(len(smtp.calls), 3)
+
+    def test_concurrent_recovery_job_change_blocks_losing_worker(self):
+        q, _ = self.partial(); smtp = fixtures.SMTP(); put = q.put
+        def competing_worker(path, value, old=None):
+            if path == 'jobs/test.json' and value.get('recovery_count'):
+                q.data[path]['delivery_revision'] = 'another-worker'
+            return put(path, value, old)
+        with patch.object(q, 'put', competing_worker), self.assertRaisesRegex(RuntimeError, 'queue changed'):
+            self.resume(q, smtp)
+        self.assertEqual(smtp.calls, [])
+        self.assertEqual(len(q.data['jobs/test.json']['receipts']), 2)
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+
     def test_login_failure_reuses_frozen_packet_without_reanalysis(self):
         q = self.fixture()
         with self.assertRaises(smtplib.SMTPAuthenticationError):
@@ -280,6 +444,20 @@ class Recovery(unittest.TestCase):
 
 
 class Request(unittest.TestCase):
+    def test_failure_exposes_only_allowlisted_outbox_metadata(self):
+        value = {'operation': 'consume', 'job_id': 'test', 'self_test': False,
+                 'dry_run': False, 'request_id': 'outbox-read'}
+        safe = 'RISK_OUTBOX_VERIFY phase=read source=put_commit attempt=3 outcome=missing commit='+'a'*40+' http=0 request_id=unconfirmed'
+        private = 'RISK_OUTBOX_VERIFY PRIVATE ARTICLE ADDRESS TOKEN'
+        error = request.subprocess.CalledProcessError(1, ['child'], output=safe+'\n'+private,
+                                                     stderr='PRIVATE TRACEBACK')
+        output = io.StringIO()
+        with patch.object(request.Path, 'read_text', return_value=json.dumps(value)), \
+                patch.object(request.subprocess, 'run', side_effect=error), \
+                contextlib.redirect_stdout(output), self.assertRaises(request.subprocess.CalledProcessError):
+            request.main()
+        self.assertEqual(output.getvalue(), safe+'\n')
+
     def test_owner_diagnostic_after_summary_preserves_history_ack_output(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:
