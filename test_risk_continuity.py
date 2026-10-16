@@ -280,9 +280,13 @@ class NativeContinuity(unittest.TestCase):
         job['body_manifest'][-1].update(body='', body_status='missing')
         job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
         original = copy.deepcopy(result)
-        self.run_consume(queue, smtp)
+        with patch.object(bridge, 'notify_best_effort') as notify:
+            self.run_consume(queue, smtp)
+        notify.assert_not_called()
+        self.assertEqual(len(smtp.calls), 3)
         self.assertEqual(queue.data['jobs/test.json']['status'], 'delivery_complete')
         self.assertEqual(queue.data['jobs/test.json']['deferred_ids'], ['held'])
+        self.assertEqual(queue.data['jobs/test.json']['body_deferred_ids'], ['held'])
         self.assertEqual(queue.data['review/index.json']['pending'], ['held'])
         self.assertNotIn(item['url'], self.bot.load_seen_urls())
         self.assertEqual(queue.data['results/test.json'], original)
@@ -293,6 +297,45 @@ class NativeContinuity(unittest.TestCase):
         self.assertEqual(queue.data['jobs/test.json']['status'], 'completed')
         self.assertFalse(queue.data['jobs/test.json']['analysis_complete'])
         self.assertEqual(queue.data['review/held.json']['status'], 'pending')
+
+    def test_analyst_unreadable_body_is_excluded_from_semantic_hold_status_count(self):
+        queue, smtp = self.mixed(), native_fixtures.SMTP()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        item = job['input']['items'][0]
+        result['analyses']['one'].update(body_status='unreadable', base_grade='참고', confidence=0.6,
+            fact_summary='[본문 미수집] 제목에서만 확인한 사건.', customer_notice=None,
+            evidence=[{'source_segment':'title', 'source_hash':hashlib.sha256(item['title'].encode()).hexdigest(),
+                       'quote':item['title']}])
+        with patch.object(bridge, 'notify_best_effort') as notify:
+            self.run_consume(queue, smtp)
+        notify.assert_not_called()  # The owner status already covers the semantic hold.
+        self.assertEqual(len(smtp.calls), 1)
+        preview = queue.data['previews/test.json']['html']
+        self.assertIn('확인 보류 1건', preview)
+        self.assertNotIn('확인 보류 2건', preview)
+        self.assertEqual(queue.data['jobs/test.json']['body_deferred_ids'], ['one'])
+        self.assertEqual(set(queue.data['review/index.json']['pending']), {'one', 'held'})
+
+    def test_all_missing_body_keeps_routine_owner_status_without_error_alert(self):
+        queue, smtp = self.fixture(), native_fixtures.SMTP()
+        job = self.frozen(queue)
+        result = queue.data['results/test.json']
+        result['classifications'][0]['relevant'] = None
+        result['analyses'] = {}
+        job['body_manifest'][0].update(body='', body_status='missing')
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        with patch.object(bridge, 'notify_best_effort') as notify:
+            self.run_consume(queue, smtp)
+        notify.assert_not_called()
+        self.assertEqual([r[0] for r in smtp.calls], [['111715@koreainvestment.com']])
+        preview = queue.data['previews/test.json']['html']
+        self.assertNotIn('확인 보류', preview)
+        self.assertIn('본문 확인된 기사에서', preview)
+        self.assertNotIn('리스크봇 오류', queue.data['outbox/test.json']['subject'])
+        self.assertEqual(queue.data['review/index.json']['pending'], ['one'])
+        self.assertNotIn(job['input']['items'][0]['url'], self.bot.load_seen_urls())
+        self.ack(queue)
+        self.assertFalse(queue.data['jobs/test.json']['analysis_complete'])
 
     def test_all_null_sends_owner_status_without_claiming_no_risk(self):
         queue, smtp = self.fixture(), native_fixtures.SMTP()
@@ -461,6 +504,21 @@ class ReplayCollection(unittest.TestCase):
         self.collect(queue)
         self.assertEqual(reads.count('exposure_data.csv'), 1)
         self.assertEqual(reads.count('seen_news.json'), 2)
+
+    def test_readable_sources_come_first_without_losing_missing_source_ids(self):
+        queue = self.seed()
+        saved = queue.data['review/held.json']['item']
+        rows = [dict(saved, url='https://example.invalid/missing', title='미확보 사건 기사'),
+                dict(saved, url='https://example.invalid/ready', title='확인된 사건 기사')]
+        self.bot.crawl_naver_news.return_value = rows
+        self.bot.fetch_article_body = lambda url: '원문에 확인된 실제 사건 내용' if url.endswith('/ready') else ''
+        self.collect(queue)
+        full = hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])
+        items, bodies = full['input']['items'], full['body_manifest']
+        self.assertEqual([a['url'] for a in items], [rows[1]['url'], saved['url'], rows[0]['url']])
+        self.assertEqual([b['body_status'] for b in bodies], ['verified', 'verified', 'missing'])
+        self.assertEqual({a['article_id'] for a in items}, {b['article_id'] for b in bodies})
+        self.assertEqual(len(full['input']['raw_articles']), 3)
 
     def test_corrupt_pending_source_blocks_collection_instead_of_dropping_it(self):
         queue = self.seed()
