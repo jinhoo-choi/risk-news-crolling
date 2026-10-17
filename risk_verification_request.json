@@ -1,6 +1,6 @@
 {
-  "operation": "consume",
-  "job_id": "risk-owner-notice-20261014T1152",
+  "operation": "scenario-suite",
   "self_test": true,
-  "request_id": "risk-notice-live-20261014T1152"
+  "request_id": "risk-audit-20261017-a",
+  "send": false
 }

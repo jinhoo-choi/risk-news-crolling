@@ -102,6 +102,10 @@ class Provider:
         article.pop('_subscription_event_group', None)
         article.pop('_subscription_stat_date', None)
         group = self.event_groups.get(article['article_id'])
+        if group is None and self.job.get('event_grouping_version') == 1:
+            # Reviewed independent incidents must not enter legacy entity-wide
+            # dedup, which would silence a second event at the same company.
+            group = 'article:'+article['article_id']
         if group is not None:
             article['_subscription_event_group'] = group
         if article['article_id'] in self.stat_dates:

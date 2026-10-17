@@ -1,7 +1,7 @@
 name: Risk subscription owner verification (API0)
 on:
   push:
-    branches: [main, codex/risk-subscription-20261014]
+    branches: [main, codex/risk-subscription-20261014, codex/risk-scenario-audit-20261017]
     paths: [risk_verification_request.json]
 permissions:
   contents: read

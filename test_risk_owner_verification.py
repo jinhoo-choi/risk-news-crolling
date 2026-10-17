@@ -3,7 +3,7 @@ from datetime import timedelta
 from unittest import TestCase, main
 from email.mime.text import MIMEText
 
-from risk_owner_verification import OwnerSMTP, OWNER, require_pending
+from risk_owner_verification import OwnerSMTP, OWNER, ERROR_EMAIL, require_pending
 from risk_queue import now
 
 
@@ -85,6 +85,23 @@ class IsolationTests(TestCase):
         self.queue.job['mode'] = 'production'
         with self.assertRaises(RuntimeError):
             require_pending(self.queue.job)
+
+    def test_gmail_suite_rejects_company_group_and_header_drift(self):
+        guard = OwnerSMTP(lambda *a, **k: self.smtp, self.queue, 'job', recipient=ERROR_EMAIL)
+        for target, raw in [(OWNER,message(OWNER)), ('group@example.invalid',message('group@example.invalid')),
+                            (ERROR_EMAIL,message(OWNER)), (ERROR_EMAIL,message(ERROR_EMAIL,bcc=OWNER))]:
+            with self.assertRaises(RuntimeError):
+                with guard.factory('smtp.gmail.com',465) as server:
+                    server.sendmail('sender@example.invalid',[target],raw)
+        self.assertEqual(self.smtp.calls,0)
+        with guard.factory('smtp.gmail.com',465) as server:
+            server.sendmail('sender@example.invalid',[ERROR_EMAIL],message(ERROR_EMAIL))
+        self.assertEqual(self.smtp.calls,1)
+        self.assertEqual(guard.accepted,1)
+
+    def test_arbitrary_verification_recipient_is_denied(self):
+        with self.assertRaises(RuntimeError):
+            OwnerSMTP(lambda *a, **k: self.smtp,self.queue,'job',recipient='other@example.invalid')
 
 
 if __name__ == '__main__':
