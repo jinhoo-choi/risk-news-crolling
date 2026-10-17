@@ -32,6 +32,7 @@ class Provider:
         self.event_groups = {aid: str(i) for i, group in enumerate(result.get('event_groups', []))
                              for aid in group['article_ids']}
         self.stat_dates = {}
+        market_candidates, statistic_members = set(), set()
         source = {a['article_id']: a for a in job['input']['items']}
         for aid, analysis in self.analyses.items():
             body = self.bodies[aid]['body']
@@ -41,15 +42,17 @@ class Provider:
             if (analysis['body_status'] != 'verified' or analysis['entity'] or analysis['entities']
                     or analysis['event_type'] != '반대매매'
                     or analysis['judgment']['확정여부'] != '확정'
-                    or not re.search(r'미수금.{0,30}반대매매', analysis['fact_summary'])
-                    or not re.search(r'금융투자협회|금투협', body)
+                    or not re.search(r'미수금.{0,30}반대매매', analysis['fact_summary'])):
+                continue
+            market_candidates.add(aid)
+            if (not re.search(r'금융투자협회|금투협', body)
                     or not re.search(r'미수금.{0,40}반대매매|반대매매.{0,40}미수금', body, re.S)):
                 continue
             quotes = [e['quote'] for e in analysis['evidence']
                       if e['source_segment'] == 'body' and e['quote'] in body]
             if not any(re.search(r'\d[\d,.\s]*(?:억|만)\s*원', q) for q in quotes):
                 continue
-            self.event_groups[aid] = 'market:금투협:미수금반대매매'
+            statistic_members.add(aid)
             dates = []
             try:
                 published = parsedate_to_datetime(source[aid]['pubDate']).date()
@@ -69,6 +72,18 @@ class Provider:
             except (KeyError, TypeError, ValueError, OverflowError):
                 pass  # Unknown source date never becomes the publication date.
             self.stat_dates[aid] = max(dates, default='')
+
+        # Coarsen whole reviewed groups; never split one by relabelling only its
+        # automatic matches. A mixed company/risk/statistic group cannot bridge
+        # into the market series: preserve its reviewed identity instead.
+        for group in result.get('event_groups', []):
+            members = set(group['article_ids'])
+            if members & statistic_members:
+                if members <= market_candidates:
+                    statistic_members.update(members)
+                else:
+                    statistic_members.difference_update(members)
+        self.event_groups.update(dict.fromkeys(statistic_members, 'market:금투협:미수금반대매매'))
 
     def analysis(self, article):
         return self.analyses[article['article_id']]

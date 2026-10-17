@@ -263,6 +263,101 @@ class Integration(unittest.TestCase):
         self.run_consume(queue, smtp)
         self.assertEqual([a['article_id'] for a in queue.data['filter-logs/test.json']['final']], ['one'])
 
+    def partial_market_statistics_fixture(self):
+        queue = self.market_statistics_fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        # Same reviewed statistic, but only the first member has a body quote
+        # with the amount. The second member cites its collected description.
+        answer = result['analyses']['two']
+        description = job['input']['items'][1]['description']
+        answer['evidence'] = [{'source_segment':'description',
+                              'source_hash':hashlib.sha256(description.encode()).hexdigest(),
+                              'quote':description}]
+        return queue
+
+    def test_partial_reviewed_statistics_render_two_to_one_and_save_only_winner(self):
+        queue, smtp = self.partial_market_statistics_fixture(), SMTP()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        # Isolate the two-member group: the formerly split member wins by score.
+        for key in ('items','raw_articles'):
+            job['input'][key] = job['input'][key][:2]
+        job['body_manifest'] = job['body_manifest'][:2]
+        result['classifications'] = result['classifications'][:2]
+        result['analyses'] = {aid:result['analyses'][aid] for aid in ('one','two')}
+        result['event_groups'] = result['event_groups'][:1]
+        result['analyses']['two']['confidence'] = 0.99
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        self.run_consume(queue, smtp)
+        final = queue.data['filter-logs/test.json']['final']
+        self.assertEqual([a['article_id'] for a in final], ['two'])
+        document = queue.data['previews/test.json']['html']
+        self.assertIn('https://example.invalid/test/two', document)
+        self.assertNotIn('https://example.invalid/test/one', document)
+        self.assertIn('1건 선별', document)
+        seen = json.loads(Path('seen_news.json').read_text())
+        self.assertNotIn(job['input']['items'][0]['title'],
+                         json.dumps(seen.get('_event_history', {}), ensure_ascii=False))
+        self.assertEqual(len(smtp.calls), 3)
+        queue.remote_seen = Path('seen_news.json').read_bytes()
+        acknowledge(queue, 'test')
+        self.assertTrue(queue.data['jobs/test.json']['ack'])
+
+    def test_partial_reviewed_statistics_union_all_groups_without_losing_members(self):
+        from risk_provider import Provider
+        queue = self.partial_market_statistics_fixture()
+        provider = Provider(queue.data['jobs/test.json'], queue.data['results/test.json'])
+        self.assertEqual(set(provider.event_groups), {'one','two','three','four'})
+        self.assertEqual(len(set(provider.event_groups.values())), 1)
+        self.assertNotIn('two', provider.stat_dates)  # Never borrow another article's date.
+
+    def test_reviewed_statistics_with_no_automatic_matches_keep_original_groups(self):
+        from risk_provider import Provider
+        queue = self.market_statistics_fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        for answer in result['analyses'].values():
+            answer['evidence'][0]['source_segment'] = 'description'
+        provider = Provider(job, result)
+        self.assertEqual(provider.event_groups, {'one':'0','two':'0','three':'1','four':'1'})
+        self.assertEqual(provider.stat_dates, {})
+
+    def test_partial_group_cannot_bridge_other_companies_risks_or_statistics(self):
+        from risk_provider import Provider
+        for case in ('company','risk','statistic','forecast'):
+            queue = self.partial_market_statistics_fixture()
+            job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+            answer = result['analyses']['two']
+            if case == 'company':
+                answer.update(entity='검수기업', entities=['검수기업'])
+            elif case == 'risk':
+                answer['event_type'] = '유동성위기'
+            elif case == 'statistic':
+                answer['fact_summary'] = '신용융자 반대매매가 증가했다.'
+            else:
+                answer['judgment']['확정여부'] = '가능성'
+            with self.subTest(case=case):
+                provider = Provider(job, result)
+                self.assertEqual(provider.event_groups['one'], provider.event_groups['two'])
+                self.assertNotEqual(provider.event_groups['one'], provider.event_groups['three'])
+
+    def test_partial_group_final_score_then_source_date_then_input_order(self):
+        from risk_provider import Provider
+        queue = self.partial_market_statistics_fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        provider = Provider(job, result)
+        rows = copy.deepcopy(job['input']['items'])
+        for row in rows:
+            provider.attach(row)
+            row.update(grade='주의', _risk_score=6.0)
+        self.assertEqual(self.bot.dedup_same_mail_events(rows), [rows[2]])
+        # A newer publication date alone cannot supply a statistic reference date.
+        rows[1]['pubDate'] = 'Sat, 17 Oct 2026 17:37:00 +0900'
+        self.assertEqual(self.bot.dedup_same_mail_events(rows), [rows[2]])
+        rows[1]['_risk_score'] = 6.1
+        self.assertEqual(self.bot.dedup_same_mail_events(rows), [rows[1]])
+        rows[1]['_risk_score'] = 6.0
+        self.assertEqual(self.bot.dedup_same_mail_events(rows[3:]+rows[:3]), [rows[3]])
+
     def test_market_statistic_guard_does_not_merge_other_risks_or_invent_source_dates(self):
         from risk_provider import Provider
         for case in ('named','credit','forecast','missing','other_statistic','no_source_amount','no_authority'):
