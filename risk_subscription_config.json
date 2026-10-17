@@ -9,6 +9,18 @@
   "paid_api_fallback": false,
   "baseline_commit": "abcbe02c12fe6dc3eb8e6412b7df31546ad0f693",
   "excluded_article_ids": [
-    "c001815e71e5a12536dcc4fa"
+    "c001815e71e5a12536dcc4fa",
+    "bec6b73c672a0e82b2f2f801",
+    "8789fdc0a88497ee445e02c5",
+    "3be5317c38a3a7f284fc4846",
+    "2e193be3b97234173aeed6ac",
+    "7fb8c8f210506117fafd0131",
+    "ed288318d468def2f2643da5",
+    "44732103f2949cc3d0a59035",
+    "ac17c4448c7de542cfb54cec",
+    "e8c210b9c6659f7154c60342",
+    "c43b7acc9910357cc5833038",
+    "829dc716ac201699911442cb",
+    "5de670ab21d9e43c58549211"
   ]
 }
