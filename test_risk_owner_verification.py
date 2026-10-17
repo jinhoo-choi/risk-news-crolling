@@ -1,9 +1,15 @@
 import copy
+import contextlib
+import io
+import os
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 from datetime import timedelta
 from unittest import TestCase, main
 from email.mime.text import MIMEText
 
-from risk_owner_verification import OwnerSMTP, OWNER, require_pending
+from risk_owner_verification import OwnerSMTP, OWNER, ERROR_EMAIL, require_pending
 from risk_queue import now
 
 
@@ -26,6 +32,10 @@ class SMTP:
             raise ConnectionError('DATA response unknown')
         return {}
     def quit(self):
+        pass
+    def ehlo(self):
+        pass
+    def login(self,*args):
         pass
 
 
@@ -85,6 +95,59 @@ class IsolationTests(TestCase):
         self.queue.job['mode'] = 'production'
         with self.assertRaises(RuntimeError):
             require_pending(self.queue.job)
+
+    def test_gmail_suite_rejects_company_group_and_header_drift(self):
+        guard = OwnerSMTP(lambda *a, **k: self.smtp, self.queue, 'job', recipient=ERROR_EMAIL)
+        for target, raw in [(OWNER,message(OWNER)), ('group@example.invalid',message('group@example.invalid')),
+                            (ERROR_EMAIL,message(OWNER)), (ERROR_EMAIL,message(ERROR_EMAIL,bcc=OWNER))]:
+            with self.assertRaises(RuntimeError):
+                with guard.factory('smtp.gmail.com',465) as server:
+                    server.sendmail('sender@example.invalid',[target],raw)
+        self.assertEqual(self.smtp.calls,0)
+        with guard.factory('smtp.gmail.com',465) as server:
+            server.sendmail('sender@example.invalid',[ERROR_EMAIL],message(ERROR_EMAIL))
+        self.assertEqual(self.smtp.calls,1)
+        self.assertEqual(guard.accepted,1)
+
+    def test_arbitrary_verification_recipient_is_denied(self):
+        with self.assertRaises(RuntimeError):
+            OwnerSMTP(lambda *a, **k: self.smtp,self.queue,'job',recipient='other@example.invalid')
+
+    def test_live_suite_uses_native_sender_with_gmail_guard_and_preserves_operating_files(self):
+        import risk_scenario_verification as suite
+        from risk_subscription import import_bot
+        from test_risk_hardening import Memory
+        previous=Path.cwd()
+        with patch.dict(os.environ,dict(os.environ),clear=True),tempfile.TemporaryDirectory() as directory:
+            try:
+                os.chdir(directory)
+                for name in ('seen_news.json','exposure_data.csv','run_stats.jsonl'):
+                    Path(name).write_text('operating fixture')
+                before={p:Path(p).read_bytes() for p in ('seen_news.json','exposure_data.csv','run_stats.jsonl')}
+                bot=import_bot()
+                os.environ.update(EMAIL_SENDER=ERROR_EMAIL,EMAIL_PASSWORD='fake',EMAIL_RECEIVER='',EMAIL_CC='')
+                os.environ.pop('ANTHROPIC_API_KEY',None)
+                queue=Memory();queue.get_fresh=queue.get
+                smtp=SMTP();captured=[]
+                send=smtp.sendmail
+                def capture(sender,recipients,raw):
+                    captured.append((sender,recipients,raw));return send(sender,recipients,raw)
+                smtp.sendmail=capture
+                prepared=[{'scenario':'S01','title':'transport test','html':'<html><body>fixture</body></html>',
+                           'native_html':True,'selected':0}]
+                with patch.object(suite,'prepare',return_value=prepared), \
+                     patch.object(suite,'Queue',return_value=queue), \
+                     patch.object(suite,'capture_previews',return_value={'status':'test'}), \
+                     patch.object(suite.smtplib,'SMTP_SSL',lambda *a,**k:smtp),contextlib.redirect_stdout(io.StringIO()):
+                    suite.run({'operation':'scenario-suite','self_test':True,'request_id':'suite-test','send':True})
+                self.assertEqual(smtp.calls,1)
+                self.assertEqual(captured[0][1],[ERROR_EMAIL])
+                self.assertEqual(queue.data['jobs/suite-test-S01.json']['status'],'verified')
+                self.assertEqual(before,{p:Path(p).read_bytes() for p in before})
+                self.assertEqual(bot.EMAIL_RECEIVERS,[])
+                self.assertEqual(bot.EMAIL_CC,[])
+            finally:
+                os.chdir(previous)
 
 
 if __name__ == '__main__':

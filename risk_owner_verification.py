@@ -77,8 +77,11 @@ def render(bot, job, result):
 
 class OwnerSMTP:
     """Wrap the native sender while prohibiting recipient drift and DATA retry."""
-    def __init__(self, real, queue, path):
+    def __init__(self, real, queue, path, recipient=OWNER):
+        if recipient not in {OWNER, ERROR_EMAIL}:
+            raise RuntimeError('허용되지 않은 검수 수신자')
         self.real, self.queue, self.path = real, queue, path
+        self.recipient = recipient
         self.attempts = 0
         self.accepted = 0
 
@@ -107,24 +110,24 @@ class OwnerSMTP:
             def sendmail(self, sender, recipients, raw):
                 message = message_from_string(raw)
                 to = [addr for _, addr in getaddresses(message.get_all('To', []))]
-                if recipients != [OWNER] or to != [OWNER] or message.get('Cc') or message.get('Bcc'):
+                if recipients != [outer.recipient] or to != [outer.recipient] or message.get('Cc') or message.get('Bcc'):
                     raise RuntimeError('본인 수신자·헤더 격리 실패')
-                job, sha = outer.queue.get(outer.path)
+                job, sha = getattr(outer.queue,'get_fresh',outer.queue.get)(outer.path)
                 require_pending(job)
                 outer.attempts += 1
-                key = hashlib.sha256(OWNER.encode()).hexdigest()
+                key = hashlib.sha256(outer.recipient.encode()).hexdigest()
                 job.update(status='sending', attempted_count=outer.attempts, self_test=True)
                 job['receipts'] = {key: 'sending'}
                 outer.queue.put(outer.path, job, sha)
                 try:
                     refused = server.sendmail(sender, recipients, raw)
                 except Exception:
-                    job, sha = outer.queue.get(outer.path)
+                    job, sha = getattr(outer.queue,'get_fresh',outer.queue.get)(outer.path)
                     job.update(status='uncertain')
                     job['receipts'][key] = 'uncertain'
                     outer.queue.put(outer.path, job, sha)
                     raise RuntimeError('SMTP 접수 미확인 — 자동 재전송 금지') from None
-                job, sha = outer.queue.get(outer.path)
+                job, sha = getattr(outer.queue,'get_fresh',outer.queue.get)(outer.path)
                 job['receipts'][key] = 'rejected' if refused else 'accepted'
                 if refused:
                     job.update(status='uncertain')
@@ -139,6 +142,9 @@ class OwnerSMTP:
 
 def main():
     request = json.loads(Path('risk_verification_request.json').read_text())
+    if request.get('operation') == 'scenario-suite':
+        from risk_scenario_verification import run
+        return run(request)
     if set(request) != {'operation', 'job_id', 'self_test', 'request_id'} or request['operation'] != 'consume' or request['self_test'] is not True:
         raise RuntimeError('본인 검수 메타데이터 오류')
     from risk_queue import JOB_ID

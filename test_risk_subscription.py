@@ -172,6 +172,33 @@ class Integration(unittest.TestCase):
                          json.dumps(history.get('_event_history', {}), ensure_ascii=False))
         self.assertEqual(len(smtp.calls), 3)
 
+    def independent_same_company_fixture(self):
+        queue = self.grouped_fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        row, body = job['input']['items'][1], job['body_manifest'][1]
+        date = now().astimezone(self.bot.timezone(self.bot.timedelta(hours=9))).strftime('%Y년 %m월 %d일')
+        text = date+' 금융당국이 한국투자증권에 과태료 10억원을 부과했다.'
+        row.update(title='한국투자증권, 금융당국 과태료 10억원 부과',description=text,desc=text)
+        body.update(body=text)
+        answer = result['analyses']['two']
+        answer.update(event_type='금감원제재',fact_summary=text,
+                      action='한국투자증권 과태료 부과 범위와 공시를 확인한다.',
+                      judgment={'핵심사건':'과태료 부과','손실주체':'회사','당사연관':'당사이슈','확정여부':'확정'},
+                      evidence=[{'source_segment':'body','source_hash':hashlib.sha256(text.encode()).hexdigest(),
+                                 'quote':text}])
+        result['event_groups'] = []  # Reviewed as separate incidents, despite the same company.
+        job['input']['raw_articles'] = copy.deepcopy(job['input']['items'])
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        return queue
+
+    def test_reviewed_independent_incidents_at_same_company_both_survive_native_mail(self):
+        queue, smtp = self.independent_same_company_fixture(), SMTP()
+        self.run_consume(queue,smtp)
+        final = queue.data['filter-logs/test.json']['final']
+        self.assertEqual({a['article_id'] for a in final},{'one','two'})
+        self.assertIn('2건 선별',queue.data['previews/test.json']['html'])
+
     def test_invalid_or_missing_event_comparison_blocks_before_smtp(self):
         cases = ['missing','unknown','overlap','mixed','unverified']
         for case in cases:
