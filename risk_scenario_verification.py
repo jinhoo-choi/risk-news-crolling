@@ -220,7 +220,7 @@ def run(request):
     for entry in prepared:
         jid=request['request_id']+'-'+entry['scenario']
         path='jobs/'+jid+'.json'
-        existing,_=queue.get(path)
+        existing,_=queue.get_fresh(path)
         if existing:
             if (existing.get('status')=='verified' and existing.get('mode')=='verification'
                     and existing.get('request_id')==request['request_id']
@@ -244,7 +244,7 @@ def run(request):
         guard=OwnerSMTP(real_smtp,queue,path,recipient=ERROR_EMAIL)
         with patch.object(bot.smtplib,'SMTP_SSL',guard.factory),contextlib.redirect_stdout(io.StringIO()):
             bot.send_email(subject,document,self_only=True)
-        current,sha=queue.get(path)
+        current,sha=queue.get_fresh(path)
         if guard.accepted!=1 or snapshot()!=before: raise RuntimeError('검수 접수·운영 격리 실패')
         current.update(status='verified',verified_at=now().isoformat(),smtp_accepted=1,
                        paid_ai_calls=0,production_smtp_calls=0,production_history_writes=0,
