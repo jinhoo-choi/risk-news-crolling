@@ -2,5 +2,5 @@
   "operation": "scenario-suite",
   "self_test": true,
   "request_id": "risk-audit-20261017-a",
-  "send": false
+  "send": true
 }
