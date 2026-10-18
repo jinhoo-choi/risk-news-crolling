@@ -97,14 +97,14 @@ class Collection(unittest.TestCase):
     def collect(self, queue):
         bridge.collect({'job_ttl_minutes': 180}, queue)
 
-    def test_production_expiry_alert_once_with_id_and_creation(self):
+    def test_production_expiry_preserves_metadata_without_repeated_alert(self):
         queue = Memory([job()])
         with patch.object(bridge, 'notify_error') as notify:
             bridge.expire_and_check(queue)
             bridge.expire_and_check(queue)
-        notify.assert_called_once()
-        self.assertIn('job_id=old', notify.call_args.args[1])
-        self.assertIn('created_at='+queue.data['jobs/old.json']['created_at'], notify.call_args.args[1])
+        notify.assert_not_called()
+        self.assertIn('created_at', queue.data['jobs/old.json'])
+        self.assertIn('expired_at', queue.data['jobs/old.json'])
         self.assertEqual(queue.data['jobs/old.json']['status'], 'expired')
 
     def test_verification_expiry_does_not_alert(self):
@@ -114,11 +114,11 @@ class Collection(unittest.TestCase):
         notify.assert_not_called()
         self.assertEqual(queue.data['jobs/old.json']['status'], 'expired')
 
-    def test_expiry_notifier_exception_still_collects_new_job(self):
+    def test_expiry_skips_error_notifier_and_still_collects_new_job(self):
         queue = Memory([job()])
         with patch.object(bridge, 'notify_error', side_effect=RuntimeError('SMTP mock failure')) as notify:
             self.collect(queue)
-        notify.assert_called_once()
+        notify.assert_not_called()
         self.assertEqual(queue.data['jobs/old.json']['status'], 'expired')
         self.assertEqual(queue.data['jobs/risk-production-hardening-test.json']['status'], 'pending')
 

@@ -12,6 +12,7 @@ import re
 import smtplib
 import tempfile
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
@@ -24,7 +25,7 @@ from risk_provider import Provider
 from risk_outbox import make_packet, validate_packet, store_packet, legacy_packet
 from risk_shards import split_job, hydrate
 from risk_continuity import (freeze_exposure, read_exposure, pending_reviews,
-                             prepare_reviews, finish_reviews, delivery_view, delivery_verdicts)
+                             prepare_reviews, finish_reviews, delivery_view, delivery_verdicts, read_review)
 
 CONFIG = 'risk_subscription_config.json'
 POLICY = 'risk_policy.json'
@@ -104,9 +105,7 @@ def expire_and_check(queue):
                 queue.put_many(values, expected)
             else:
                 queue.put(path, job, old_sha)
-            if job.get('mode') == 'production':
-                notify_best_effort(RuntimeError('운영 구독 회차 만료 — 기사 누락 가능; 수집 범위 확인 필요'),
-                                   'job_id='+jid+'\ncreated_at='+str(job.get('created_at', 'unconfirmed')))
+            print('만료 회차 입력 보존 완료; 만료 반복 알림 생략/API0')
             continue
         raise RuntimeError('미종결 구독 회차 존재 — 새 회차·재전송 금지')
     return index, sha
@@ -333,6 +332,8 @@ def consume(queue, jid, self_test=False):
         expected_mode = 'verification' if self_test else 'production'
         if existing.get('mode') != expected_mode:
             raise RuntimeError('종결 회차 모드 불일치')
+        if not self_test:
+            notify_reviews(queue, existing)
         print(json.dumps({'job_id': jid, 'status': existing['status'], 'noop': True,
                           'smtp_calls': 0, 'paid_ai_calls': 0}))
         return
@@ -433,10 +434,7 @@ def consume(queue, jid, self_test=False):
             raise RuntimeError('동일 회차 추가 메일 금지')
         staged.update(subject=subject, html=html, targets=targets, self_only=self_only)
         return True  # Stage native post-delivery history, without SMTP or main writes.
-    owner_review_notified = False
-    owner_review_staged = False
     def empty(subject, html):
-        nonlocal owner_review_staged
         from risk_owner_verification import OWNER
         bot.NO_RESULT_RECEIVER = OWNER
         subject, html = review_notice(subject, html, empty=True)
@@ -444,7 +442,6 @@ def consume(queue, jid, self_test=False):
             raise RuntimeError('동일 회차 추가 메일 금지')
         staged.update(subject=('[TEST] ' if self_test else '')+subject, html=html,
                       targets=[bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER], self_only=True, recipient_route='owner_status')
-        owner_review_staged = bool(alert_deferred_ids)
     def save(*args, **kwargs):
         if args:
             held_urls = {a['url'] for a in job['input']['items'] if a['article_id'] in deferred_ids}
@@ -498,7 +495,6 @@ def consume(queue, jid, self_test=False):
         if self_test and Path('seen_news.json').read_bytes() != original_seen:
             raise RuntimeError('본인 검수 중 운영 이력 변경')
         finish_packet(queue, job, result, packet, bot, guard, native_send)
-        owner_review_notified = owner_review_staged
     except Exception:
         # An authenticated connection failure before any DATA is safely retryable.
         def failed(j):
@@ -510,9 +506,6 @@ def consume(queue, jid, self_test=False):
         bot.RISK_PROVIDER = None
         # SMTP guard has been restored: diagnostics must not become delivery receipts.
         bot.flush_owner_warnings()
-        if alert_deferred_ids and not owner_review_notified:
-            notify_best_effort(RuntimeError(f'확인 보류 {len(alert_deferred_ids)}건 · 24시간 이상 미확인 {alert_overdue_count}건'),
-                               '검증 미완료 기사는 발송·정상 처리에서 제외하고 재확인합니다.')
 
 
 def finish_packet(queue, job, result, packet, bot, guard, native_send):
@@ -566,6 +559,7 @@ def recover(queue, jid):
     config = current_config(queue)
     small, original_sha = getattr(queue, 'get_fresh', queue.get)('jobs/'+jid+'.json')
     if small and small.get('status') == 'completed':
+        notify_reviews(queue, small)
         print(json.dumps({'job_id': jid, 'status': 'completed', 'noop': True, 'smtp_calls': 0, 'paid_ai_calls': 0}))
         return
     if (not small or small.get('mode') != 'production'
@@ -634,10 +628,75 @@ def acknowledge(queue, jid):
         queue.put_many(values, expected)
     else:
         queue.put('jobs/'+jid+'.json', job, sha)
+    notify_reviews(queue, job)
     print(json.dumps({'job_id': jid, 'status': 'completed', 'paid_ai_calls': 0, 'history_saved': True,
                       'ack': True, 'analysis_complete': job.get('analysis_complete', True),
                       'deferred_count': len(job.get('deferred_ids', [])),
                       'body_deferred_count': len(job.get('body_deferred_ids', []))}))
+
+
+def notify_reviews(queue, job):
+    """One owner-only notice per unresolved article/stage, after delivery ACK.
+
+    Separate CAS reservations keep an uncertain diagnostic SMTP from being resent;
+    they never alter production receipts, seen URLs, or review resolution hashes.
+    """
+    if job.get('status') != 'completed' or not job.get('ack') or not job.get('history_saved'):
+        return
+    ids = set(job.get('deferred_ids', []))-set(job.get('body_deferred_ids', []))
+    values, expected, rows = {}, {}, []
+    instant = now()
+    for aid in sorted(ids):
+        record, _ = queue.get('review/'+aid+'.json')
+        if record and record.get('status') == 'resolved':
+            continue
+        record, _ = read_review(queue, aid)
+        if record['body']['body_status'] in {'missing', 'unreadable'}:
+            continue
+        overdue = instant-utc_time(record['first_seen_at']) >= timedelta(hours=24)
+        phase = 'overdue' if overdue else 'initial'
+        key = digest({'article_id': aid, 'source_hash': record['source_hash']})
+        path = 'notifications/review-'+key+'-'+phase+'.json'
+        previous, sha = getattr(queue, 'get_fresh', queue.get)(path)
+        if previous is not None:
+            if previous.get('status') != 'accepted':
+                print('운영 알림 접수 미확인 선기록 보존; 자동 재발송 금지/API0')
+            continue
+        values[path] = {'schema_version': 1, 'article_id': aid, 'phase': phase,
+                        'job_id': job['job_id'], 'status': 'sending',
+                        'attempt_id': uuid.uuid4().hex, 'attempted_at': instant.isoformat()}
+        expected[path] = sha
+        item = record['item']
+        rows.append(item['title']+'\n'+item['url']+'\n최초 확인: '+record['first_seen_at']+
+                    (' · 24시간 이상 미확인' if overdue else ' · 신규 확인 보류'))
+    if not values:
+        return
+    if not os.environ.get('EMAIL_PASSWORD'):
+        raise RuntimeError('운영 알림 SMTP 설정 누락 — 발송 완료 상태 보존; Actions 확인 필요')
+    queue.put_many(values, expected)  # No SMTP unless the unique reservation is confirmed.
+    for path, value in values.items():
+        current, sha = getattr(queue, 'get_fresh', queue.get)(path)
+        if current != value or not sha:
+            raise RuntimeError('운영 알림 선기록 불일치 — SMTP 금지')
+        expected[path] = sha
+    bot = import_bot()
+    run = os.environ.get('GITHUB_RUN_ID', '')
+    details = ('회차: '+job['job_id']+'\n발송·이력 저장·ACK 완료. 전체 기사 분석은 미완료입니다.\n'
+               '아래 기사는 발송·seen에서 제외한 채 보존했습니다. 원문·공시를 확인하고 판정을 제출해 주세요.\n\n'+
+               '\n\n'.join(rows))
+    if run.isdigit():
+        details += '\nActions: https://github.com/jinhoo-choi/risk-news-crolling/actions/runs/'+run
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            accepted = bot.send_email_error('기사 확인 필요 '+str(len(rows))+'건', details, operational=True)
+    except Exception:
+        accepted = False
+    for value in values.values():
+        value.update(status='accepted' if accepted else 'uncertain', finished_at=now().isoformat())
+    queue.put_many(values, expected)
+    if not accepted:
+        raise RuntimeError('운영 알림 SMTP 접수 미확인 — 원본 발송 완료 상태 보존; 알림 자동 재발송 금지')
+    print('담당자 운영 알림 SMTP accepted 1건; 운영 영수증 변경0/API0')
 
 
 def notify_error(error, context=''):
@@ -703,5 +762,7 @@ if __name__ == '__main__':
         # Native logs/results/addresses are private. No raw error payload in Actions.
         print('리스크 구독 경로 보류:', type(error).__name__)
         import traceback
-        notify_error(error, traceback.format_exc())
+        if notify_error(error, traceback.format_exc()) and os.environ.get('GITHUB_OUTPUT'):
+            with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+                stream.write('error_notified=true\n')
         raise SystemExit(1)
