@@ -104,9 +104,10 @@ class NativeContinuity(unittest.TestCase):
         self.assertEqual((values, expected, resolutions), ({}, {}, {}))
         self.assertEqual(queue.data['review/one.json'], original)
 
-    def ack(self, queue):
+    def ack(self, queue, smtp=None):
         queue.remote_seen = Path('seen_news.json').read_bytes()
-        bridge.acknowledge(queue, 'test')
+        with patch.object(bridge.smtplib, 'SMTP_SSL', return_value=smtp or native_fixtures.SMTP()):
+            bridge.acknowledge(queue, 'test')
 
 
     def replay(self, queue):
@@ -253,8 +254,7 @@ class NativeContinuity(unittest.TestCase):
             return send(*args)
         smtp.sendmail = checked
         self.run_consume(queue, smtp)
-        self.assertEqual(len(smtp.calls), 4)
-        self.assertEqual(smtp.calls[-1][0], ['myboy3743@gmail.com'])
+        self.assertEqual(len(smtp.calls), 3)
         self.assertEqual(len(queue.data['jobs/test.json']['receipts']), 3)
         self.assertEqual(queue.data['results/test.json'], original)
         self.assertNotIn('https://example.invalid/held', self.bot.load_seen_urls())
@@ -357,7 +357,7 @@ class NativeContinuity(unittest.TestCase):
         queue.data['review/held.json']['first_seen_at'] = (now()-timedelta(days=2)).isoformat()
         self.run_consume(queue, smtp)
         self.assertNotIn('미확인', queue.data['previews/test.json']['html'])
-        self.assertEqual(smtp.calls[-1][0], ['myboy3743@gmail.com'])
+        self.assertEqual(len(smtp.calls), 3)
         self.assertIsNone(queue.data['results/test.json']['classifications'][-1]['relevant'])
         self.assertEqual(queue.data['jobs/test.json']['overdue_review_count'], 1)
 

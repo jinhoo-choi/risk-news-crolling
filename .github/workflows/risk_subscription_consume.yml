@@ -44,13 +44,16 @@ jobs:
           done
           exit 1
       - name: Confirm main history and acknowledge delivery
+        id: ack
         if: steps.consume.outputs.needs_ack == 'true'
         env:
           RISK_QUEUE_TOKEN: ${{ secrets.RISK_QUEUE_TOKEN }}
           JOB_ID: ${{ steps.consume.outputs.job_id }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         run: python risk_subscription.py ack --job-id "$JOB_ID"
       - name: Notify owner after history push or ACK failure without resend
-        if: failure() && steps.consume.outcome == 'success'
+        if: failure() && steps.consume.outcome == 'success' && steps.ack.outputs.error_notified != 'true'
         env:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}

@@ -5400,11 +5400,15 @@ def flush_owner_warnings():
         return
     details = "\n".join(sorted(_OWNER_WARNINGS))
     _OWNER_WARNINGS.clear()
-    send_email_error("운영 확인 사항", details)
+    send_email_error("운영 확인 사항", details, operational=True)
 
 
-def send_email_error(error_msg: str, trace: str):
-    """런타임 오류 발생 시 담당자에게 오류 내용 메일 발송"""
+def send_email_error(error_msg: str, trace: str, *, operational: bool = False):
+    """실제 장애와 운영 확인을 구분해 개인 Gmail에만 발송한다."""
+    kind = "운영 알림" if operational else "오류"
+    title = "기사·운영 확인 필요" if operational else "런타임 오류 발생"
+    heading = "확인 사항" if operational else "오류 내용"
+    detail_heading = "확인 대상·조치" if operational else "스택 트레이스"
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     now_str = now.strftime("%Y년 %m월 %d일 %H:%M")
@@ -5419,16 +5423,16 @@ def send_email_error(error_msg: str, trace: str):
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e2e8f0;">
   <tr>
     <td style="background:#7f1d1d;padding:20px 26px;">
-      <p style="margin:0 0 4px 0;font-size:19px;font-weight:bold;color:#ffffff;">❗ 개인고객그룹 리스크 탐지봇 — 런타임 오류</p>
+      <p style="margin:0 0 4px 0;font-size:19px;font-weight:bold;color:#ffffff;">❗ 개인고객그룹 리스크 탐지봇 — {title}</p>
       <p style="margin:0;font-size:12px;color:#fca5a5;">{now_str} 기준 (KST)</p>
     </td>
   </tr>
   <tr>
     <td style="padding:20px 26px;">
-      <p style="margin:0 0 8px 0;font-size:13px;font-weight:700;color:#1e293b;">오류 내용</p>
+      <p style="margin:0 0 8px 0;font-size:13px;font-weight:700;color:#1e293b;">{heading}</p>
       <p style="margin:0 0 16px 0;font-size:13px;color:#dc2626;background:#fef2f2;padding:10px 14px;border-left:4px solid #dc2626;word-break:break-all;">{_esc(str(error_msg))}</p>
-      <p style="margin:0 0 8px 0;font-size:13px;font-weight:700;color:#1e293b;">스택 트레이스</p>
-      <pre style="margin:0;font-size:11px;color:#475569;background:#f8fafc;padding:12px 14px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;border:1px solid #e2e8f0;">{_esc(trace[-2000:])}</pre>
+      <p style="margin:0 0 8px 0;font-size:13px;font-weight:700;color:#1e293b;">{detail_heading}</p>
+      <pre style="margin:0;font-size:11px;color:#475569;background:#f8fafc;padding:12px 14px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;border:1px solid #e2e8f0;">{_esc(trace if operational else trace[-2000:])}</pre>
     </td>
   </tr>
   <tr>
@@ -5441,7 +5445,7 @@ def send_email_error(error_msg: str, trace: str):
 </table>
 </body></html>"""
 
-    msg = _build_msg(f"❗ [리스크봇 오류] {now_str} 기준 — 런타임 오류 발생", html_body, receiver)
+    msg = _build_msg(f"❗ [리스크봇 {kind}] {now_str} 기준 — {title}", html_body, receiver)
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.ehlo()
