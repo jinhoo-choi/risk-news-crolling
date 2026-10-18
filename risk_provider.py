@@ -29,6 +29,7 @@ class Provider:
         self.bodies = {b['article_id']: b for b in job['body_manifest']}
         self.by_url = {a['url']: a['article_id'] for a in job['input']['items']}
         self.calls = {}
+        self.summary_source_ids = []
         self.event_groups = {aid: str(i) for i, group in enumerate(result.get('event_groups', []))
                              for aid in group['article_ids']}
         self.stat_dates = {}
@@ -139,13 +140,18 @@ class Provider:
             return Response({'action': a['action'], 'customer_notice': a['customer_notice']})
         if route == 'summary':
             # Native format is a short upper summary. Use only delivered cards.
-            labels = list(dict.fromkeys((a.get('entity') or '시장')+' '+self.analysis(a)['judgment']['핵심사건'] for a in articles))
+            self.summary_source_ids = []
+            labels = {}
+            for a in articles:
+                label = (a.get('entity') or '시장')+' '+self.analysis(a)['judgment']['핵심사건']
+                labels.setdefault(label, a['article_id'])
             text = ''
-            for label in labels:
+            for label, article_id in labels.items():
                 proposed = text+('·' if text else '')+label
                 if len(proposed) > 40:
                     break
                 text = proposed
+                self.summary_source_ids.append(article_id)
             return Response(text)
         raise RuntimeError('미등록 구독 분석 경로 — API 자동 폴백 금지')
 

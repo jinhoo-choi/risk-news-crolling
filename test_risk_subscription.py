@@ -199,6 +199,96 @@ class Integration(unittest.TestCase):
         self.assertEqual({a['article_id'] for a in final},{'one','two'})
         self.assertIn('2건 선별',queue.data['previews/test.json']['html'])
 
+    def test_summary_can_use_verified_body_fact_absent_from_headline(self):
+        queue, smtp = self.fixture(), SMTP()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        job['input']['items'][0]['title'] = '한국투자증권 고객 불편, 어떤 일이 있었나'
+        job['input']['raw_articles'] = copy.deepcopy(job['input']['items'])
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        self.run_consume(queue, smtp)
+        final = queue.data['filter-logs/test.json']['final']
+        core = result['analyses']['one']['judgment']['핵심사건']
+        self.assertNotIn(core, final[0]['title'])
+        self.assertIn('한국투자증권 일부 MTS 잔고 조회에서 장애가 발생했다', final[0]['body'])
+        self.assertIn('💡 한국투자증권 '+core, queue.data['previews/test.json']['html'])
+        self.assertEqual(queue.data['metrics/test.json']['summary_source_ids'], ['one'])
+
+    def test_summary_excludes_same_event_loser_after_final_score_selection(self):
+        queue, smtp = self.grouped_fixture(), SMTP()
+        result = queue.data['results/test.json']
+        result['analyses']['one']['judgment']['핵심사건'] = '일부 잔고 조회 장애'
+        result['analyses']['two']['judgment']['핵심사건'] = '잔고 조회 장애'
+        self.run_consume(queue, smtp)
+        document = queue.data['previews/test.json']['html']
+        self.assertEqual([a['article_id'] for a in queue.data['filter-logs/test.json']['final']], ['two'])
+        self.assertIn('💡 한국투자증권 잔고 조회 장애', document)
+        self.assertNotIn('💡 한국투자증권 일부 잔고 조회 장애', document)
+        self.assertEqual(queue.data['metrics/test.json']['summary_source_ids'], ['two'])
+
+    def test_summary_excludes_rejected_analysis_candidate(self):
+        queue, smtp = self.independent_same_company_fixture(), SMTP()
+        result = queue.data['results/test.json']
+        result['classifications'][1].update(relevant=False, reason='검수용 비해당 후보.')
+        del result['analyses']['two']
+        self.run_consume(queue, smtp)
+        document = queue.data['previews/test.json']['html']
+        self.assertIn('💡 한국투자증권 일부 잔고 조회 장애', document)
+        self.assertNotIn('과태료 부과', document)
+        self.assertEqual([a['article_id'] for a in queue.data['filter-logs/test.json']['final']], ['one'])
+        self.assertEqual(queue.data['metrics/test.json']['summary_source_ids'], ['one'])
+
+    def test_summary_excludes_positive_article_removed_by_owner(self):
+        queue, smtp = self.independent_same_company_fixture(), SMTP()
+        source = queue.source
+        def exclude_second(path):
+            raw, sha = source(path)
+            if path == 'risk_subscription_config.json':
+                config = json.loads(raw)
+                config['excluded_article_ids'] = ['two']
+                raw = json.dumps(config).encode()
+            return raw, sha
+        queue.source = exclude_second
+        self.run_consume(queue, smtp)
+        document = queue.data['previews/test.json']['html']
+        self.assertIn('💡 한국투자증권 일부 잔고 조회 장애', document)
+        self.assertNotIn('과태료 부과', document)
+        self.assertTrue(queue.data['results/test.json']['classifications'][1]['relevant'])
+        self.assertEqual(queue.data['metrics/test.json']['summary_source_ids'], ['one'])
+
+    def test_summary_does_not_keep_previous_selection_or_overflow_40_chars(self):
+        from risk_provider import Provider
+        queue = self.independent_same_company_fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        result['analyses']['one']['judgment']['핵심사건'] = '일부 MTS 잔고 조회 장애 발생 및 복구 점검 진행'
+        provider = Provider(job, result)
+        first, second = job['input']['items']
+        rows = [dict(first, entity='한국투자증권'), dict(second, entity='한국투자증권')]
+        headline = provider.response('summary', articles=rows).text
+        self.assertLessEqual(len(headline), 40)
+        self.assertIn('복구 점검 진행', headline)
+        self.assertNotIn('과태료', headline)
+        self.assertEqual(provider.summary_source_ids, ['one'])
+        self.assertEqual(provider.response('summary', articles=rows[1:]).text, '한국투자증권 과태료 부과')
+        self.assertEqual(provider.summary_source_ids, ['two'])
+        self.assertEqual(provider.response('summary', articles=[]).text, '')
+        self.assertEqual(provider.summary_source_ids, [])
+
+    def test_summary_failure_omits_header_without_stale_fallback(self):
+        from risk_provider import Provider
+        queue, smtp = self.fixture(), SMTP()
+        native = Provider.response
+        def fail_summary(provider, route, *args, **kwargs):
+            if route == 'summary':
+                raise RuntimeError('검수용 요약 실패')
+            return native(provider, route, *args, **kwargs)
+        with patch.object(Provider, 'response', fail_summary):
+            self.run_consume(queue, smtp)
+        document = queue.data['previews/test.json']['html']
+        self.assertNotIn('💡', document)
+        self.assertEqual(queue.data['metrics/test.json']['summary_source_ids'], [])
+        self.assertIn('https://example.invalid/test/one', document)
+        self.assertEqual(len(smtp.calls), 3)
+
     def test_invalid_or_missing_event_comparison_blocks_before_smtp(self):
         cases = ['missing','unknown','overlap','mixed','unverified']
         for case in cases:
