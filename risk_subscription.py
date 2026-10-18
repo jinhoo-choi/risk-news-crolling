@@ -451,7 +451,8 @@ def consume(queue, jid, self_test=False):
             args = (set(args[0])-held_urls,)+args[1:]
         return native_save(*args, **kwargs)
     def private_stats(*args, **kwargs):
-        artifact('metrics/'+jid+'.json', {'stats': copy.deepcopy(bot._RUN_STATS), 'paid_ai_calls': 0})
+        artifact('metrics/'+jid+'.json', {'stats': copy.deepcopy(bot._RUN_STATS), 'paid_ai_calls': 0,
+                  'summary_source_ids': list(provider.summary_source_ids)})
     def private_log(*args):
         # Exact final/source objects stay private; the native logger writes no public file.
         artifact('filter-logs/'+jid+'.json', {'raw': args[0], 'hard_excluded': args[1],
