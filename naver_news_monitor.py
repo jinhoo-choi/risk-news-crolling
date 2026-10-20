@@ -4064,6 +4064,11 @@ def build_exposure_html(entity, exposure_data: dict, ref_date: str, border_color
     else:
         entities_list = [entity] if entity else []
 
+    # Market-wide statistics have no issuer whose balance can be linked.
+    # Omit the card instead of implying that an issuer has no exposure.
+    if not any(str(e).strip() for e in entities_list) and not str((article or {}).get("entity") or "").strip():
+        return ""
+
     all_rows = []
     seen_row_keys = set()
     for ent in entities_list:
