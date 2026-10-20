@@ -18,6 +18,31 @@ def row(name, code='000001', kind='주식', bank='20', branch='5'):
 
 
 class Exposure(unittest.TestCase):
+    def test_market_statistics_without_issuer_omit_exposure_card(self):
+        for entity in ("", [], ["", " "]):
+            with self.subTest(entity=entity), patch.object(bot, "find_exposure",
+                    side_effect=AssertionError("market statistics must not link balances")):
+                self.assertEqual(bot.build_exposure_html(entity, {}, "2026-10-16",
+                    article={"entity": "", "entities": [], "event_type": "반대매매"}), "")
+
+    def test_named_issuer_keeps_card_even_when_balance_is_unknown(self):
+        html = bot.build_exposure_html("테스트전자", {}, "2026-10-16",
+            article={"entity": "테스트전자", "event_type": "반대매매"})
+        self.assertIn("잔고 없음", html)
+
+    def test_market_statistics_keep_fact_and_action_in_email(self):
+        for grade in ("긴급", "주의"):
+            article = {"entity": "", "entities": [], "event_type": "반대매매",
+                       "grade": grade, "title": "시장 전체 반대매매 증가",
+                       "url": "https://example.invalid/market",
+                       "action": "집계기간과 실제 미수 고객의 상환 일정을 확인."}
+            with self.subTest(grade=grade), patch.object(bot, "build_price_alert_section",
+                    return_value=""), redirect_stdout(io.StringIO()):
+                html = bot.build_email_html([article], exposure_data={})
+            self.assertIn("시장 전체 반대매매 증가", html)
+            self.assertIn(article["action"], html)
+            self.assertNotIn("잔고 없음", html)
+
     def test_reviewed_korean_names_resolve_only_exact_snapshot_ticker(self):
         names = [("코어위브", "CRWV", "CoreWeave, Inc."),
                  ("네비우스 그룹", "NBIS", "Nebius Group N.V."),
