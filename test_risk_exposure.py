@@ -18,6 +18,25 @@ def row(name, code='000001', kind='주식', bank='20', branch='5'):
 
 
 class Exposure(unittest.TestCase):
+    def test_reviewed_korean_names_resolve_only_exact_snapshot_ticker(self):
+        names = [("코어위브", "CRWV", "CoreWeave, Inc."),
+                 ("네비우스 그룹", "NBIS", "Nebius Group N.V."),
+                 ("어플라이드 디지털", "APLD", "Applied Digital Corporation")]
+        for alias, ticker, canonical in names:
+            with self.subTest(alias=alias):
+                exp = {canonical: [row(canonical, ticker), row(canonical, ticker, "여신")],
+                       alias: [row(alias, "WRONG")],
+                       canonical + " Holdings": [row(canonical + " Holdings", ticker + "X")]}
+                before = copy.deepcopy(exp)
+                found = bot.find_exposure(alias, exp)
+                self.assertEqual(len(found), 2)
+                self.assertEqual({r["종목코드"] for r in found}, {ticker})
+                self.assertEqual(bot.canonicalize_entity(alias, {}, exp), canonical)
+                self.assertEqual(exp, before)
+                self.assertEqual(bot.find_exposure(alias, {canonical: [row(canonical, ticker + "X")]}), [])
+                self.assertEqual(bot.find_exposure(alias + " 계열사", {canonical: exp[canonical]}), [])
+
+
     def test_jr_legal_aliases_keep_all_bonds_but_not_similar_company(self):
         exp={'제이알글로벌리츠':[row('제이알글로벌리츠')],
              '(주)제이알글로벌위탁관리부동산투자회사':[
