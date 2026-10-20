@@ -102,6 +102,7 @@ class Provider:
                        _subscription_direct_entities=copy.deepcopy(a.get('direct_event_entities', [])))
         article.pop('_subscription_event_group', None)
         article.pop('_subscription_stat_date', None)
+        article.pop('_subscription_stat_series', None)
         group = self.event_groups.get(article['article_id'])
         if group is None and self.job.get('event_grouping_version') == 1:
             # Reviewed independent incidents must not enter legacy entity-wide
@@ -109,6 +110,9 @@ class Provider:
             group = 'article:'+article['article_id']
         if group is not None:
             article['_subscription_event_group'] = group
+        if group == 'market:금투협:미수금반대매매':
+            article['_subscription_stat_series'] = group
+            article['fact_summary'] = a['fact_summary']
         if article['article_id'] in self.stat_dates:
             article['_subscription_stat_date'] = self.stat_dates[article['article_id']]
 

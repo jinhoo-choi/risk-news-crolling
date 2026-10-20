@@ -321,6 +321,48 @@ class Integration(unittest.TestCase):
         a['_risk_score'] = b['_risk_score']
         self.assertEqual(self.bot.dedup_same_mail_events([a,b]), [a])
 
+    def test_market_statistics_cannot_open_group_route_by_score_or_grade(self):
+        statistic = {'entity':'', 'entities':[], 'event_type':'반대매매',
+                     'grade':'긴급', '_risk_score':9.9, '_conf_raw':0.99,
+                     '_subscription_stat_series':'market:금투협:미수금반대매매'}
+        self.assertTrue(self.bot.decide_send_scope([statistic], {})['self_only'])
+        self.assertEqual(self.bot.filter_articles_for_scope([statistic], {}, False), [])
+        direct = dict(statistic, entity='한국투자증권', event_type='시스템장애')
+        direct.pop('_subscription_stat_series')
+        self.assertFalse(self.bot.decide_send_scope([statistic, direct], {})['self_only'])
+        self.assertEqual(self.bot.filter_articles_for_scope([statistic, direct], {}, False), [direct])
+        # Live portfolio crash is an independent gate, never replaced by a headline.
+        with patch.object(self.bot.build_price_alert_section, 'last_alerted_count',
+                          self.bot.MARKET_CRASH_STOCK_THRESHOLD, create=True), \
+             patch.object(self.bot.build_price_alert_section, 'last_alerted_rbal',
+                          self.bot.MARKET_CRASH_RBAL_THRESHOLD, create=True):
+            scope = self.bot.decide_send_scope([statistic], {})
+            self.assertFalse(scope['self_only'])
+            self.assertTrue(scope['market_crash'])
+            self.assertEqual(self.bot.filter_articles_for_scope([statistic], {}, False, True), [statistic])
+
+    def test_market_statistics_other_urls_do_not_resend_same_reference_day(self):
+        queue, smtp = self.market_statistics_fixture(), SMTP()
+        self.run_consume(queue, smtp)
+        queue.remote_seen = Path('seen_news.json').read_bytes()
+        acknowledge(queue, 'test')
+        queue, smtp = self.market_statistics_fixture(), SMTP()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        job['input']['history_hash'] = hashlib.sha256(queue.remote_seen).hexdigest()
+        for key in ('items', 'raw_articles'):
+            for item in job['input'][key]:
+                item['url'] += '-another-publisher'
+                item['title'] = '증시 대기자금 감소…강제청산 계속 ' + item['article_id']
+        for body in job['body_manifest']:
+            body['source_url'] += '-another-publisher'
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        self.run_consume(queue, smtp)
+        self.assertEqual(queue.data['filter-logs/test.json']['final'], [])
+        self.assertNotIn('another-publisher', queue.data['previews/test.json']['html'])
+        self.assertTrue(queue.data['outbox/test.json']['self_only'])
+        self.assertEqual(len(smtp.calls), 1)  # Owner status; no repeated statistic/group mail.
+
     def market_statistics_fixture(self):
         queue = self.grouped_fixture()
         job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
@@ -369,7 +411,9 @@ class Integration(unittest.TestCase):
                 for aid in ('one','two','four'):
                     self.assertNotIn('https://example.invalid/test/'+aid, document)
                 self.assertIn('1건 선별', document)
-                self.assertEqual(len(smtp.calls), 3)
+                self.assertEqual(len(smtp.calls), 1)
+                self.assertTrue(queue.data['outbox/test.json']['self_only'])
+                self.assertIn('15일 미수금 반대매매가 804억원', document)
                 queue.remote_seen = Path('seen_news.json').read_bytes()
                 acknowledge(queue, 'test')
                 self.assertTrue(queue.data['jobs/test.json']['ack'])
@@ -415,7 +459,7 @@ class Integration(unittest.TestCase):
         seen = json.loads(Path('seen_news.json').read_text())
         self.assertNotIn(job['input']['items'][0]['title'],
                          json.dumps(seen.get('_event_history', {}), ensure_ascii=False))
-        self.assertEqual(len(smtp.calls), 3)
+        self.assertEqual(len(smtp.calls), 1)
         queue.remote_seen = Path('seen_news.json').read_bytes()
         acknowledge(queue, 'test')
         self.assertTrue(queue.data['jobs/test.json']['ack'])
