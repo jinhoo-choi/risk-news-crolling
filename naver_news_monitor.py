@@ -1568,6 +1568,15 @@ def strip_unsupported_action_clauses(action: str, exp_rows: list) -> tuple:
         out = re.sub(r'[ \t]{2,}', ' ', out).strip()
     return (out, removed)
 
+# Reviewed issuer aliases bridge article names to the snapshot's exact ticker.
+# Do not infer tickers from fuzzy names, affiliates, or article text.
+REVIEWED_ISSUER_TICKERS = {
+    "코어위브": "CRWV",
+    "네비우스 그룹": "NBIS",
+    "어플라이드 디지털": "APLD",
+}
+
+
 def find_exposure(entity: str, exposure_data: dict) -> list:
     """entity와 종목명 딕셔너리 매칭 — O(1) 정확 매칭 우선, fallback prefix 6자
     성능 최적화: 정확 매칭(O1) → 부분포함 문자열(O(n)) → prefix 6자(O(n))
@@ -1577,6 +1586,14 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
     """
     if not entity or not exposure_data:
         return []
+
+    # Resolve reviewed Korean issuer names before generic name fallback.
+    # Match the snapshot code itself; a similar name or a changed ticker map
+    # must never attach another issuer's balance.
+    issuer_ticker = REVIEWED_ISSUER_TICKERS.get(entity.strip())
+    if issuer_ticker:
+        return [row for rows in exposure_data.values() for row in rows
+                if str(row.get("종목코드") or "").strip().upper() == issuer_ticker]
 
     results = []
     seen_names = set()
