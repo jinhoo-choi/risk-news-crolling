@@ -69,6 +69,21 @@ class HistoryTests(unittest.TestCase):
     def setUp(self):
         self.history = EventHistory(now=NOW)
 
+    def test_market_statistics_reference_dates_persist_without_company_attribution(self):
+        statistic = {'entity':'', 'title':'시장 반대매매 통계',
+                     '_subscription_stat_series':'market:금투협:미수금반대매매',
+                     '_subscription_stat_date':'2026-10-19'}
+        self.assertFalse(self.history.duplicate_statistic(statistic))
+        self.history.record_statistic(statistic, 'full')
+        restored = EventHistory(self.history.serialize(), now=NOW + timedelta(days=10))
+        self.assertTrue(restored.duplicate_statistic(dict(statistic, title='다른 매체의 강제청산 보도')))
+        self.assertTrue(restored.duplicate_statistic(dict(statistic, _subscription_stat_date='2026-10-16')))
+        self.assertTrue(restored.duplicate_statistic(dict(statistic, _subscription_stat_date='')))
+        self.assertFalse(restored.duplicate_statistic(dict(statistic, _subscription_stat_date='2026-10-20')))
+        self.assertFalse(restored.duplicate_statistic(dict(statistic, _subscription_stat_series='other-statistic')))
+        self.assertFalse(restored.duplicate_statistic({'entity':'개별기업', 'event_type':'반대매매'}))
+        self.assertEqual(statistic['entity'], '')
+
     def test_event_type_drift_is_not_novelty(self):
         self.history.record("금양", GEUM_TITLE, GEUM_DESC, "거래정지")
         self.assertTrue(self.history.duplicate("금양", GEUM_TITLE, GEUM_DESC, "감사의견거절"))

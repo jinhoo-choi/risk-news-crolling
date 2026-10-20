@@ -424,5 +424,39 @@ class EventHistory:
                     record["facts"].append(fact)
             record["facts"] = record["facts"][-MAX_FACTS:]
 
+    def duplicate_statistic(self, article):
+        """A new URL/publication date never reopens the same reviewed statistic."""
+        series = article.get('_subscription_stat_series')
+        if not series:
+            return False
+        previous = [r for r in self.records
+                    if r['entity'] == series and r['family'] == 'market_statistic']
+        if not previous:
+            return False
+        dates = [d for r in previous for f in r['facts'] for d in f['dates']]
+        date = article.get('_subscription_stat_date', '')
+        # Unknown source date is not proof of a new release. A later verified
+        # reference date remains reviewable; scope is decided independently.
+        return not date or bool(dates) and date <= max(dates)
+
+    def record_statistic(self, article, scope):
+        series = article.get('_subscription_stat_series')
+        if not series:
+            return
+        previous = self.matching(series, {'market_statistic'}, scope)
+        if previous:
+            record = previous[0]
+        else:
+            record = {'scope': scope, 'entity': series, 'family': 'market_statistic',
+                      'first_sent': self.now.isoformat(), 'last_sent': self.now.isoformat(),
+                      'facts': [], 'titles': []}
+            self.records.append(record)
+        record['last_sent'] = self.now.isoformat()
+        record['titles'] = (record['titles'] + [_compact(article.get('title', ''))])[-10:]
+        date = article.get('_subscription_stat_date', '')
+        fact = {'stage': 'statistic', 'amounts': [], 'dates': [date] if date else []}
+        if fact not in record['facts']:
+            record['facts'] = (record['facts'] + [fact])[-MAX_FACTS:]
+
     def serialize(self):
         return {"version": 1, "records": sorted(self.records, key=lambda r: r["last_sent"])[-MAX_RECORDS:]}

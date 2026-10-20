@@ -4775,9 +4775,12 @@ def decide_send_scope(filtered: list, exposure_data: dict, ref_date: str = "") -
     반환: {self_only, force_full, max_score, has_urgent, has_strong_caution,
            market_crash, alerted_count, alerted_rbal, triggers}
     """
-    _actionable = [a for a in filtered if a.get("grade") in ("긴급", "주의")]
+    # Broad market statistics carry no issuer exposure. They cannot open the
+    # group route merely through an AI score; verified portfolio crash stays separate.
+    _scope_candidates = [a for a in filtered if not a.get('_subscription_stat_series')]
+    _actionable = [a for a in _scope_candidates if a.get("grade") in ("긴급", "주의")]
     _max_score = max((a.get("_risk_score") or 0) for a in _actionable) if _actionable else 0
-    _has_urgent = any(a.get("grade") == "긴급" for a in filtered)
+    _has_urgent = any(a.get("grade") == "긴급" for a in _scope_candidates)
 
     def _strong_caution_ok(a) -> bool:
         """고신뢰 주의 우회 발송 자격 — conf와 '익스포저 규모'를 함께 본다."""
@@ -4790,7 +4793,7 @@ def decide_send_scope(filtered: list, exposure_data: dict, ref_date: str = "") -
             return False
         return sum(_num(r.get("잔고(억)")) for r in _rows) >= STRONG_CAUTION_MIN_EXPOSURE
 
-    _has_strong_caution = any(_strong_caution_ok(a) for a in filtered)
+    _has_strong_caution = any(_strong_caution_ok(a) for a in _scope_candidates)
 
     # ★집계값은 build_price_alert_section()이 함수 속성에 채운다. 이 함수는
     #   build_email_html() 내부에서도 호출되는데, HTML 생성이 판정보다 뒤로
@@ -4844,6 +4847,8 @@ def filter_articles_for_scope(filtered: list, exposure_data: dict, self_only: bo
                 else REF_FULLSEND_MIN_EXPOSURE)
 
     def _keep(a):
+        if a.get('_subscription_stat_series'):
+            return market_crash
         if a.get("grade") != "참고":
             return True
         _e = (a.get("entity") or "").strip()
@@ -4988,6 +4993,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 </tr>
               </table>
               <a href="{_esc(a['url'])}" class="title-link caution-title" style="font-weight:bold;font-size:15px;text-decoration:none;color:#1e293b;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
+              {f'<p class="desc-p" style="margin:6px 0;font-size:12px;color:#475569;line-height:1.6;">{_esc(a.get("fact_summary", ""))}</p>' if a.get('_subscription_stat_series') and a.get('fact_summary') else ''}
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 0 0;">
                 <tr>
                   <td style="font-size:11px;"><a href="{_esc(a['url'])}" style="color:#4a6099;text-decoration:none;">↗ 기사 보기</a></td>
@@ -5047,7 +5053,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                   <td align="right" style="font-size:12px;color:#94a3b8;">{a.get("pub_str") or ""}</td>
                 </tr>
               </table>
-              {f'<p style="margin:0;font-size:11px;color:#94a3b8;line-height:1.6;word-break:keep-all;">{_esc(a["desc"])}</p>' if a.get("desc") else ""}
+              {f'<p style="margin:0;font-size:11px;color:#94a3b8;line-height:1.6;word-break:keep-all;">{_esc(a.get("fact_summary") if a.get("_subscription_stat_series") else a.get("desc"))}</p>' if (a.get("fact_summary") if a.get("_subscription_stat_series") else a.get("desc")) else ""}
             </td>
           </tr>
           {bottom_box}
@@ -5794,6 +5800,8 @@ def main():
         if entity and event_type:
             event_key = f"{entity}_{event_type}"  # entity는 위에서 정규화 완료
         ek_combo   = ("ek", event_key) if event_key else None
+        if event_history.duplicate_statistic(a):
+            matched = True; reason = "동일 시장통계 재보도, 신규 집계 기준일 없음"
         if (entity and not a.get("_force_urgent") and event_history.duplicate(
                 entity, a.get("title", ""), a.get("desc", ""), event_type)):
             matched = True; reason = "동일 사건 이력, 신규 악화 근거 없음"
@@ -6837,6 +6845,7 @@ JSON만 출력:
         event_type = (a.get("event_type") or "").strip()
         keyword = (a.get("keyword") or "").strip()
         sent_urls.add(a.get("url", ""))
+        event_history.record_statistic(a, scope="self" if _self_only else "full")
         event_history.record(entity, a.get("title", ""), a.get("desc", ""), event_type,
                              scope="self" if _self_only else "full")
         if not _self_only:
