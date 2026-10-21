@@ -1,6 +1,6 @@
 {
-  "operation": "failure-mail",
-  "source_job_id": "risk-production-39596205568",
+  "operation": "consume",
+  "job_id": "risk-owner-notice-20261014T1152",
   "self_test": true,
-  "request_id": "risk-failure-mail-20261021-live02"
+  "request_id": "risk-notice-live-20261014T1152"
 }

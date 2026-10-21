@@ -218,6 +218,62 @@ class DeliveryEvidence(unittest.TestCase):
         self.assertIn('SECOND', records)
         self.assertFalse(q.data['jobs/test.json'].get('ack', False))
 
+    def test_production_smtp_teardown_keeps_data_error_and_accepted_receipt(self):
+        for fail_at in (1, 0):
+            with self.subTest(fail_at=fail_at):
+                q, smtp = self.prepare(), fixtures.SMTP(fail_at=fail_at)
+                q.data['jobs/test.json']['created_at'] = now().isoformat()
+                smtp.quit = Mock(side_effect=ConnectionError('QUIT FAILURE'))
+                smtp.close = Mock(side_effect=ConnectionError('CLOSE FAILURE'))
+                with self.assertRaises(RuntimeError if fail_at else ConnectionError) as raised:
+                    self.audited_consume(q, smtp)
+                if fail_at:
+                    self.assertEqual(str(raised.exception.__cause__), 'uncertain DATA response')
+                else:
+                    self.assertEqual(str(raised.exception), 'CLOSE FAILURE')
+                self.assertEqual(len(smtp.calls), 1 if fail_at else 3)
+                self.assertEqual(set(q.data['jobs/test.json']['receipts'].values()),
+                                 {'uncertain' if fail_at else 'accepted'})
+                records = json.dumps([v for p, v in q.data.items() if p.startswith('audit/')])
+                self.assertIn('QUIT FAILURE', records)
+                self.assertIn('CLOSE FAILURE', records)
+                if fail_at:
+                    self.assertIn('uncertain DATA response', records)
+                self.assertFalse(q.data['jobs/test.json'].get('ack', False))
+                if not fail_at:
+                    fresh = fixtures.SMTP()
+                    with patch('smtplib.SMTP_SSL', lambda *a, **k: fresh):
+                        bridge.recover(q, 'test')
+                    self.assertEqual(fresh.calls, [])
+
+    def test_owner_smtp_data_cleanup_and_teardown_errors_all_survive(self):
+        from email.mime.text import MIMEText
+        from risk_owner_verification import OwnerSMTP, ERROR_EMAIL
+        q, smtp = self.prepare(), fixtures.SMTP(fail_at=1)
+        q.data['jobs/owner.json'] = {'mode':'verification', 'status':'pending', 'receipts':{},
+                                    'expires_at':(now()+timedelta(hours=1)).isoformat()}
+        put = q.put
+        def blocked(path, value, sha=None):
+            if path == 'jobs/owner.json' and value.get('status') == 'uncertain':
+                raise QueueConflict('OWNER UNCERTAIN WRITE FAILURE')
+            return put(path, value, sha)
+        smtp.quit = Mock(side_effect=ConnectionError('OWNER QUIT FAILURE'))
+        smtp.close = Mock(side_effect=ConnectionError('OWNER CLOSE FAILURE'))
+        guard = OwnerSMTP(lambda *a, **k: smtp, q, 'jobs/owner.json', ERROR_EMAIL)
+        msg = MIMEText('synthetic test'); msg['To'] = ERROR_EMAIL
+        def send():
+            with guard.factory('smtp.gmail.com', 465) as session:
+                session.sendmail(ERROR_EMAIL, [ERROR_EMAIL], msg.as_string())
+        with patch.object(q, 'put', blocked), self.assertRaises(RuntimeError) as raised:
+            audit.run_audited(q, 'failure-mail', 'owner', send)
+        self.assertIsInstance(raised.exception.__cause__, ConnectionError)
+        self.assertEqual(str(raised.exception.__cause__), 'uncertain DATA response')
+        self.assertEqual(len(smtp.calls), 1)
+        records = json.dumps([v for p, v in q.data.items() if p.startswith('audit/')])
+        for reason in ('uncertain DATA response', 'OWNER UNCERTAIN WRITE FAILURE',
+                       'OWNER QUIT FAILURE', 'OWNER CLOSE FAILURE'):
+            self.assertIn(reason, records)
+
     def test_final_owner_warning_cannot_mask_primary_failure(self):
         q, smtp = self.prepare(), fixtures.SMTP()
         first = ValueError('FIRST RENDER FAILURE')

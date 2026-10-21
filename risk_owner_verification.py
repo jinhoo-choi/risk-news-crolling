@@ -18,6 +18,8 @@ from unittest.mock import patch
 
 from risk_queue import Queue, now
 from risk_result_validator import validate, utc_time
+from risk_delivery import close_smtp
+from risk_audit import record_error
 
 OWNER = '111715@koreainvestment.com'  # Same owner as existing test_send_self.py.
 ERROR_EMAIL = 'myboy3743@gmail.com'  # Runtime/operational alerts only; verification stays unchanged.
@@ -185,10 +187,7 @@ class OwnerSMTP:
                 return self
 
             def __exit__(self, typ, value, trace):
-                try:
-                    server.quit()
-                except Exception:
-                    server.close()
+                close_smtp(server, value)
 
             def ehlo(self):
                 return server.ehlo()
@@ -210,12 +209,16 @@ class OwnerSMTP:
                 outer.queue.put(outer.path, job, sha)
                 try:
                     refused = server.sendmail(sender, recipients, raw)
-                except Exception:
-                    job, sha = getattr(outer.queue,'get_fresh',outer.queue.get)(outer.path)
-                    job.update(status='uncertain')
-                    job['receipts'][key] = 'uncertain'
-                    outer.queue.put(outer.path, job, sha)
-                    raise RuntimeError('SMTP 접수 미확인 — 자동 재전송 금지') from None
+                except Exception as error:
+                    record_error('smtp_data', error, 'owner_smtp_data_unconfirmed')
+                    try:
+                        job, sha = getattr(outer.queue,'get_fresh',outer.queue.get)(outer.path)
+                        job.update(status='uncertain')
+                        job['receipts'][key] = 'uncertain'
+                        outer.queue.put(outer.path, job, sha)
+                    except Exception as cleanup:
+                        record_error('cleanup', cleanup, 'owner_smtp_uncertain_write_failed')
+                    raise RuntimeError('SMTP 접수 미확인 — 자동 재전송 금지') from error
                 job, sha = getattr(outer.queue,'get_fresh',outer.queue.get)(outer.path)
                 job['receipts'][key] = 'rejected' if refused else 'accepted'
                 if refused:

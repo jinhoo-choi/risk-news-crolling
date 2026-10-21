@@ -12,6 +12,20 @@ def address_key(address):
     return hashlib.sha256(address.encode()).hexdigest()
 
 
+def close_smtp(server, primary=None):
+    """Connection teardown must never replace an earlier DATA/login failure."""
+    try:
+        server.quit()
+    except Exception as quit_error:
+        record_error('cleanup', quit_error, 'smtp_quit_failed')
+        try:
+            server.close()
+        except Exception as close_error:
+            record_error('cleanup', close_error, 'smtp_close_failed')
+            if primary is None:
+                raise close_error from quit_error
+
+
 class Delivery:
     def __init__(self, queue, job_id, real_smtp, check_config, resume=False):
         self.queue, self.path = queue, 'jobs/'+job_id+'.json'
@@ -71,11 +85,8 @@ class Delivery:
         class Session:
             def __enter__(self):
                 return self
-            def __exit__(self, *args):
-                try:
-                    server.quit()
-                except Exception:
-                    server.close()
+            def __exit__(self, typ, value, trace):
+                close_smtp(server, value)
             def ehlo(self):
                 return server.ehlo()
             def login(self, *args):
