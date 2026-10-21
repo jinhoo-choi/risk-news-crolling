@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 from risk_queue import JOB_ID
+from risk_audit import STAGES, checkpoint, run_audited, persist_unhandled
 
 
 def read_summary(stdout):
@@ -39,10 +40,11 @@ def main():
     if value['self_test']:
         command.append('--self-test')
     try:
+        checkpoint('request')
         process = subprocess.run(command, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as error:
         # Child stdout/stderr may contain private articles. Expose only fixed
-        # outbox phase/result metadata, never the captured traceback or payload.
+        # outbox/queue phase metadata, never the captured traceback or payload.
         for line in (error.stdout or '').splitlines():
             if re.fullmatch(r'RISK_OUTBOX_VERIFY (?:phase=put outcome=unconfirmed|'
                             r'phase=read source=(?:put_commit|fresh) attempt=[1-3] '
@@ -50,8 +52,17 @@ def main():
                             r'commit=(?:[0-9a-f]{40}|unconfirmed) http=(?:0|[1-5][0-9]{2}) '
                             r'request_id=[A-Za-z0-9:-]{1,100})', line):
                 print(line)
+            elif re.fullmatch(r'RISK_QUEUE_CONFLICT operation=put category=(?:job|other) attempt=[1-3] '
+                              r'outcome=(?:read_failed|confirmed_existing|same_file|changed_file) '
+                              r'kind=(?:conflict|sha_conflict|ref_conflict) http=409 '
+                              r'request_id=[A-Za-z0-9:-]{1,100}|RISK_DELIVERY_CLEANUP outcome=failed', line):
+                print(line)
+            elif re.fullmatch(r'RISK_AUDIT state=failed recorded=(?:true|false) stage=[a-z_]+', line):
+                if line.rsplit('=', 1)[1] in STAGES:
+                    print(line)
         raise
     print(process.stdout, end='')
+    checkpoint('request_summary')
     summary = read_summary(process.stdout)
     if value['operation'] == 'collect-review':
         if (summary.get('status') != 'pending' or summary.get('paid_ai_calls') != 0
@@ -69,4 +80,11 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    from risk_queue import Queue
+    try:
+        value = json.loads(Path('risk_subscription_request.json').read_text())
+        run_audited(Queue(), 'request', value.get('job_id', ''), main)
+    except Exception as error:
+        persist_unhandled(error)
+        print('구독 요청 실패:', type(error).__name__)
+        raise SystemExit(1)

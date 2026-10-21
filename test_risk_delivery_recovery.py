@@ -20,6 +20,28 @@ import test_risk_subscription as fixtures
 
 
 class Conflicts(unittest.TestCase):
+    def test_conflict_diagnostics_distinguish_file_state_without_private_values(self):
+        for state, fresh in [('same_file', ({'private': 'OLD'}, 'old')),
+                             ('changed_file', ({'private': 'CHANGED'}, 'new')),
+                             ('confirmed_existing', ({'private': 'NEW'}, 'new')),
+                             ('read_failed', RuntimeError('PRIVATE READ ERROR'))]:
+            with self.subTest(state=state):
+                q = object.__new__(Queue)
+                q.request = Mock(side_effect=QueueConflict('ABCD:1234', 'sha_conflict'))
+                q.get_fresh = Mock(side_effect=fresh if isinstance(fresh, Exception) else None,
+                                   return_value=fresh)
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output), patch('risk_queue.time.sleep'):
+                    try:
+                        q.put('jobs/PRIVATE_JOB.json', {'private': 'NEW'}, 'old')
+                    except RuntimeError:
+                        self.assertNotEqual(state, 'confirmed_existing')
+                lines = output.getvalue().splitlines()
+                self.assertEqual(len(lines), 3 if state == 'same_file' else 1)
+                for n, line in enumerate(lines, 1):
+                    self.assertEqual(line, f'RISK_QUEUE_CONFLICT operation=put category=job attempt={n} '
+                                     f'outcome={state} kind=sha_conflict http=409 request_id=ABCD:1234')
+
     def test_transient_get_exhaustion_keeps_safe_http_diagnostics(self):
         q = object.__new__(Queue); q.token = 'not-a-real-secret'
         error = urllib.error.HTTPError('https://api.github.com', 503, 'Unavailable',
@@ -227,6 +249,53 @@ class Recovery(unittest.TestCase):
     def resume(self, q, smtp):
         with patch.object(smtplib, 'SMTP_SSL', lambda *a, **k: smtp):
             bridge.recover(q, 'test')
+
+    def test_all_accepted_finish_and_cleanup_conflicts_keep_original_then_recover_smtp_zero(self):
+        q, smtp = self.fixture(), fixtures.SMTP()
+        put, output = q.put, io.StringIO()
+        first, cleanup = QueueConflict('FIRST'), QueueConflict('CLEANUP')
+        def conflict(path, value, old=None):
+            if path == 'jobs/test.json':
+                if value.get('status') == 'delivery_complete':
+                    raise first
+                if value.get('status') == 'uncertain':
+                    raise cleanup
+            return put(path, value, old)
+        with patch.object(q, 'put', conflict), contextlib.redirect_stdout(output), \
+                self.assertRaises(QueueConflict) as raised:
+            self.run_consume(q, smtp)
+        self.assertIs(raised.exception, first)
+        self.assertIn('RISK_DELIVERY_CLEANUP outcome=failed', output.getvalue())
+        self.assertEqual(len(smtp.calls), 3)
+        self.assertEqual(set(q.data['jobs/test.json']['receipts'].values()), {'accepted'})
+        Path('seen_news.json').write_bytes(self.before)
+        fresh = fixtures.SMTP()
+        self.resume(q, fresh)
+        self.assertEqual(fresh.calls, [])
+        q.remote_seen = Path('seen_news.json').read_bytes()
+        bridge.acknowledge(q, 'test')
+        self.assertTrue(q.data['jobs/test.json']['ack'])
+        self.resume(q, fresh)
+        self.assertEqual(fresh.calls, [])
+
+    def test_recovery_cleanup_conflict_preserves_original_with_zero_smtp(self):
+        q, smtp = self.fixture(), fixtures.SMTP()
+        self.run_consume(q, smtp)
+        Path('seen_news.json').write_bytes(self.before)
+        put, first = q.put, QueueConflict('FIRST')
+        def conflict(path, value, old=None):
+            if path == 'jobs/test.json':
+                if value.get('status') == 'delivery_complete':
+                    raise first
+                if value.get('status') == 'uncertain':
+                    raise QueueConflict('CLEANUP')
+            return put(path, value, old)
+        fresh = fixtures.SMTP()
+        with patch.object(q, 'put', conflict), self.assertRaises(QueueConflict) as raised:
+            self.resume(q, fresh)
+        self.assertIs(raised.exception, first)
+        self.assertEqual(fresh.calls, [])
+        self.assertFalse(q.data['jobs/test.json'].get('ack', False))
 
     def test_owner_status_recovery_restores_only_signed_owner_route(self):
         from risk_continuity import freeze_exposure
@@ -444,6 +513,23 @@ class Recovery(unittest.TestCase):
 
 
 class Request(unittest.TestCase):
+    def test_failure_forwards_only_fixed_queue_and_cleanup_diagnostics(self):
+        value = {'operation':'consume', 'job_id':'test', 'self_test':False,
+                 'dry_run':False, 'request_id':'conflict-test'}
+        safe = ('RISK_QUEUE_CONFLICT operation=put category=job attempt=3 '
+                'outcome=changed_file kind=conflict http=409 request_id=ABCD:1234')
+        cleanup = 'RISK_DELIVERY_CLEANUP outcome=failed'
+        lines = [safe, cleanup, safe+' PRIVATE', safe.replace('category=job', 'category=PRIVATE'),
+                 safe.replace('attempt=3', 'attempt=4'), 'PRIVATE TRACEBACK']
+        error = request.subprocess.CalledProcessError(1, ['child'], output='\n'.join(lines),
+                                                     stderr='PRIVATE RESPONSE')
+        output = io.StringIO()
+        with patch.object(request.Path, 'read_text', return_value=json.dumps(value)), \
+                patch.object(request.subprocess, 'run', side_effect=error), \
+                contextlib.redirect_stdout(output), self.assertRaises(request.subprocess.CalledProcessError):
+            request.main()
+        self.assertEqual(output.getvalue(), safe+'\n'+cleanup+'\n')
+
     def test_failure_exposes_only_allowlisted_outbox_metadata(self):
         value = {'operation': 'consume', 'job_id': 'test', 'self_test': False,
                  'dry_run': False, 'request_id': 'outbox-read'}

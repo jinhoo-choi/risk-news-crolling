@@ -11,7 +11,9 @@
 |---|---|
 | 하는 일 | 네이버 뉴스에서 당사 익스포저 종목의 리스크 기사를 탐지해 임원진에 메일 발송 |
 | 실행 주기 | 매일(주말 포함) **07 / 14 / 21시 KST** 3회 |
-| 트리거 | **cron-job.org**(외부 서비스)가 GitHub Actions를 호출 — 레포에 cron 스케줄 없음 |
+| 수집 트리거 | **cron-job.org**가 GitHub Actions를 호출 — 수집 성공은 발송 완료가 아님 |
+| 구독 분석 | 기존 Work 예약 6acf8adfe0c08191bce40518eef296be가 고정 입력을 분석·결과 저장·소비 요청 |
+| 발송 완료 | consume Actions 성공 + 전원 accepted + main 이력 저장 + ACK 확인 |
 | 수신자 | `risk_aigent@googlegroups.com`, `risk_aigent_pb@googlegroups.com` + 발신자 본인 |
 | 핵심 파일 | `naver_news_monitor.py`(본체), `exposure_data.csv`(익스포저), `filter_prompt.txt`(AI 규칙) |
 
@@ -21,14 +23,43 @@
 
 ### "메일이 안 왔다"
 
-```
-1) GitHub Actions에서 해당 시각 실행 이력 확인
-   https://github.com/jinhoo-choi/risk-news-crolling/actions
-   → 실행 자체가 없다면? cron-job.org 문제 (아래 3-A)
-   → 실행됐고 success면? 본인 한정 발송이었을 가능성 (정상 동작)
-2) 로그에서 [발송판정] 줄 확인 — 왜 그렇게 판정했는지 나온다
-3) Gmail 발신함 확인 — 발송은 됐는데 수신 그룹 문제일 수 있음
-```
+1. 해당 수집 Actions와 private `jobs/<job_id>.json`을 대조한다. 수집 success와
+   pending만 있으면 분석·발송이 완료된 것이 아니다.
+2. `results/<job_id>.json`이 없으면 `analysis-attempts/<job_id>.json`의 단계·오류·
+   processed_count·checkpoint_paths를 확인한다. 기록이 없거나 60분 이상 무진행이면
+   **원인 미확정의 실행 증거 부재**로 분류한다. 사용량/권한/플랫폼 오류를 추측하지 않는다.
+3. 결과가 있으면 공개 request의 job_id와 실제 consume Actions를 확인한다. 분석·검증,
+   outbox, SMTP, history push, ACK 중 마지막 성공 단계와 최초 실패를 구분한다.
+4. 전원 accepted라도 main 이력·ACK가 없으면 발송 후 처리 미완료다. 재발송하지 않는다.
+   기존 고정본·정책·원본·수신자·이력 해시 조건을 통과한 명시적 복구만 허용한다.
+5. completed/history_saved/ack와 accepted가 모두 확인된 뒤 본인 한정 발송 여부,
+   Gmail 발신본/수신함을 대조한다. 정상 0건·기사 보류·분석 미완료·실제 장애를 구별한다.
+
+### 단계·오류 기록 (2026-10-21 보완)
+
+비공개 저장소 `jinhoo-choi/insight-bot-data`, prefix `subscription/risk`만 사용한다.
+
+| 경로 | 기록 |
+|---|---|
+| `analysis-attempts/<job_id>.json` | Work 실행 소유자·실제 단계·진행량·오류·완료/차단 상태 |
+| `analysis-checkpoints/<job_id>/<attempt_id>-<번호>.json` | 회차/입력/정책 해시를 검증한 완료 묶음. 전체 결과나 발송 허가가 아님 |
+| `audit/<job_id 또는 operation>/<attempt_id>.json` | Python 수집/검증/렌더/SMTP/이력/ACK·wrapper·workflow 결과와 정제한 예외 체인 |
+| `incidents/<job_id>-*.json` | 미제출·무진행·차단·진행 기록 형식 오류의 관측 및 재현 근거 |
+
+- `risk_audit.py`는 오류 type/message/traceback, 자식 stdout/stderr와 실제 stage를
+  비공개로 보존한다. 최초 오류·실패 상태 저장 오류·운영 알림 오류를 별도 이벤트로 남긴다.
+  workflow의 마지막 `always()` 기록은 history push/ACK의 실제 outcome도 보존한다.
+- 시작 감사 기록을 저장하지 못하면 새 발송을 진행하지 않는다. SMTP accepted 영수증을
+  먼저 저장한 뒤 후속 진단을 쓴다. 감사 실패가 기존 영수증을 지우거나 재시도 허가를 만들지 않는다.
+- 토큰·쿠키·비밀번호·인증헤더를 제거한다. 공개 로그에는 고정 metadata만 허용한다.
+  audit/원문/이력/SMTP 영수증을 공개 artifact로 올리지 않는다.
+- 큐 접근까지 막히면 `risk_audit_spool.jsonl`(0600, git 제외)에 임시 기록하고
+  공개 로그에 `recorded=false`를 남긴다. 임시 spool은 runner 종료 뒤 보존을 보장하지
+  못하므로 **비공개 영구 저장 성공으로 보고하지 않는다**. 최초 오류는 계속 보존해 전달한다.
+- Work 시작 전 플랫폼 종료·도구 호출 전 차단은 Python이 소급 기록할 수 없다.
+  Scheduled의 실행 원문과 연결 도구가 실제 제공하는 상세만 근거로 삼는다.
+- `observe_pending()`은 기존 수집의 상태 확인 때만 무진행 관측을 기록한다.
+  새 타이머·상시 감시·자동 재발송을 추가하지 않으며 실시간 탐지를 보장하지 않는다.
 
 ### "메일은 왔는데 내용이 이상하다"
 

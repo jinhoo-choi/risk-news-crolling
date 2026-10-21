@@ -511,7 +511,7 @@ class ReplayCollection(unittest.TestCase):
         rows = [dict(saved, url='https://example.invalid/missing', title='미확보 사건 기사'),
                 dict(saved, url='https://example.invalid/ready', title='확인된 사건 기사')]
         self.bot.crawl_naver_news.return_value = rows
-        self.bot.fetch_article_body = lambda url: '원문에 확인된 실제 사건 내용' if url.endswith('/ready') else ''
+        self.bot.fetch_article_body = lambda url, diagnostics=None: '원문에 확인된 실제 사건 내용' if url.endswith('/ready') else ''
         self.collect(queue)
         full = hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])
         items, bodies = full['input']['items'], full['body_manifest']

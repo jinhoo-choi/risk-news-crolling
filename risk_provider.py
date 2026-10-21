@@ -37,20 +37,34 @@ class Provider:
         source = {a['article_id']: a for a in job['input']['items']}
         for aid, analysis in self.analyses.items():
             body = self.bodies[aid]['body']
+            summary = analysis['fact_summary']
+            explicit_summary = re.search(r'미수금.{0,30}반대매매', summary)
             # Successive releases of this one market-wide statistic are one mail
             # item, even if the model split them by reference day or omitted a group.
             # Named-company liquidations, forecasts and other statistics stay apart.
             if (analysis['body_status'] != 'verified' or analysis['entity'] or analysis['entities']
                     or analysis['event_type'] != '반대매매'
                     or analysis['judgment']['확정여부'] != '확정'
-                    or not re.search(r'미수금.{0,30}반대매매', analysis['fact_summary'])):
+                    or not explicit_summary and (not re.search(r'반대매매', summary)
+                        or re.search(r'신용(?:거래)?융자|담보(?:부족|유지)|전망|예상|추정|추산', summary))):
                 continue
             market_candidates.add(aid)
-            if (not re.search(r'금융투자협회|금투협', body)
-                    or not re.search(r'미수금.{0,40}반대매매|반대매매.{0,40}미수금', body, re.S)):
+            if not re.search(r'금융투자협회|금투협', body):
                 continue
             quotes = [e['quote'] for e in analysis['evidence']
                       if e['source_segment'] == 'body' and e['quote'] in body]
+            explicit = re.search(r'미수금.{0,40}반대매매|반대매매.{0,40}미수금', body, re.S)
+            # KOFIA daily forced-liquidation amounts are also reported without
+            # the word 미수금. Require an actual dated amount quote; do not map
+            # an explicitly different credit/collateral series or a forecast.
+            dated_amounts = [q for q in quotes
+                            if re.search(r'(?<!\d)\d{1,2}일', q)
+                            and re.search(r'반대매매\s*(?:금액|규모)(?:은|는|이|가)?\s*(?:약\s*)?\d[\d,.\s]*억\s*원', q)
+                            and not re.search(r'신용(?:거래)?융자|담보(?:부족|유지)|전망|예상|추정|추산', q)]
+            if not explicit:
+                if not dated_amounts:
+                    continue
+                quotes = dated_amounts
             if not any(re.search(r'\d[\d,.\s]*(?:억|만)\s*원', q) for q in quotes):
                 continue
             statistic_members.add(aid)

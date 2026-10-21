@@ -145,8 +145,20 @@ class Queue:
         for attempt in range(3):
             try:
                 return self.request('/contents/' + PREFIX + '/' + urllib.parse.quote(path, safe='/'), 'PUT', body)
-            except QueueConflict:
-                current, current_sha = self.get_fresh(path)
+            except QueueConflict as error:
+                # Preserve only fixed metadata; neither the path nor response
+                # body belongs in public Actions logs. Keep existing CAS limits.
+                request_id = error.request_id if re.fullmatch(r'[A-Za-z0-9:-]{1,100}', error.request_id) else 'unconfirmed'
+                kind = error.kind if error.kind in {'conflict', 'sha_conflict', 'ref_conflict'} else 'conflict'
+                category = 'job' if path.startswith('jobs/') else 'other'
+                outcome = 'read_failed'
+                try:
+                    current, current_sha = self.get_fresh(path)
+                    outcome = ('confirmed_existing' if current_sha and current == value
+                               else 'same_file' if current_sha == sha else 'changed_file')
+                finally:
+                    print(f'RISK_QUEUE_CONFLICT operation=put category={category} attempt={attempt+1} '
+                          f'outcome={outcome} kind={kind} http=409 request_id={request_id}')
                 if current_sha and current == value:
                     return {'content': {'sha': current_sha}, 'confirmed_existing': True}
                 # Same file SHA, different branch head: retry the *same* CAS.

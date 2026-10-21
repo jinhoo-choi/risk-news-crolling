@@ -31,18 +31,21 @@ jobs:
           NO_RESULT_RECEIVER: ${{ secrets.NO_RESULT_RECEIVER }}
         run: python risk_subscription_request.py
       - name: Commit only confirmed production history
+        id: history
         if: steps.consume.outputs.needs_ack == 'true'
         run: |
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git add seen_news.json
-          git diff --cached --quiet || git commit -m "chore: risk subscription delivery history [skip ci]"
-          for i in 1 2 3; do
-            git pull --rebase origin main
-            git push origin HEAD:main && exit 0
-            sleep $((i * 5))
-          done
-          exit 1
+          {
+            git config user.name github-actions
+            git config user.email github-actions@github.com
+            git add seen_news.json
+            git diff --cached --quiet || git commit -m "chore: risk subscription delivery history [skip ci]"
+            for i in 1 2 3; do
+              git pull --rebase origin main
+              git push origin HEAD:main && exit 0
+              sleep $((i * 5))
+            done
+            exit 1
+          } > risk_history_error.log 2>&1
       - name: Confirm main history and acknowledge delivery
         id: ack
         if: steps.consume.outputs.needs_ack == 'true'
@@ -58,3 +61,19 @@ jobs:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         run: python risk_subscription.py notify-error
+      - name: Persist private workflow outcomes (never resend)
+        if: always()
+        env:
+          RISK_QUEUE_TOKEN: ${{ secrets.RISK_QUEUE_TOKEN }}
+          RISK_AUDIT_OPERATION: consume-workflow
+          RISK_AUDIT_JOB_ID: ${{ steps.consume.outputs.job_id }}
+          RISK_AUDIT_CONSUME: ${{ steps.consume.outcome }}
+          RISK_AUDIT_HISTORY: ${{ steps.history.outcome }}
+          RISK_AUDIT_ACK: ${{ steps.ack.outcome }}
+        run: |
+          if [ -f risk_audit.py ]; then
+            python risk_audit.py
+          else
+            echo 'RISK_AUDIT state=failed recorded=false stage=started'
+            exit 1
+          fi

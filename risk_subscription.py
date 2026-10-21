@@ -10,6 +10,7 @@ import json
 import os
 import re
 import smtplib
+import sys
 import tempfile
 import threading
 import uuid
@@ -24,6 +25,7 @@ from risk_delivery import Delivery
 from risk_provider import Provider
 from risk_outbox import make_packet, validate_packet, store_packet, legacy_packet
 from risk_shards import split_job, hydrate
+from risk_audit import checkpoint, record_error, run_audited, observe_pending, persist_unhandled
 from risk_continuity import (freeze_exposure, read_exposure, pending_reviews,
                              prepare_reviews, finish_reviews, delivery_view, delivery_verdicts, read_review)
 
@@ -35,7 +37,8 @@ TERMINAL = {'completed', 'verified', 'expired', 'cancelled'}
 def notify_best_effort(error, context=''):
     try:
         notify_error(error, context)
-    except Exception:
+    except Exception as error:
+        record_error('owner_notification', error, 'owner_notification_failed')
         print('담당자 오류 알림 실패; 수집 계속/API0')
 
 
@@ -86,6 +89,7 @@ def expire_and_check(queue):
         job, old_sha = queue.get('jobs/'+jid+'.json')
         if not job:
             raise RuntimeError('색인 회차 읽기 실패')
+        observe_pending(queue, job)
         if job.get('status') in TERMINAL:
             continue
         if job.get('status') == 'pending' and not job.get('receipts') and not job.get('attempted_count', 0) and utc_time(job['expires_at']) <= now():
@@ -154,6 +158,7 @@ def prune_terminal_inputs(queue, retention_days=7):
 
 
 def collect(config, queue, verification=False, reviews_only=False):
+    checkpoint('collect')
     if reviews_only and verification:
         raise RuntimeError("보류 재수집은 운영 회차만 허용")
     queue.preflight()
@@ -164,7 +169,8 @@ def collect(config, queue, verification=False, reviews_only=False):
         current_config(queue)
         try:
             prune_terminal_inputs(queue, config.get('input_retention_days', 7))
-        except Exception:
+        except Exception as error:
+            record_error('collect', error, 'input_prune_failed')
             notify_best_effort(RuntimeError('종결 회차 입력 정리 실패 — 자동 재시도 없이 수집 계속'),
                                '미종결 회차·원본 메타데이터·영수증은 정리 대상에서 제외합니다.')
     bot = import_bot()
@@ -182,7 +188,7 @@ def collect(config, queue, verification=False, reviews_only=False):
     seen = bot.load_seen_urls()
     exposure = bot.load_exposure_data()
     keywords = [] if reviews_only else list(dict.fromkeys(bot.KEYWORDS+bot.get_overseas_keywords(exposure)))
-    raw, failures = [], {}
+    raw, failures, search_errors = [], {}, []
     lock = threading.Lock()
     get = bot.requests.get
     def checked_get(url, **kwargs):
@@ -194,13 +200,17 @@ def collect(config, queue, verification=False, reviews_only=False):
             with lock:
                 failures.pop(query, None)
             return response
-        except Exception:
+        except Exception as error:
             with lock:
                 failures[query] = True
+                search_errors.append((query, error))
             raise
+    checkpoint('search')
     with patch.object(bot.requests, 'get', checked_get), ThreadPoolExecutor(max_workers=5) as pool:
         for rows in pool.map(bot.crawl_naver_news, keywords):
             raw.extend(a for a in rows if a.get('url') and a['url'] not in seen)
+    for query, error in search_errors:
+        record_error('search', error, 'search_request_failed', query=query, recovered=query not in failures)
     if failures:
         raise RuntimeError('일부 검색 수집 실패 — 정상 0건·부분 수집 발송 금지')
     # Exact URL duplicates are the same source; never truncate unique sources.
@@ -232,16 +242,27 @@ def collect(config, queue, verification=False, reviews_only=False):
         if article['article_id'] in replay:
             article['_review_replay'] = True
             article['_review_first_seen_at'] = replay[article['article_id']]['first_seen_at']
+    body_errors = []
     def body(article):
-        text = bot.fetch_article_body(article['url']) or ''
+        diagnostics = {}
+        text = bot.fetch_article_body(article['url'], diagnostics) or ''
+        if diagnostics:
+            with lock:
+                body_errors.append((article['article_id'], diagnostics))
         if not any(c.isalnum() for c in text) and article['article_id'] in replay:
             return copy.deepcopy(replay[article['article_id']]['body'])
         # Preserve bounded paragraphs, including entity context; no menus-as-body.
         return {'article_id': article['article_id'], 'body': text[:12000],
                 'body_status': 'verified' if any(c.isalnum() for c in text) else 'missing',
                 'source_url': article['url'], 'truncated': len(text) > 12000}
+    checkpoint('body')
     with ThreadPoolExecutor(max_workers=6) as pool:
         manifest = list(pool.map(body, items))
+    for aid, diagnostics in body_errors:
+        detail = dict(diagnostics)
+        error = detail.pop('error', None)
+        code = detail.pop('code')
+        record_error('body', error or RuntimeError(code), code, article_id=aid, **detail)
     # The live main can finish a prior run while collection is in progress.
     # Refresh delivery history; keep the exposure used to collect/filter this job.
     data, _ = queue.source('seen_news.json')
@@ -281,10 +302,12 @@ def collect(config, queue, verification=False, reviews_only=False):
     values['jobs/'+jid+'.json'] = small
     values['index.json'] = index
     queue.put_many(values, {'jobs/'+jid+'.json': None, 'index.json': sha})
+    checkpoint('collected')
     print(json.dumps({'job_id': jid, 'status': 'pending', 'inputs': len(items), 'paid_ai_calls': 0}))
 
 
 def verify_job(queue, jid, self_test=False):
+    checkpoint('verify')
     if not JOB_ID.fullmatch(jid):
         raise RuntimeError('회차 ID 오류')
     config = current_config(queue, self_test)
@@ -360,8 +383,12 @@ def consume(queue, jid, self_test=False):
             guard.change(restart)
             try:
                 return finish_packet(queue, job, result, previous, bot, guard, bot.send_email)
-            except Exception:
-                guard.change(lambda j: j.update(status='uncertain' if j.get('receipts') else 'pending'))
+            except Exception as error:
+                record_error('smtp_data', error)
+                try:
+                    guard.change(lambda j: j.update(status='uncertain' if j.get('receipts') else 'pending'))
+                except Exception as cleanup:
+                    record_error('cleanup', cleanup, 'cleanup_failed')
                 raise
     excluded_ids = set(config.get('excluded_article_ids', []))
     view, answers = delivery_view(job, result, excluded_ids)
@@ -457,6 +484,7 @@ def consume(queue, jid, self_test=False):
     def no_paid_post(*args, **kwargs):
         raise RuntimeError('유료 HTTP inference POST 차단')
     try:
+        checkpoint('render')
         provider.install(bot)
         with contextlib.ExitStack() as stack:
             if job['input'].get('snapshot_mode') == 'review_replay':
@@ -487,6 +515,7 @@ def consume(queue, jid, self_test=False):
             raise RuntimeError('발송 계획 없음 — 정상 완료 금지')
         packet = make_packet(job, result, staged['subject'], staged['html'], staged['targets'],
                              staged['self_only'], prepared_seen, staged.get('recipient_route', 'configured'))
+        checkpoint('outbox')
         store_packet(queue, packet)
         artifact('previews/'+jid+'.json', {'html': staged['html'], 'self_test': self_test, 'paid_ai_calls': 0})
         artifact('logs/'+jid+'.json', {'log': output.getvalue(), 'paid_ai_calls': 0})
@@ -495,17 +524,30 @@ def consume(queue, jid, self_test=False):
         if self_test and Path('seen_news.json').read_bytes() != original_seen:
             raise RuntimeError('본인 검수 중 운영 이력 변경')
         finish_packet(queue, job, result, packet, bot, guard, native_send)
-    except Exception:
+    except Exception as error:
+        record_error(None, error)
         # An authenticated connection failure before any DATA is safely retryable.
         def failed(j):
             if j.get('status') not in {'completed', 'verified', 'delivery_complete'}:
                 j['status'] = 'uncertain' if j.get('receipts') or j.get('attempted_count', 0) else 'pending'
-        guard.change(failed)
+        try:
+            guard.change(failed)
+        except Exception as cleanup:
+            record_error('cleanup', cleanup, 'cleanup_failed')
+            # The cleanup PUT can itself conflict. Keep the original exception
+            # for the owner notification instead of replacing the first failure.
+            print('RISK_DELIVERY_CLEANUP outcome=failed')
         raise
     finally:
         bot.RISK_PROVIDER = None
         # SMTP guard has been restored: diagnostics must not become delivery receipts.
-        bot.flush_owner_warnings()
+        primary = sys.exception()
+        try:
+            bot.flush_owner_warnings()
+        except Exception as error:
+            record_error('owner_notification', error, 'owner_notification_failed')
+            if primary is None:
+                raise
 
 
 def finish_packet(queue, job, result, packet, bot, guard, native_send):
@@ -525,6 +567,7 @@ def finish_packet(queue, job, result, packet, bot, guard, native_send):
     from risk_delivery import address_key
     if [address_key(t) for t in targets] != packet['expected_receipts']:
         raise RuntimeError('고정본 작성 이후 수신자 변경 — 발송 금지')
+    checkpoint('smtp_prepare')
     guard.prepare(targets)
     current, _ = guard.read()
     if set(current.get('receipts', {})) != set(packet['expected_receipts']):
@@ -532,6 +575,7 @@ def finish_packet(queue, job, result, packet, bot, guard, native_send):
             native_send(packet['subject'], packet['html'], self_only=packet['self_only'])
     guard.complete()
     if not self_test:
+        checkpoint('history_local')
         Path('seen_news.json').write_text(packet['seen_after_snapshot'])
     def finish(j):
         expected = set(packet['expected_receipts'])
@@ -543,6 +587,7 @@ def finish_packet(queue, job, result, packet, bot, guard, native_send):
                  delivered_at=now().isoformat(), paid_ai_calls=0, self_test=self_test,
                  seen_after_hash=packet['seen_after_hash'], seen_after_snapshot=packet['seen_after_snapshot'],
                  outbox_hash=packet['packet_hash'], production_history_writes=0 if self_test else None)
+    checkpoint('delivery_state')
     guard.change(finish)
     final = guard.complete()
     print(json.dumps({'job_id': job['job_id'], 'status': final['status'], 'paid_ai_calls': 0,
@@ -607,12 +652,18 @@ def recover(queue, jid):
     guard = Delivery(queue, jid, smtplib.SMTP_SSL, lambda: current_config(queue), resume=True)
     try:
         finish_packet(queue, job, result, packet, bot, guard, bot.send_email)
-    except Exception:
-        guard.change(lambda j: j.update(status='uncertain') if j.get('status') == 'sending' else None)
+    except Exception as error:
+        record_error(None, error)
+        try:
+            guard.change(lambda j: j.update(status='uncertain') if j.get('status') == 'sending' else None)
+        except Exception as cleanup:
+            record_error('cleanup', cleanup, 'cleanup_failed')
+            print('RISK_DELIVERY_CLEANUP outcome=failed')
         raise
 
 
 def acknowledge(queue, jid):
+    checkpoint('ack_verify')
     job, sha = queue.get('jobs/'+jid+'.json')
     if not job or job.get('status') != 'delivery_complete':
         raise RuntimeError('전송 접수 전 ACK 금지')
@@ -623,11 +674,13 @@ def acknowledge(queue, jid):
         raise RuntimeError('수신자 전원 accepted 없음')
     job.update(status='completed', completed_at=now().isoformat(), history_saved=True, ack=True)
     values, expected = finish_reviews(queue, job.get('review_resolutions', {}), jid)
+    checkpoint('ack_commit')
     if values:
         values['jobs/'+jid+'.json'], expected['jobs/'+jid+'.json'] = job, sha
         queue.put_many(values, expected)
     else:
         queue.put('jobs/'+jid+'.json', job, sha)
+    checkpoint('ack_complete')
     notify_reviews(queue, job)
     print(json.dumps({'job_id': jid, 'status': 'completed', 'paid_ai_calls': 0, 'history_saved': True,
                       'ack': True, 'analysis_complete': job.get('analysis_complete', True),
@@ -716,7 +769,9 @@ def notify_error(error, context=''):
         print('담당자 오류 알림 SMTP accepted 1건; 운영 영수증 변경0/API0' if accepted
               else '담당자 오류 알림 접수 미확인; Actions 확인 필요')
         return bool(accepted)
-    except Exception:
+    except Exception as error:
+        if not record_error('owner_notification', error, 'owner_notification_failed'):
+            persist_unhandled(error, 'owner_notification', 'notification')
         print('담당자 오류 알림 실패; Actions 확인 필요')
         return False
 
@@ -738,7 +793,10 @@ def main():
     if args.operation == 'scheduled' and config['engine'] == 'api':
         raise RuntimeError('API 복귀는 별도 명시 경로로만 허용 — 자동 폴백 없음')
     queue = Queue()
-    queue.preflight()
+    return run_audited(queue, args.operation, args.job_id or '', lambda: dispatch(args, config, queue))
+
+
+def dispatch(args, config, queue):
     if args.operation in {'scheduled', 'collect-test', 'collect-review'}:
         collect(config, queue, args.operation == 'collect-test', args.operation == 'collect-review')
     elif args.operation == 'consume':
@@ -759,6 +817,7 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as error:
+        persist_unhandled(error)
         # Native logs/results/addresses are private. No raw error payload in Actions.
         print('리스크 구독 경로 보류:', type(error).__name__)
         import traceback

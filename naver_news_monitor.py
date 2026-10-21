@@ -1947,7 +1947,7 @@ def crawl_naver_news(keyword: str) -> list:
 
     return articles
 
-def fetch_article_body(url: str) -> str:
+def fetch_article_body(url: str, diagnostics=None) -> str:
     """기사 본문 크롤링 — Session + 헤더 강화로 WAF 대응 / 2MB 초과 시 스킵"""
     try:
         session = requests.Session()
@@ -1964,6 +1964,8 @@ def fetch_article_body(url: str) -> str:
         })
         content_length = int(res.headers.get("Content-Length", 0))
         if content_length > 2_000_000:
+            if diagnostics is not None:
+                diagnostics.update(code='body_size_limit', content_length=content_length)
             return ""
         res_text = res.text
         res.raise_for_status()
@@ -1998,8 +2000,12 @@ def fetch_article_body(url: str) -> str:
                     return text[:limit]
         paragraphs = soup.find_all("p")
         text = " ".join(article_text(p) for p in paragraphs if len(article_text(p)) > 20)
+        if not text and diagnostics is not None:
+            diagnostics.update(code='body_text_missing')
         return text[:limit]
-    except Exception:
+    except Exception as error:
+        if diagnostics is not None:
+            diagnostics.update(code='body_fetch_failed', error=error)
         return ""
 
 # ─────────────────────────────────────────────

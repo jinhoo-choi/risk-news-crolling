@@ -5,10 +5,25 @@ from email import message_from_string
 from email.utils import getaddresses
 
 from risk_queue import now
+from risk_audit import checkpoint, record_error
 
 
 def address_key(address):
     return hashlib.sha256(address.encode()).hexdigest()
+
+
+def close_smtp(server, primary=None):
+    """Connection teardown must never replace an earlier DATA/login failure."""
+    try:
+        server.quit()
+    except Exception as quit_error:
+        record_error('cleanup', quit_error, 'smtp_quit_failed')
+        try:
+            server.close()
+        except Exception as close_error:
+            record_error('cleanup', close_error, 'smtp_close_failed')
+            if primary is None:
+                raise close_error from quit_error
 
 
 class Delivery:
@@ -64,16 +79,14 @@ class Delivery:
     def factory(self, host, port, **kwargs):
         if (host, port) != ('smtp.gmail.com', 465):
             raise RuntimeError('허용하지 않은 SMTP 서버')
+        checkpoint('smtp_connect')
         server = self.real_smtp(host, port, timeout=30)
         guard = self
         class Session:
             def __enter__(self):
                 return self
-            def __exit__(self, *args):
-                try:
-                    server.quit()
-                except Exception:
-                    server.close()
+            def __exit__(self, typ, value, trace):
+                close_smtp(server, value)
             def ehlo(self):
                 return server.ehlo()
             def login(self, *args):
@@ -98,13 +111,18 @@ class Delivery:
                         raise RuntimeError('시작·접수·미확인 수신자 재전송 금지')
                     job.setdefault('receipts', {})[key] = 'sending'
                     job['attempted_count'] = job.get('attempted_count', 0)+1
+                checkpoint('smtp_data')  # Diagnostics may fail only BEFORE reservation/DATA.
                 guard.change(reserve)
                 try:
                     guard.smtp_calls += 1
                     refused = server.sendmail(sender, recipients, raw)
-                except Exception:
-                    guard.change(lambda j: (j['receipts'].__setitem__(key, 'uncertain'), j.update(status='uncertain')))
-                    raise RuntimeError('SMTP DATA 접수 불확실 — 자동 재시도 금지') from None
+                except Exception as error:
+                    record_error('smtp_data', error, 'smtp_data_unconfirmed')
+                    try:
+                        guard.change(lambda j: (j['receipts'].__setitem__(key, 'uncertain'), j.update(status='uncertain')))
+                    except Exception as cleanup:
+                        record_error('cleanup', cleanup, 'smtp_uncertain_write_failed')
+                    raise RuntimeError('SMTP DATA 접수 불확실 — 자동 재시도 금지') from error
                 state = 'rejected' if refused else 'accepted'
                 def record(job):
                     if job.get('status') != 'sending' or job.get('receipts', {}).get(key) != 'sending':
@@ -112,7 +130,10 @@ class Delivery:
                     job['receipts'][key] = state
                     if refused:
                         job['status'] = 'uncertain'
+                # Persist the accepted/rejected receipt BEFORE any diagnostic
+                # write that could fail. An SMTP success must never be lost to logging.
                 guard.change(record)
+                checkpoint('smtp_receipt')
                 if refused:
                     raise RuntimeError('SMTP 수신자 거부 — 이력 저장·자동 재시도 금지')
                 return refused
