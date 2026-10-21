@@ -210,8 +210,12 @@ def workflow_main():
         jid = json.loads(Path('risk_subscription_request.json').read_text())['job_id']
     outcomes = {k: os.environ.get('RISK_AUDIT_'+k.upper(), '') for k in ('consume', 'history', 'ack')}
     def record():
+        details = dict(outcomes)
+        history_log = Path('risk_history_error.log')
+        if history_log.exists():
+            details['history_log'] = history_log.read_text(errors='replace')
         ACTIVE.get().event('workflow_finalize', state='failed' if 'failure' in outcomes.values() else 'completed',
-                           code='workflow_outcomes', facts=outcomes)
+                           code='workflow_outcomes', facts=details)
     run_audited(Queue(), operation, jid, record)
 
 

@@ -34,16 +34,18 @@ jobs:
         id: history
         if: steps.consume.outputs.needs_ack == 'true'
         run: |
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git add seen_news.json
-          git diff --cached --quiet || git commit -m "chore: risk subscription delivery history [skip ci]"
-          for i in 1 2 3; do
-            git pull --rebase origin main
-            git push origin HEAD:main && exit 0
-            sleep $((i * 5))
-          done
-          exit 1
+          {
+            git config user.name github-actions
+            git config user.email github-actions@github.com
+            git add seen_news.json
+            git diff --cached --quiet || git commit -m "chore: risk subscription delivery history [skip ci]"
+            for i in 1 2 3; do
+              git pull --rebase origin main
+              git push origin HEAD:main && exit 0
+              sleep $((i * 5))
+            done
+            exit 1
+          } > risk_history_error.log 2>&1
       - name: Confirm main history and acknowledge delivery
         id: ack
         if: steps.consume.outputs.needs_ack == 'true'

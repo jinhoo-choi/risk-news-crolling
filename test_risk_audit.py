@@ -112,6 +112,7 @@ class Evidence(unittest.TestCase):
         self.assertEqual(value, {'token': '[REDACTED]', 'nested': [{'cookie': '[REDACTED]', 'ok': 'safe'}]})
 
     def test_workflow_failure_is_not_relabelled_completed(self):
+        Path('risk_history_error.log').write_text('fatal: rebase conflict in seen_news.json')
         with patch.dict(os.environ, RISK_AUDIT_OPERATION='consume-workflow', RISK_AUDIT_JOB_ID='test',
                         RISK_AUDIT_CONSUME='success', RISK_AUDIT_HISTORY='failure', RISK_AUDIT_ACK='skipped'), \
                 patch.object(audit, 'Queue', return_value=self.q):
@@ -119,6 +120,7 @@ class Evidence(unittest.TestCase):
         record, = self.records()
         self.assertEqual(record['state'], 'failed')
         self.assertEqual(record['events'][-2]['facts']['history'], 'failure')
+        self.assertIn('rebase conflict', record['events'][-2]['facts']['history_log'])
 
     def test_silent_pending_is_an_observation_not_invented_cause_and_does_not_repeat(self):
         self.q.data.pop('results/test.json')
