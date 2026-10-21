@@ -84,6 +84,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: 구독 큐 수집 (유료 AI 호출 0)
+        id: collect
         env:
           RISK_QUEUE_TOKEN:     ${{ secrets.RISK_QUEUE_TOKEN }}
           EMAIL_SENDER:         ${{ secrets.EMAIL_SENDER }}
@@ -94,4 +95,18 @@ jobs:
           NAVER_CLIENT_SECRET:  ${{ secrets.NAVER_CLIENT_SECRET }}
           EMAIL_CC:             ${{ secrets.EMAIL_CC }}
         run: python risk_subscription.py scheduled
+      - name: Persist private collection outcome
+        if: always()
+        env:
+          RISK_QUEUE_TOKEN: ${{ secrets.RISK_QUEUE_TOKEN }}
+          RISK_AUDIT_OPERATION: collect-workflow
+          RISK_AUDIT_JOB_ID: risk-production-${{ github.run_id }}
+          RISK_AUDIT_CONSUME: ${{ steps.collect.outcome }}
+        run: |
+          if [ -f risk_audit.py ]; then
+            python risk_audit.py
+          else
+            echo 'RISK_AUDIT state=failed recorded=false stage=started'
+            exit 1
+          fi
 

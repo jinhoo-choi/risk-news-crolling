@@ -31,6 +31,7 @@ jobs:
           NO_RESULT_RECEIVER: ${{ secrets.NO_RESULT_RECEIVER }}
         run: python risk_subscription_request.py
       - name: Commit only confirmed production history
+        id: history
         if: steps.consume.outputs.needs_ack == 'true'
         run: |
           git config user.name github-actions
@@ -58,3 +59,19 @@ jobs:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         run: python risk_subscription.py notify-error
+      - name: Persist private workflow outcomes (never resend)
+        if: always()
+        env:
+          RISK_QUEUE_TOKEN: ${{ secrets.RISK_QUEUE_TOKEN }}
+          RISK_AUDIT_OPERATION: consume-workflow
+          RISK_AUDIT_JOB_ID: ${{ steps.consume.outputs.job_id }}
+          RISK_AUDIT_CONSUME: ${{ steps.consume.outcome }}
+          RISK_AUDIT_HISTORY: ${{ steps.history.outcome }}
+          RISK_AUDIT_ACK: ${{ steps.ack.outcome }}
+        run: |
+          if [ -f risk_audit.py ]; then
+            python risk_audit.py
+          else
+            echo 'RISK_AUDIT state=failed recorded=false stage=started'
+            exit 1
+          fi

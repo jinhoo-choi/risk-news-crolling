@@ -23,6 +23,86 @@ OWNER = '111715@koreainvestment.com'  # Same owner as existing test_send_self.py
 ERROR_EMAIL = 'myboy3743@gmail.com'  # Runtime/operational alerts only; verification stays unchanged.
 
 
+def failure_mail(request):
+    """One real owner-only diagnostic mail from saved evidence, never production consume."""
+    from datetime import timedelta
+    from risk_queue import JOB_ID, digest
+    from risk_audit import redact
+    if (set(request) != {'operation', 'source_job_id', 'self_test', 'request_id'}
+            or request['operation'] != 'failure-mail' or request['self_test'] is not True
+            or not JOB_ID.fullmatch(request['source_job_id'])
+            or not JOB_ID.fullmatch(request['request_id'])):
+        raise RuntimeError('실패 알림 검수 요청 오류')
+    if (os.environ.get('GITHUB_RUN_ATTEMPT', '1') != '1'
+            or os.environ.get('EMAIL_RECEIVER') or os.environ.get('EMAIL_CC')
+            or os.environ.get('ANTHROPIC_API_KEY')):
+        raise RuntimeError('재실행·그룹·유료 AI 경로 검수 금지')
+    if os.environ.get('EMAIL_SENDER') != ERROR_EMAIL or not os.environ.get('EMAIL_PASSWORD'):
+        raise RuntimeError('기존 본인 발신 SMTP 설정 확인 실패')
+    before = snapshot()
+    queue = Queue(); queue.preflight()
+    source_path = 'jobs/'+request['source_job_id']+'.json'
+    source, _ = queue.get_fresh(source_path)
+    attempt, _ = queue.get_fresh('analysis-attempts/'+request['source_job_id']+'.json')
+    if (not source or source.get('mode') != 'production' or source.get('status') != 'pending'
+            or source.get('receipts') or not attempt or attempt.get('state') not in {'blocked', 'failed'}
+            or not attempt.get('errors') or attempt.get('input_hash') != source.get('input_hash')
+            or attempt.get('policy_hash') != source.get('policy_hash')):
+        raise RuntimeError('고정 회차·실제 차단 근거 불일치 — 검수 발송 금지')
+    jid = request['request_id']
+    path = 'jobs/'+jid+'.json'
+    previous, _ = queue.get_fresh(path)
+    if previous is not None:
+        if (previous.get('test_kind') == 'failure_mail' and previous.get('status') == 'verified'
+                and previous.get('receipts') == {hashlib.sha256(ERROR_EMAIL.encode()).hexdigest(): 'accepted'}):
+            print(json.dumps({'status':'verified','smtp_calls':0,'noop':True}))
+            return
+        raise RuntimeError('기존 테스트 시도 보존 — 자동 재전송 금지')
+    job = {'schema_version':1, 'mode':'verification', 'test_kind':'failure_mail', 'job_id':jid,
+           'status':'pending', 'receipts':{}, 'created_at':now().isoformat(),
+           'expires_at':(now()+timedelta(hours=1)).isoformat(), 'self_test':True,
+           'source_job_id':request['source_job_id'], 'source_hash':digest(source)}
+    queue.put(path, job)
+    # Use the same native failure/operational HTML, MIME builder and SMTP as production.
+    os.environ.setdefault('ANTHROPIC_API_KEY', 'subscription-api-disabled')
+    os.environ.setdefault('NAVER_CLIENT_ID', 'verification-not-used')
+    os.environ.setdefault('NAVER_CLIENT_SECRET', 'verification-not-used')
+    import naver_news_monitor as bot
+    bot.EMAIL_SENDER, bot.EMAIL_PASSWORD = os.environ['EMAIL_SENDER'], os.environ['EMAIL_PASSWORD']
+    bot.EMAIL_RECEIVERS, bot.EMAIL_CC = [], []
+    real_build, real_smtp = bot._build_msg, smtplib.SMTP_SSL
+    prepared = {}
+    def build(subject, document, recipient):
+        if recipient != ERROR_EMAIL:
+            raise RuntimeError('검수 수신자 변경 금지')
+        subject = '[TEST]['+jid+'] '+subject
+        prepared.update(subject=subject, html=document, html_sha256=hashlib.sha256(document.encode()).hexdigest())
+        queue.put('previews/'+jid+'.json', prepared)
+        return real_build(subject, document, recipient)
+    reasons = '\n\n'.join(redact(json.dumps(e, ensure_ascii=False, indent=2)) for e in attempt['errors'])
+    details = ('[TEST] 실환경 미발송 사유 재현입니다. 새 장애 발생이나 정기 보고가 아닙니다.\n'
+               '대상: '+request['source_job_id']+'\n현재 상태: '+source['status']+
+               '\n분석 입력: '+str(source.get('input_count'))+'건 · 완료: '+str(attempt.get('processed_count'))+
+               '건\n정기 보고 SMTP 시도: '+str(source.get('attempted_count', 0))+
+               '건\n차단 단계: '+attempt['stage']+'\n\n실제 기록된 사유:\n'+reasons+
+               '\n\n21:35 실행의 내부 중단 사유는 기록 부족으로 별도 미확정입니다.'
+               '\n이 메일은 수신자 본인 한정 테스트 1건입니다. 운영 회차·이력·ACK는 변경하지 않습니다.')
+    guard = OwnerSMTP(real_smtp, queue, path, recipient=ERROR_EMAIL)
+    with patch.object(bot, '_build_msg', build), patch.object(bot.smtplib, 'SMTP_SSL', guard.factory), \
+            contextlib.redirect_stdout(io.StringIO()):
+        accepted = bot.send_email_error('[TEST] 구독 분석 차단으로 21시 정기 보고 미발송', details, operational=True)
+    unchanged, _ = queue.get_fresh(source_path)
+    if accepted is not True or guard.accepted != 1 or snapshot() != before or digest(unchanged) != digest(source):
+        raise RuntimeError('테스트 접수·원본 격리 확인 실패 — 재전송 금지')
+    current, sha = queue.get_fresh(path)
+    current.update(status='verified', verified_at=now().isoformat(), smtp_accepted=1,
+                   html_sha256=prepared['html_sha256'], production_smtp_calls=0,
+                   production_history_writes=0, before_hashes=before, after_hashes=snapshot())
+    queue.put(path, current, sha)
+    print(json.dumps({'job_id':jid,'status':'verified','smtp_accepted':1,'smtp_calls':1,
+                      'production_smtp_calls':0,'production_history_writes':0,'paid_ai_calls':0}))
+
+
 def snapshot():
     return {p: hashlib.sha256(Path(p).read_bytes()).hexdigest()
             for p in ('seen_news.json', 'exposure_data.csv', 'run_stats.jsonl')}
@@ -142,6 +222,8 @@ class OwnerSMTP:
 
 def main():
     request = json.loads(Path('risk_verification_request.json').read_text())
+    if request.get('operation') == 'failure-mail':
+        return failure_mail(request)
     if request.get('operation') == 'scenario-suite':
         from risk_scenario_verification import run
         return run(request)

@@ -418,6 +418,77 @@ class Integration(unittest.TestCase):
                 acknowledge(queue, 'test')
                 self.assertTrue(queue.data['jobs/test.json']['ack'])
 
+    def unqualified_statistics_fixture(self):
+        queue = self.market_statistics_fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        for item, body in zip(job['input']['items'], job['body_manifest']):
+            day = 14 if item['article_id'] in ('one', 'two') else 15
+            quote = f'지난 {day}일 반대매매 금액은 804억원으로 집계됐다.'
+            text = '금융투자협회에 따르면 '+quote
+            item.update(description=text, desc=text)
+            body.update(body=text, body_hash=hashlib.sha256(text.encode()).hexdigest())
+            analysis = result['analyses'][item['article_id']]
+            analysis.update(fact_summary=f'{day}일 반대매매 금액은 804억원이다.',
+                            evidence=[{'source_segment':'body','source_hash':hashlib.sha256(text.encode()).hexdigest(),
+                                       'quote':quote}])
+        job['input']['raw_articles'] = copy.deepcopy(job['input']['items'])
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        return queue
+
+    def test_dated_kofia_amount_without_misugeum_never_reopens_group_route_or_same_day(self):
+        queue, smtp = self.unqualified_statistics_fixture(), SMTP()
+        self.run_consume(queue, smtp)
+        self.assertTrue(queue.data['outbox/test.json']['self_only'])
+        self.assertEqual(len(smtp.calls), 1)
+        self.assertEqual([a['article_id'] for a in queue.data['filter-logs/test.json']['final']], ['three'])
+        queue.remote_seen = Path('seen_news.json').read_bytes()
+        acknowledge(queue, 'test')
+        queue, smtp = self.unqualified_statistics_fixture(), SMTP()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        job['input']['history_hash'] = hashlib.sha256(queue.remote_seen).hexdigest()
+        for key in ('items', 'raw_articles'):
+            for item in job['input'][key]:
+                item['url'] += '-another-report'
+        for body in job['body_manifest']:
+            body['source_url'] += '-another-report'
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        self.run_consume(queue, smtp)
+        self.assertEqual(queue.data['filter-logs/test.json']['final'], [])
+        self.assertTrue(queue.data['outbox/test.json']['self_only'])
+        self.assertEqual(len(smtp.calls), 1)
+
+    def test_unqualified_amount_needs_institution_dated_quote_and_market_identity(self):
+        from risk_provider import Provider
+        for case in ('institution', 'date', 'amount', 'credit', 'quote', 'company', 'forecast'):
+            with self.subTest(case=case):
+                queue = self.unqualified_statistics_fixture()
+                job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+                result['event_groups'] = []
+                body, analysis = job['body_manifest'][0], result['analyses']['one']
+                if case == 'institution': body['body'] = body['body'].replace('금융투자협회', '다른기관')
+                if case in {'date', 'amount', 'credit'}:
+                    quote = analysis['evidence'][0]['quote']
+                    changed = quote.replace('14일', '집계일 미상') if case == 'date' else (
+                              quote.replace('804억원', '증가') if case == 'amount' else '신용융자 담보부족 '+quote)
+                    body['body'] = body['body'].replace(quote, changed)
+                    analysis['evidence'][0]['quote'] = changed
+                if case == 'quote': analysis['evidence'][0]['source_segment'] = 'description'
+                if case == 'company': analysis.update(entity='개별회사', entities=['개별회사'])
+                if case == 'forecast': analysis['judgment']['확정여부'] = '예정'
+                provider = Provider(job, result)
+                self.assertNotEqual(provider.event_groups.get('one'), 'market:금투협:미수금반대매매')
+
+    def test_reviewed_group_with_different_credit_statistic_never_bridges_series(self):
+        from risk_provider import Provider
+        queue = self.unqualified_statistics_fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        result['analyses']['two']['fact_summary'] = '신용융자 담보부족 반대매매 금액은 804억원이다.'
+        provider = Provider(job, result)
+        for aid in ('one', 'two'):
+            self.assertNotEqual(provider.event_groups.get(aid), 'market:금투협:미수금반대매매')
+
     def test_market_statistics_higher_score_precedes_newer_source_date(self):
         queue, smtp = self.market_statistics_fixture(), SMTP()
         queue.data['results/test.json']['analyses']['one']['confidence'] = 0.99

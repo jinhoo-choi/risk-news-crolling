@@ -149,6 +149,51 @@ class IsolationTests(TestCase):
             finally:
                 os.chdir(previous)
 
+    def test_live_failure_notification_is_owner_only_native_labelled_and_keeps_source(self):
+        import risk_owner_verification as verify
+        from risk_subscription import import_bot
+        from test_risk_hardening import Memory
+        previous = Path.cwd()
+        with patch.dict(os.environ, dict(os.environ), clear=True), tempfile.TemporaryDirectory() as tmp:
+            try:
+                os.chdir(tmp)
+                for name in ('seen_news.json','exposure_data.csv','run_stats.jsonl'):
+                    Path(name).write_text('operating fixture')
+                before = verify.snapshot()
+                bot = import_bot()
+                os.environ.update(EMAIL_SENDER=ERROR_EMAIL, EMAIL_PASSWORD='fake', EMAIL_RECEIVER='', EMAIL_CC='', GITHUB_RUN_ATTEMPT='1')
+                os.environ.pop('ANTHROPIC_API_KEY', None)
+                queue = Memory(); queue.get_fresh = queue.get
+                source = {'mode':'production','status':'pending','receipts':{},'input_hash':'input','policy_hash':'policy','input_count':1028}
+                queue.data['jobs/source.json'] = copy.deepcopy(source)
+                queue.data['analysis-attempts/source.json'] = {'state':'blocked','input_hash':'input','policy_hash':'policy',
+                    'processed_count':0,'stage':'started','errors':[{'error_type':'duplicate_delivery_risk','cause_confirmed':True}]}
+                smtp, captured = SMTP(), []
+                send = smtp.sendmail
+                def capture(sender, recipients, raw):
+                    captured.append((recipients, raw)); return send(sender, recipients, raw)
+                smtp.sendmail = capture
+                request = {'operation':'failure-mail','source_job_id':'source','self_test':True,'request_id':'owner-error-test'}
+                with patch.object(verify, 'Queue', return_value=queue), \
+                        patch.object(verify.smtplib, 'SMTP_SSL', lambda *a, **k: smtp), contextlib.redirect_stdout(io.StringIO()):
+                    verify.failure_mail(request)
+                    os.environ.pop('ANTHROPIC_API_KEY', None)
+                    verify.failure_mail(request)
+                self.assertEqual(smtp.calls, 1)
+                self.assertEqual(captured[0][0], [ERROR_EMAIL])
+                preview = queue.data['previews/owner-error-test.json']
+                self.assertTrue(preview['subject'].startswith('[TEST][owner-error-test]'))
+                self.assertIn('duplicate_delivery_risk', preview['html'])
+                self.assertIn('기사·운영 확인 필요', preview['html'])
+                self.assertNotIn('런타임 오류 발생', preview['html'])
+                self.assertEqual(queue.data['jobs/source.json'], source)
+                self.assertEqual(queue.data['jobs/owner-error-test.json']['status'], 'verified')
+                self.assertEqual(verify.snapshot(), before)
+                self.assertEqual(bot.EMAIL_RECEIVERS, [])
+                self.assertEqual(bot.EMAIL_CC, [])
+            finally:
+                os.chdir(previous)
+
 
 if __name__ == '__main__':
     main()
