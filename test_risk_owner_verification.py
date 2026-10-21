@@ -2,6 +2,7 @@ import copy
 import contextlib
 import io
 import os
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -161,7 +162,8 @@ class IsolationTests(TestCase):
                     Path(name).write_text('operating fixture')
                 before = verify.snapshot()
                 bot = import_bot()
-                os.environ.update(EMAIL_SENDER=ERROR_EMAIL, EMAIL_PASSWORD='fake', EMAIL_RECEIVER='', EMAIL_CC='', GITHUB_RUN_ATTEMPT='1')
+                os.environ.update(EMAIL_SENDER=ERROR_EMAIL, EMAIL_PASSWORD='fake', EMAIL_CC='', GITHUB_RUN_ATTEMPT='1')
+                os.environ.pop('EMAIL_RECEIVER', None)
                 os.environ.pop('ANTHROPIC_API_KEY', None)
                 queue = Memory(); queue.get_fresh = queue.get
                 source = {'mode':'production','status':'pending','receipts':{},'input_hash':'input','policy_hash':'policy','input_count':1028}
@@ -174,11 +176,17 @@ class IsolationTests(TestCase):
                     captured.append((recipients, raw)); return send(sender, recipients, raw)
                 smtp.sendmail = capture
                 request = {'operation':'failure-mail','source_job_id':'source','self_test':True,'request_id':'owner-error-test'}
-                with patch.object(verify, 'Queue', return_value=queue), \
-                        patch.object(verify.smtplib, 'SMTP_SSL', lambda *a, **k: smtp), contextlib.redirect_stdout(io.StringIO()):
-                    verify.failure_mail(request)
-                    os.environ.pop('ANTHROPIC_API_KEY', None)
-                    verify.failure_mail(request)
+                cached = sys.modules.pop('naver_news_monitor', None)
+                try:
+                    with patch.object(verify, 'Queue', return_value=queue), \
+                            patch.object(verify.smtplib, 'SMTP_SSL', lambda *a, **k: smtp), contextlib.redirect_stdout(io.StringIO()):
+                        verify.failure_mail(request)
+                        os.environ.pop('ANTHROPIC_API_KEY', None)
+                        verify.failure_mail(request)
+                    bot = sys.modules['naver_news_monitor']
+                finally:
+                    if cached is not None:
+                        sys.modules['naver_news_monitor'] = cached
                 self.assertEqual(smtp.calls, 1)
                 self.assertEqual(captured[0][0], [ERROR_EMAIL])
                 preview = queue.data['previews/owner-error-test.json']

@@ -64,6 +64,8 @@ def failure_mail(request):
            'source_job_id':request['source_job_id'], 'source_hash':digest(source)}
     queue.put(path, job)
     # Use the same native failure/operational HTML, MIME builder and SMTP as production.
+    os.environ.update(EMAIL_RECEIVER='', EMAIL_CC='', NO_RESULT_RECEIVER=ERROR_EMAIL,
+                      RISK_ENGINE='subscription')
     os.environ.setdefault('ANTHROPIC_API_KEY', 'subscription-api-disabled')
     os.environ.setdefault('NAVER_CLIENT_ID', 'verification-not-used')
     os.environ.setdefault('NAVER_CLIENT_SECRET', 'verification-not-used')
@@ -88,9 +90,16 @@ def failure_mail(request):
                '\n\n21:35 실행의 내부 중단 사유는 기록 부족으로 별도 미확정입니다.'
                '\n이 메일은 수신자 본인 한정 테스트 1건입니다. 운영 회차·이력·ACK는 변경하지 않습니다.')
     guard = OwnerSMTP(real_smtp, queue, path, recipient=ERROR_EMAIL)
+    output = io.StringIO()
     with patch.object(bot, '_build_msg', build), patch.object(bot.smtplib, 'SMTP_SSL', guard.factory), \
-            contextlib.redirect_stdout(io.StringIO()):
+            contextlib.redirect_stdout(output):
         accepted = bot.send_email_error('[TEST] 구독 분석 차단으로 21시 정기 보고 미발송', details, operational=True)
+    try:
+        queue.put('logs/'+jid+'.json', {'log':redact(output.getvalue()), 'smtp_attempts':guard.attempts,
+                                      'smtp_accepted':guard.accepted, 'paid_ai_calls':0})
+    except Exception as error:
+        error.stdout = redact(output.getvalue())
+        raise
     unchanged, _ = queue.get_fresh(source_path)
     if accepted is not True or guard.accepted != 1 or snapshot() != before or digest(unchanged) != digest(source):
         raise RuntimeError('테스트 접수·원본 격리 확인 실패 — 재전송 금지')
@@ -223,7 +232,8 @@ class OwnerSMTP:
 def main():
     request = json.loads(Path('risk_verification_request.json').read_text())
     if request.get('operation') == 'failure-mail':
-        return failure_mail(request)
+        from risk_audit import run_audited
+        return run_audited(Queue(), 'failure-mail', request.get('request_id', ''), lambda: failure_mail(request))
     if request.get('operation') == 'scenario-suite':
         from risk_scenario_verification import run
         return run(request)
