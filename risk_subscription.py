@@ -500,7 +500,12 @@ def consume(queue, jid, self_test=False):
         def failed(j):
             if j.get('status') not in {'completed', 'verified', 'delivery_complete'}:
                 j['status'] = 'uncertain' if j.get('receipts') or j.get('attempted_count', 0) else 'pending'
-        guard.change(failed)
+        try:
+            guard.change(failed)
+        except Exception:
+            # The cleanup PUT can itself conflict. Keep the original exception
+            # for the owner notification instead of replacing the first failure.
+            print('RISK_DELIVERY_CLEANUP outcome=failed')
         raise
     finally:
         bot.RISK_PROVIDER = None
@@ -608,7 +613,10 @@ def recover(queue, jid):
     try:
         finish_packet(queue, job, result, packet, bot, guard, bot.send_email)
     except Exception:
-        guard.change(lambda j: j.update(status='uncertain') if j.get('status') == 'sending' else None)
+        try:
+            guard.change(lambda j: j.update(status='uncertain') if j.get('status') == 'sending' else None)
+        except Exception:
+            print('RISK_DELIVERY_CLEANUP outcome=failed')
         raise
 
 

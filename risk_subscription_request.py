@@ -42,13 +42,18 @@ def main():
         process = subprocess.run(command, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as error:
         # Child stdout/stderr may contain private articles. Expose only fixed
-        # outbox phase/result metadata, never the captured traceback or payload.
+        # outbox/queue phase metadata, never the captured traceback or payload.
         for line in (error.stdout or '').splitlines():
             if re.fullmatch(r'RISK_OUTBOX_VERIFY (?:phase=put outcome=unconfirmed|'
                             r'phase=read source=(?:put_commit|fresh) attempt=[1-3] '
                             r'outcome=(?:verified|missing|mismatch|unavailable|blocked) '
                             r'commit=(?:[0-9a-f]{40}|unconfirmed) http=(?:0|[1-5][0-9]{2}) '
                             r'request_id=[A-Za-z0-9:-]{1,100})', line):
+                print(line)
+            elif re.fullmatch(r'RISK_QUEUE_CONFLICT operation=put category=(?:job|other) attempt=[1-3] '
+                              r'outcome=(?:read_failed|confirmed_existing|same_file|changed_file) '
+                              r'kind=(?:conflict|sha_conflict|ref_conflict) http=409 '
+                              r'request_id=[A-Za-z0-9:-]{1,100}|RISK_DELIVERY_CLEANUP outcome=failed', line):
                 print(line)
         raise
     print(process.stdout, end='')
