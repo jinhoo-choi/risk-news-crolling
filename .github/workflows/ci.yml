@@ -29,4 +29,5 @@ jobs:
       - run: python3 test_risk_continuity.py
       - run: python3 test_risk_delivery_recovery.py
       - run: python3 test_risk_audit.py
+      - run: python3 test_risk_review_context.py
       - run: python3 risk_scenario_verification.py
