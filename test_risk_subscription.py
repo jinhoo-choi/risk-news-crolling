@@ -7,7 +7,7 @@ import os
 import smtplib
 import tempfile
 import unittest
-from datetime import timedelta
+from datetime import timedelta, timezone
 from email.utils import format_datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -70,7 +70,9 @@ class Integration(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         os.chdir(self.temporary.name)
         Path('seen_news.json').write_text('{}')
-        Path('exposure_data.csv').write_text('기준일,종목명,종목코드,종목유형,잔고(억),고객수,리스크종목,리스크고객수,리스크잔고(억)\n2026-10-14,테스트주식,000000,주식,150,1,아니오,0,0\n')
+        # A normal synthetic balance must not expire as the calendar advances.
+        ref_date = now().astimezone(timezone(timedelta(hours=9))).date().isoformat()
+        Path('exposure_data.csv').write_text('기준일,종목명,종목코드,종목유형,잔고(억),고객수,리스크종목,리스크고객수,리스크잔고(억)\n'+ref_date+',테스트주식,000000,주식,150,1,아니오,0,0\n')
         Path('risk_policy.json').write_bytes((ROOT/'risk_policy.json').read_bytes())
         for name in ('filter_prompt.txt','action_prompt.txt'):
             Path(name).write_bytes((ROOT/name).read_bytes())

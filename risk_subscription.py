@@ -476,6 +476,11 @@ def consume(queue, jid, self_test=False):
         return native_save(*args, **kwargs)
     def private_stats(*args, **kwargs):
         artifact('metrics/'+jid+'.json', {'stats': copy.deepcopy(bot._RUN_STATS), 'paid_ai_calls': 0,
+                  'provider_route_calls': copy.deepcopy(provider.calls),
+                  'subscription_usage': {'measurement_source': 'not_exposed',
+                      'model_call_count': None, 'input_tokens': None, 'output_tokens': None,
+                      'cache_read_input_tokens': None, 'cache_creation_input_tokens': None,
+                      'cost': None},
                   'summary_source_ids': list(provider.summary_source_ids)})
     def private_log(*args):
         # Exact final/source objects stay private; the native logger writes no public file.
