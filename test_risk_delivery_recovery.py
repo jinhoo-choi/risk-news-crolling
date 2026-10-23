@@ -299,7 +299,7 @@ class Recovery(unittest.TestCase):
 
     def test_owner_status_recovery_restores_only_signed_owner_route(self):
         from risk_continuity import freeze_exposure
-        from risk_owner_verification import OWNER
+        from risk_owner_verification import ERROR_EMAIL
         q, smtp = self.fixture(), fixtures.SMTP()
         job = q.data['jobs/test.json']
         q.data.update(freeze_exposure(job, Path('exposure_data.csv').read_bytes(), now().isoformat()))
@@ -313,9 +313,33 @@ class Recovery(unittest.TestCase):
         self.assertEqual(frozen['recipient_route'], 'owner_status')
         self.bot.NO_RESULT_RECEIVER = 'executive-admin@example.invalid'
         self.resume(q, smtp)
-        self.assertEqual([c[0] for c in smtp.calls], [[OWNER]])
+        self.assertEqual([c[0] for c in smtp.calls], [[ERROR_EMAIL]])
         self.assertEqual(q.data['outbox/test.json'], frozen)
         self.assertEqual(q.data['jobs/test.json']['status'], 'delivery_complete')
+
+    def test_old_company_status_packet_is_rejected_without_resending(self):
+        from risk_continuity import freeze_exposure
+        from risk_delivery import address_key
+        from risk_owner_verification import OWNER
+        from risk_queue import digest
+        q, smtp = self.fixture(), fixtures.SMTP()
+        job = q.data['jobs/test.json']
+        q.data.update(freeze_exposure(job, Path('exposure_data.csv').read_bytes(), now().isoformat()))
+        q.data['results/test.json']['classifications'][0]['relevant'] = None
+        q.data['results/test.json']['analyses'] = {}
+        with patch.object(bridge, 'finish_packet', side_effect=RuntimeError('offline before SMTP')), \
+             patch.object(bridge, 'notify_best_effort'), self.assertRaisesRegex(RuntimeError, 'offline'):
+            self.run_consume(q, smtp)
+        packet = q.data['outbox/test.json']
+        packet['expected_receipts'] = [address_key(OWNER)]
+        packet['packet_hash'] = digest({k: v for k, v in packet.items() if k != 'packet_hash'})
+        before_packet = copy.deepcopy(packet)
+        before_receipts = copy.deepcopy(q.data['jobs/test.json'].get('receipts', {}))
+        with self.assertRaisesRegex(RuntimeError, '담당자 상태 고정본 수신자 오류'):
+            self.resume(q, smtp)
+        self.assertEqual(smtp.calls, [])
+        self.assertEqual(q.data['outbox/test.json'], before_packet)
+        self.assertEqual(q.data['jobs/test.json'].get('receipts', {}), before_receipts)
 
     def test_immutable_plan_and_history_exist_before_any_smtp(self):
         q, smtp = self.fixture(), fixtures.SMTP()

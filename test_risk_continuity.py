@@ -136,7 +136,7 @@ class NativeContinuity(unittest.TestCase):
         with patch.object(self.bot, 'build_price_alert_section', price), \
                 patch.object(self.bot, 'load_competitor_notices') as notices:
             self.run_consume(queue, smtp)
-        self.assertEqual([r[0] for r in smtp.calls], [['111715@koreainvestment.com']])
+        self.assertEqual([r[0] for r in smtp.calls], [['myboy3743@gmail.com']])
         price.assert_not_called()
         notices.assert_not_called()
         self.assertNotIn('MARKET_DIGEST_ONLY', queue.data['outbox/test.json']['html'])
@@ -152,7 +152,7 @@ class NativeContinuity(unittest.TestCase):
                 patch.object(self.bot, 'load_competitor_notices') as notices, \
                 patch.object(self.bot, 'filter_articles_for_scope', return_value=[]):
             self.run_consume(queue, smtp)
-        self.assertEqual([r[0] for r in smtp.calls], [['111715@koreainvestment.com']])
+        self.assertEqual([r[0] for r in smtp.calls], [['myboy3743@gmail.com']])
         price.assert_not_called()
         notices.assert_not_called()
         self.assertNotIn('MARKET_DIGEST_ONLY', queue.data['outbox/test.json']['html'])
@@ -327,7 +327,7 @@ class NativeContinuity(unittest.TestCase):
         with patch.object(bridge, 'notify_best_effort') as notify:
             self.run_consume(queue, smtp)
         notify.assert_not_called()
-        self.assertEqual([r[0] for r in smtp.calls], [['111715@koreainvestment.com']])
+        self.assertEqual([r[0] for r in smtp.calls], [['myboy3743@gmail.com']])
         preview = queue.data['previews/test.json']['html']
         self.assertNotIn('확인 보류', preview)
         self.assertIn('본문 확인된 기사에서', preview)
@@ -344,7 +344,7 @@ class NativeContinuity(unittest.TestCase):
         result['classifications'][0]['relevant'] = None
         result['analyses'] = {}
         self.run_consume(queue, smtp)
-        self.assertEqual([r[0] for r in smtp.calls], [['111715@koreainvestment.com']])
+        self.assertEqual([r[0] for r in smtp.calls], [['myboy3743@gmail.com']])
         html = queue.data['previews/test.json']['html']
         self.assertIn('확인 보류 기사가 있습니다.', html)
         self.assertNotIn('해당하는 뉴스가 없습니다.', html)
