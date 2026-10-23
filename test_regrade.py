@@ -255,6 +255,20 @@ def run_market_policy():
                         assert scope["self_only"] and not scope["force_full"]
                         assert nm.filter_articles_for_scope(result, {}, False) == []
 
+    # 실제 수신 사례: 종목이 추출됐어도 단순 시황은 주의→참고로 낮춘다.
+    market_exposure = {"마이크론": [dict(_LOCK_EXPO["KB증권"][0], 종목명="마이크론")]}
+    for title in ("AI 신용 우려에 출렁…하이닉스 호재에 코스피 상승 마감",
+                  "마이크론·AMD·인텔 5%대 급락…美 반도체주 일제히 휘청"):
+        article = {"title": title, "entity": "마이크론", "entities": ["마이크론"],
+                   "grade": "주의", "event_type": "기타리스크", "_ai_confidence": 0.95}
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = nm.regrade_by_score([article], exposure_data=market_exposure)
+            assert result and article["grade"] == "참고", article
+            assert article["entity"] == "마이크론" and article["_market_grade_demoted"]
+            with patch.object(nm, "build_price_alert_section") as prices:
+                prices.last_alerted_count = prices.last_alerted_rbal = 0
+                assert nm.decide_send_scope(result, market_exposure)["self_only"]
+
     # 기업 직접 부도·반대매매, 복수 주체, 주체 누락 오류는 시장 전체로 간주하지 않는다.
     for entity, entities, event, title in (
             ("삼성전자", ["삼성전자"], "파산부도", "삼성전자 회사채 채무불이행 발생"),
@@ -264,6 +278,17 @@ def run_market_policy():
             ("한국투자증권", ["한국투자증권"], "시스템장애", "한국투자증권 MTS 접속 장애")):
         article = {"title": title, "entity": entity, "entities": entities,
                    "event_type": event, "grade": "긴급", "_ai_confidence": 0.95}
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = nm.regrade_by_score([article], exposure_data=EXPO)
+        assert result and article["grade"] == "긴급", article
+        assert not article.get("_market_grade_demoted"), article
+
+    for title in ("삼성전자 채무불이행 발생…코스피 급락",
+                  "삼성전자 실적 쇼크…반도체주 급락",
+                  "삼성전자 공장 화재로 생산 중단…반도체주 하락",
+                  "삼성전자 영업 중단…반도체주 하락"):
+        article = {"title": title, "entity": "삼성전자", "entities": ["삼성전자"],
+                   "event_type": "기타리스크", "grade": "긴급", "_ai_confidence": 0.95}
         with contextlib.redirect_stdout(io.StringIO()):
             result = nm.regrade_by_score([article], exposure_data=EXPO)
         assert result and article["grade"] == "긴급", article
