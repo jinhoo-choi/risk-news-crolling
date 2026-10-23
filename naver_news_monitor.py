@@ -3685,6 +3685,25 @@ def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> li
             a["customer_notice"] = None
     # ─────────────────────────────────────────────────────────────────────
 
+    # 시장·시황은 검증된 빈 주체를 사용한다. 기업 직접 사건에는 적용하지 않는다.
+    # 등급 상한을 세기 전에 한 단계 낮추고, 재검증/재호출로 되돌리거나
+    # 같은 기사에 두 번 적용하지 않는다. 표시는 기존 등급별 점수 대역을 쓴다.
+    for a in articles:
+        if (a.get("_force_urgent") or a.get("_market_grade_demoted")
+                or (a.get("entity") or "").strip()
+                or any((e or "").strip() for e in (a.get("entities") or []))
+                or a.get("_subscription_direct_entities")
+                or a.get("event_type") not in ("반대매매", "기타리스크")):
+            continue
+        previous = a.get("grade")
+        if previous not in ("긴급", "주의", "참고"):
+            continue
+        a["grade"] = {"긴급": "주의", "주의": "참고", "참고": "참고"}[previous]
+        a["_market_grade_demoted"] = True
+        a["_grade_locked"] = True
+        a["customer_notice"] = None
+        print(f"  [시장·시황 한 등급 강등] {previous}→{a['grade']}: {a.get('title','')[:40]}")
+
     urgent  = sorted([a for a in articles if a.get("grade") == "긴급"],
                      key=lambda x: x["_risk_score"], reverse=True)
     caution = sorted([a for a in articles if a.get("grade") == "주의"],
@@ -3842,7 +3861,10 @@ def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> li
     for a in result:
         _cap  = _CONF_CAP.get(a.get("grade"))
         _conf = a.get("_ai_confidence") or 0
-        if _cap and _conf > _cap and not a.get("_force_urgent"):
+        # 시장 강등은 사실 확신도가 아닌 보고 우선순위 조정이다. 확신도를
+        # 일률 절삭하면 동일사건 최고점 대표 선정이 깨진다. 표시 대역만 낮춘다.
+        if (_cap and _conf > _cap and not a.get("_force_urgent")
+                and not a.get("_market_grade_demoted")):
             a["_conf_raw"] = _conf
             a["_ai_confidence"] = _cap
             a["_risk_score"] = calc_risk_score(a, exposure_data)
