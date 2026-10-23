@@ -55,8 +55,9 @@ def validate_packet(value, job, result):
     if route not in {'configured', 'owner_status'}:
         raise RuntimeError('발송 고정본 수신 경로 오류')
     if route == 'owner_status':
-        from risk_owner_verification import OWNER
-        if not value['self_only'] or targets != [address_key(OWNER)]:
+        from risk_owner_verification import OWNER, ERROR_EMAIL
+        recipient = OWNER if value['self_test'] else ERROR_EMAIL
+        if not value['self_only'] or targets != [address_key(recipient)]:
             raise RuntimeError('담당자 상태 고정본 수신자 오류')
     if (not isinstance(value.get('subject'), str) or not value['subject']
             or '\r' in value['subject'] or '\n' in value['subject']

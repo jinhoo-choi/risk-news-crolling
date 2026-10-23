@@ -462,8 +462,9 @@ def consume(queue, jid, self_test=False):
         staged.update(subject=subject, html=html, targets=targets, self_only=self_only)
         return True  # Stage native post-delivery history, without SMTP or main writes.
     def empty(subject, html):
-        from risk_owner_verification import OWNER
-        bot.NO_RESULT_RECEIVER = OWNER
+        from risk_owner_verification import OWNER, ERROR_EMAIL
+        # Operational status only; normal/reference reports retain configured recipients.
+        bot.NO_RESULT_RECEIVER = OWNER if self_test else ERROR_EMAIL
         subject, html = review_notice(subject, html, empty=True)
         if staged:
             raise RuntimeError('동일 회차 추가 메일 금지')
@@ -565,8 +566,8 @@ def finish_packet(queue, job, result, packet, bot, guard, native_send):
     if hashlib.sha256(before).hexdigest() not in {packet['source_history_hash'], packet['seen_after_hash']}:
         raise RuntimeError('발송 계획 이후 main 이력 변경 — 자동 합치기 금지')
     if packet.get('recipient_route') == 'owner_status':
-        from risk_owner_verification import OWNER
-        bot.NO_RESULT_RECEIVER = OWNER
+        from risk_owner_verification import OWNER, ERROR_EMAIL
+        bot.NO_RESULT_RECEIVER = OWNER if self_test else ERROR_EMAIL
     targets = ([bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER] if packet['self_only']
                else list(dict.fromkeys([bot.EMAIL_SENDER]+bot.EMAIL_RECEIVERS+bot.EMAIL_CC)))
     from risk_delivery import address_key

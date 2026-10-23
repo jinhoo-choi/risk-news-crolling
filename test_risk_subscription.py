@@ -642,6 +642,25 @@ class Integration(unittest.TestCase):
         self.assertTrue(all(a['grade'] == '주의' for a in final))
         self.assertEqual({a['entity'] for a in final}, {'검수기업A','검수기업D','검수기업E'})
 
+    def test_operational_no_result_uses_gmail_envelope_and_headers(self):
+        from email import message_from_string
+        from email.utils import parseaddr
+        smtp = SMTP()
+        self.bot.NO_RESULT_RECEIVER = 'company@example.invalid'
+        with patch.object(smtplib, 'SMTP_SSL', return_value=smtp):
+            self.bot.send_email_no_result('No detection', '<p>No detection</p>')
+        self.assertEqual([c[0] for c in smtp.calls], [['myboy3743@gmail.com']])
+        message = message_from_string(smtp.calls[0][1])
+        self.assertEqual(parseaddr(message['To'])[1], 'myboy3743@gmail.com')
+        self.assertIsNone(message['Cc'])
+        self.assertIsNone(message['Bcc'])
+
+    def test_reference_business_report_keeps_configured_self_recipient(self):
+        queue, smtp = self.market_statistics_fixture(), SMTP()
+        self.run_consume(queue, smtp)
+        self.assertEqual([c[0] for c in smtp.calls], [['owner@example.invalid']])
+        self.assertEqual(queue.data['outbox/test.json']['recipient_route'], 'configured')
+
     def test_owner_pipeline_preserves_production_history(self):
         queue, smtp = self.fixture('verification'), SMTP()
         self.run_consume(queue, smtp, True)

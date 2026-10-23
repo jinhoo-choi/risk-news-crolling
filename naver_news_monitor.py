@@ -5496,8 +5496,9 @@ def send_email_error(error_msg: str, trace: str, *, operational: bool = False):
         return False
 
 def send_email_no_result(subject: str, html_body: str):
-    """결과 없을 때 특정인(NO_RESULT_RECEIVER)에게만 발송"""
-    receiver = NO_RESULT_RECEIVER if NO_RESULT_RECEIVER else EMAIL_SENDER
+    """운영 결과 없음 알림은 고정 Gmail로만 발송 (업무 보고 수신자 유지)."""
+    from risk_owner_verification import ERROR_EMAIL
+    receiver = ERROR_EMAIL
     msg = _build_msg(subject, html_body, receiver)
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
