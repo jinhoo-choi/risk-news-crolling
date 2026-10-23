@@ -217,6 +217,66 @@ EXPO_CASES = [
 ]
 
 
+def run_market_policy():
+    """실제 강등·점수·재검증·발송 경로를 연결해 시장 뉴스의 경계를 검증한다."""
+    from unittest.mock import patch
+    for event, title in (("반대매매", "미수금 반대매매 역대 최대, 하루 3000억 강제청산"),
+                         ("기타리스크", "코스피 급락, 서킷브레이커 발동")):
+        for before, after in (("긴급", "주의"), ("주의", "참고"), ("참고", "참고")):
+            article = {"title": title, "entity": "", "entities": [], "grade": before,
+                       "event_type": event, "_ai_confidence": 0.95, "url": "http://x",
+                       "customer_notice": "기존 안내"}
+            raw = nm.calc_risk_score(article, {})
+            old_display = nm.display_risk_score(dict(article, _risk_score=raw))
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = nm.regrade_by_score([article], exposure_data={})
+                assert result == [article] and article["grade"] == after, (before, article)
+                assert article["_grade_locked"] and article["customer_notice"] is None
+                assert article["_ai_confidence"] == 0.95 and article["_risk_score"] == raw
+                assert nm.display_risk_score(article) <= old_display
+                assert before == "참고" or nm.display_risk_score(article) < old_display
+                nm.regrade_by_score(result, exposure_data={})
+                assert article["grade"] == after, "재호출로 중복 강등"
+                # 저장된 AI 기본등급이 긴급이어도 소비자의 잠금이 승격을 막아야 한다.
+                class Reply:
+                    status_code = 200
+                    def json(self):
+                        return {"content": [{"type": "text", "text": '[{"id":1,"grade":"긴급"}]'}]}
+                    def raise_for_status(self):
+                        pass
+                with patch("requests.post", return_value=Reply()):
+                    nm._verify_high_risk_by_claude([article])
+                assert article["grade"] == after, "AI 재검증이 강등을 취소"
+                if after == "참고":
+                    with patch.object(nm, "build_price_alert_section") as prices:
+                        prices.last_alerted_count = 0
+                        prices.last_alerted_rbal = 0
+                        scope = nm.decide_send_scope(result, {})
+                        assert scope["self_only"] and not scope["force_full"]
+                        assert nm.filter_articles_for_scope(result, {}, False) == []
+
+    # 기업 직접 부도·반대매매, 복수 주체, 주체 누락 오류는 시장 전체로 간주하지 않는다.
+    for entity, entities, event, title in (
+            ("삼성전자", ["삼성전자"], "파산부도", "삼성전자 회사채 채무불이행 발생"),
+            ("삼성전자", ["삼성전자"], "반대매매", "삼성전자 대주주 반대매매 발생"),
+            ("", ["삼성전자"], "반대매매", "삼성전자 대주주 반대매매 발생"),
+            ("", [], "파산부도", "기업 회사채 채무불이행 발생"),
+            ("한국투자증권", ["한국투자증권"], "시스템장애", "한국투자증권 MTS 접속 장애")):
+        article = {"title": title, "entity": entity, "entities": entities,
+                   "event_type": event, "grade": "긴급", "_ai_confidence": 0.95}
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = nm.regrade_by_score([article], exposure_data=EXPO)
+        assert result and article["grade"] == "긴급", article
+        assert not article.get("_market_grade_demoted"), article
+
+    # 등급/점수 강등과 별개인 실제 보유종목 시세 급락 안전장치는 유지한다.
+    with patch.object(nm, "build_price_alert_section") as prices:
+        prices.last_alerted_count = nm.MARKET_CRASH_STOCK_THRESHOLD
+        prices.last_alerted_rbal = nm.MARKET_CRASH_RBAL_THRESHOLD
+        scope = nm.decide_send_scope([], {})
+        assert scope["market_crash"] and scope["force_full"] and not scope["self_only"]
+
+
 def main():
     fails = []
     # 운영 CSV(EXPO)에 의존하는 케이스의 전제를 먼저 확인한다 (2026-09-03).
@@ -307,8 +367,15 @@ def main():
     print(f"  {'OK  ' if ok1 else 'FAIL'} 긴급 4건 투입 → {_u}건 유지 (상한 {_max_urgent})")
     print(f"  {'OK  ' if ok2 else 'FAIL'} 강등된 건 잠금 → {_l}건")
 
+    try:
+        run_market_policy()
+        print("  OK   시장·시황 한 등급 강등·재검증 잠금·기업 경계·발송 경로")
+    except AssertionError as error:
+        fails.append(("시장·시황 한 등급 강등", str(error), "경계·발송 검증 통과"))
+        print(f"  FAIL 시장·시황 한 등급 강등: {error}")
+
     total = (len(CASES) + len(EXPO_CASES) + len(LOCK_CASES) + 2
-             + len(ENTITY_VARIANT_CASES) + len(VICTIM_CASES) + 2)
+             + len(ENTITY_VARIANT_CASES) + len(VICTIM_CASES) + 3)
     print("\n" + "=" * 76)
     print(f"결과: {total - len(fails)}/{total} 통과")
     print("=" * 76)

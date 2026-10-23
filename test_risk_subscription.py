@@ -497,6 +497,29 @@ class Integration(unittest.TestCase):
         self.run_consume(queue, smtp)
         self.assertEqual([a['article_id'] for a in queue.data['filter-logs/test.json']['final']], ['one'])
 
+    def test_market_grade_demotion_reaches_native_mail_and_ack(self):
+        for before, after in (('긴급', '주의'), ('주의', '참고'), ('참고', '참고')):
+            with self.subTest(base_grade=before):
+                Path('seen_news.json').write_bytes(self.before)
+                queue, smtp = self.market_statistics_fixture(), SMTP()
+                for analysis in queue.data['results/test.json']['analyses'].values():
+                    analysis['base_grade'] = before
+                self.run_consume(queue, smtp)
+                final = queue.data['filter-logs/test.json']['final']
+                self.assertEqual([a['article_id'] for a in final], ['three'])
+                self.assertEqual(final[0]['grade'], after)
+                self.assertTrue(final[0]['_grade_locked'])
+                self.assertEqual(final[0]['_ai_confidence'], 0.96)
+                score = self.bot.display_risk_score(final[0])
+                low, high = self.bot._GRADE_SCORE_BAND[after]
+                self.assertTrue(low <= score <= high)
+                self.assertIn('https://example.invalid/test/three', queue.data['previews/test.json']['html'])
+                self.assertTrue(queue.data['outbox/test.json']['self_only'])
+                self.assertEqual(len(smtp.calls), 1)
+                queue.remote_seen = Path('seen_news.json').read_bytes()
+                acknowledge(queue, 'test')
+                self.assertTrue(queue.data['jobs/test.json']['ack'])
+
     def partial_market_statistics_fixture(self):
         queue = self.market_statistics_fixture()
         job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
