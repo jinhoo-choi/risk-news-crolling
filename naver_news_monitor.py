@@ -3392,6 +3392,31 @@ def dedup_same_mail_events(articles: list) -> list:
         print(f"  [동일사건 최고점수] {len(articles)}건 → {len(result)}건")
     return result
 
+def is_market_news(article: dict) -> bool:
+    """시장 전체 사건 또는 종목명이 붙은 단순 시장·섹터 가격 동향."""
+    if (article.get("_force_urgent") or article.get("_subscription_direct_entities")
+            or article.get("entity") in ("한국투자증권", "한국금융지주")):
+        return False
+    event = article.get("event_type")
+    if event not in ("반대매매", "기타리스크"):
+        return False
+    if (not (article.get("entity") or "").strip()
+            and not any((e or "").strip() for e in (article.get("entities") or []))):
+        return True
+    if event != "기타리스크":
+        return False  # 개별 기업의 반대매매는 직접 사건으로 보존한다.
+    title = article.get("title") or ""
+    incident = title + " " + (article.get("_judgment") or {}).get("핵심사건", "")
+    if re.search(r'부도|파산|회생|채무\s*불이행|디폴트|미상환|연체|상장\s*폐지|거래\s*정지|'
+                 r'횡령|배임|제재|과징금|과태료|신용\s*등급|실적|가이던스|어닝|영업\s*손실|'
+                 r'화재|폭발|(?:생산|영업|가동)\s*중단|수사|기소|해킹|정보\s*유출|전산\s*장애', incident):
+        return False
+    source = title + " " + (article.get("desc") or article.get("description") or "")
+    return bool(re.search(r'시황|증시|주식\s*시장|코스피|코스닥|나스닥|뉴욕\s*증시|'
+                          r'S&P|반도체\s*주|기술\s*주|빅테크|관련\s*주|업종|섹터|지수', source)
+                and re.search(r'급락|급등|폭락|폭등|하락|상승|약세|강세|출렁|휘청|매도세|마감', source))
+
+
 def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> list:
     """등급별 상한 초과 시 리스크 점수 기반으로 하위 등급 강등"""
     for article in articles:
@@ -3685,15 +3710,11 @@ def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> li
             a["customer_notice"] = None
     # ─────────────────────────────────────────────────────────────────────
 
-    # 시장·시황은 검증된 빈 주체를 사용한다. 기업 직접 사건에는 적용하지 않는다.
+    # 종목명이 붙어 있어도 단순 시장·섹터 시황은 포함한다. 기업 직접 사건은 제외한다.
     # 등급 상한을 세기 전에 한 단계 낮추고, 재검증/재호출로 되돌리거나
     # 같은 기사에 두 번 적용하지 않는다. 표시는 기존 등급별 점수 대역을 쓴다.
     for a in articles:
-        if (a.get("_force_urgent") or a.get("_market_grade_demoted")
-                or (a.get("entity") or "").strip()
-                or any((e or "").strip() for e in (a.get("entities") or []))
-                or a.get("_subscription_direct_entities")
-                or a.get("event_type") not in ("반대매매", "기타리스크")):
+        if a.get("_market_grade_demoted") or not is_market_news(a):
             continue
         previous = a.get("grade")
         if previous not in ("긴급", "주의", "참고"):

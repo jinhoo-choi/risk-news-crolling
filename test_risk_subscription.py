@@ -520,6 +520,35 @@ class Integration(unittest.TestCase):
                 acknowledge(queue, 'test')
                 self.assertTrue(queue.data['jobs/test.json']['ack'])
 
+    def test_named_market_news_is_reference_in_native_mail(self):
+        queue, smtp = self.fixture(), SMTP()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        title = '마이크론·AMD·인텔 5%대 급락…美 반도체주 일제히 휘청'
+        body = '미국 반도체주가 동반 하락했다. 마이크론 주가는 5.63% 하락했다.'
+        job['input']['items'][0].update(title=title, description=body, desc=body)
+        job['input']['raw_articles'] = copy.deepcopy(job['input']['items'])
+        job['body_manifest'][0]['body'] = body
+        result['analyses']['one'].update(entity='마이크론', entities=['마이크론'],
+            event_type='기타리스크', base_grade='주의', fact_summary=body,
+            action='마이크론 보유 및 여신 계좌의 가격을 확인한다.',
+            judgment={'핵심사건':'기타리스크','손실주체':'주주','당사연관':'직접','확정여부':'확정'},
+            evidence=[{'source_segment':'body','source_hash':hashlib.sha256(body.encode()).hexdigest(),
+                       'quote':'마이크론 주가는 5.63% 하락했다.'}])
+        date = now().astimezone(self.bot.timezone(self.bot.timedelta(hours=9))).date().isoformat()
+        Path('exposure_data.csv').write_text('기준일,종목명,종목코드,종목유형,뱅잔고,영잔고,뱅고객수,영고객수\n'
+                                           +date+',마이크론,999001,채권,500,0,2,0\n')
+        job['input']['exposure_hash'] = hashlib.sha256(Path('exposure_data.csv').read_bytes()).hexdigest()
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        self.run_consume(queue, smtp)
+        final = queue.data['filter-logs/test.json']['final']
+        self.assertEqual([a['grade'] for a in final], ['참고'])
+        self.assertEqual(final[0]['entity'], '마이크론')
+        self.assertTrue(final[0]['_market_grade_demoted'])
+        self.assertTrue(queue.data['outbox/test.json']['self_only'])
+        self.assertEqual(len(smtp.calls), 1)
+        self.assertIn('참고', queue.data['previews/test.json']['html'])
+
     def partial_market_statistics_fixture(self):
         queue = self.market_statistics_fixture()
         job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
