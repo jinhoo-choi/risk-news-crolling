@@ -21,6 +21,7 @@ from unittest.mock import patch
 
 from risk_queue import Queue, JOB_ID, now, digest
 from risk_result_validator import validate, utc_time
+from risk_body_quality import body_quality
 from risk_delivery import Delivery
 from risk_provider import Provider
 from risk_outbox import make_packet, validate_packet, store_packet, legacy_packet
@@ -249,11 +250,22 @@ def collect(config, queue, verification=False, reviews_only=False):
         if diagnostics:
             with lock:
                 body_errors.append((article['article_id'], diagnostics))
-        if not any(c.isalnum() for c in text) and article['article_id'] in replay:
-            return copy.deepcopy(replay[article['article_id']]['body'])
-        # Preserve bounded paragraphs, including entity context; no menus-as-body.
+        status, quality_reason = body_quality(text[:12000])
+        if status != 'verified' and article['article_id'] in replay:
+            saved = replay[article['article_id']]['body']
+            saved_status, saved_reason = body_quality(saved['body'])
+            if saved_status == 'verified' and saved.get('body_status') != 'verified':
+                saved_status, saved_reason = 'unreadable', 'saved_body_unverified'
+            if saved_status == 'verified':
+                kept = copy.deepcopy(saved)
+                kept.update(body_status=saved_status, body_quality_reason=saved_reason)
+                return kept
+            if status == 'missing':
+                text = saved['body']
+                status, quality_reason = saved_status, saved_reason
+        # Preserve failed extraction text as evidence; never promote menus to verified.
         return {'article_id': article['article_id'], 'body': text[:12000],
-                'body_status': 'verified' if any(c.isalnum() for c in text) else 'missing',
+                'body_status': status, 'body_quality_reason': quality_reason,
                 'source_url': article['url'], 'truncated': len(text) > 12000}
     checkpoint('body')
     with ThreadPoolExecutor(max_workers=6) as pool:
@@ -288,7 +300,8 @@ def collect(config, queue, verification=False, reviews_only=False):
            'created_at': created.isoformat(), 'expires_at': (created+timedelta(minutes=config['job_ttl_minutes'])).isoformat(),
            'input': inputs, 'input_hash': digest(inputs), 'body_manifest': manifest,
            'body_manifest_hash': digest(manifest), 'policy_version': 'risk-subscription-v1',
-           'policy_hash': digest(rules), 'receipts': {}, 'paid_ai_calls': 0}
+           'policy_hash': digest(rules), 'receipts': {}, 'paid_ai_calls': 0,
+           'body_quality_version': 1}
     if rules.get('event_grouping_version') == 1:
         job['event_grouping_version'] = 1
     if not verification:
@@ -405,7 +418,8 @@ def consume(queue, jid, self_test=False):
                          if bodies[aid]['body_status'] in {'missing', 'unreadable'}
                          or result['analyses'].get(aid, {}).get('body_status') in {'missing', 'unreadable'}}
     alert_deferred_ids = [aid for aid in deferred_ids if aid not in body_deferred_ids]
-    values, expected, resolutions = ({}, {}, {}) if self_test else prepare_reviews(queue, job, verdicts)
+    reasons = {row['article_id']: row['reason'] for row in result['classifications']}
+    values, expected, resolutions = ({}, {}, {}) if self_test else prepare_reviews(queue, job, verdicts, reasons=reasons)
     overdue_count = sum(utc_time(values['review/'+aid+'.json']['first_seen_at']) <= now()-timedelta(hours=24)
                         for aid in deferred_ids)
     alert_overdue_count = sum(utc_time(values['review/'+aid+'.json']['first_seen_at']) <= now()-timedelta(hours=24)

@@ -21,6 +21,7 @@ jobs:
       - run: python3 check_changes.py
       - run: python3 test_risk_owner_verification.py
       - run: python3 test_risk_writing.py
+      - run: python3 test_risk_body_quality.py
       - run: python3 test_risk_scenario_reporting.py
       - run: python3 test_risk_subscription.py
       - run: python3 test_risk_shards.py

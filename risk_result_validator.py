@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
+from risk_body_quality import body_quality
 
 SCHEMA = json.loads(Path(__file__).with_name('risk_result_schema.json').read_text())
 Draft202012Validator.check_schema(SCHEMA)
@@ -106,6 +107,10 @@ def validate(result, job, inputs, manifest):
             raise ValueError('서로 다른 위험 유형의 동일 사건 병합 금지')
         grouped.update(members)
     for key, verdict in verdicts.items():
+        if job.get('body_quality_version') == 1:
+            status, reason = body_quality(bodies[key]['body'])
+            if bodies[key]['body_status'] == 'verified' and status != 'verified':
+                raise ValueError('본문 품질 미검증: ' + key + ': ' + reason)
         visible = re.sub(r'\[(?:링크|URL)[^\]]*\]', '', bodies[key]['body'])
         if bodies[key]['body_status'] in ('verified', 'alternate_verified') and not any(c.isalnum() for c in visible):
             raise ValueError('본문 내용 없이 확보 완료 표시')
@@ -129,7 +134,16 @@ def validate(result, job, inputs, manifest):
         if not analysis['entity']:
             source_text = '\n'.join(segments.values())
             market = (analysis['event_type'] == '반대매매' and re.search(r'반대매매|강제\s*청산|마진콜', source_text))
-            market = market or (analysis['event_type'] == '기타리스크' and re.search(r'서킷\s*브레이커|사이드\s*카|코스피.*(?:급락|폭락)|코스닥.*(?:급락|폭락)', source_text))
+            # Match within a sentence and allow line breaks/ordinary decline verbs.
+            # A company's fall in another sentence must not turn a rising index into a market event.
+            clauses = [clause for segment in segments.values()
+                       for clause in re.split(r'(?<!\d)[.!?。,;](?!\d)|지만|으나|반면|한편|와 달리',
+                                              re.sub(r'\s+', ' ', segment))]
+            market = market or (analysis['event_type'] == '기타리스크' and any(
+                re.search(r'서킷\s*브레이커|사이드\s*카|'
+                          r'(?:코스피|코스닥).{0,100}(?:급락|폭락|하락|내렸|내린|내려|붕괴)|'
+                          r'(?:급락|폭락|하락)(?:한|하는|세의)?\s*(?:코스피|코스닥)', clause)
+                for clause in clauses))
             if not market or analysis['entities']:
                 raise ValueError('빈 주체를 허용한 시장 사건 아님')
         if analysis['entity'] == '한국투자증권':
