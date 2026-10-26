@@ -126,7 +126,8 @@ class IsolationTests(TestCase):
                     Path(name).write_text('operating fixture')
                 before={p:Path(p).read_bytes() for p in ('seen_news.json','exposure_data.csv','run_stats.jsonl')}
                 bot=import_bot()
-                os.environ.update(EMAIL_SENDER=ERROR_EMAIL,EMAIL_PASSWORD='fake',EMAIL_RECEIVER='',EMAIL_CC='')
+                os.environ.update(EMAIL_SENDER=ERROR_EMAIL,EMAIL_PASSWORD='fake',EMAIL_RECEIVER='',EMAIL_CC='',
+                                  GITHUB_RUN_ATTEMPT='1')
                 os.environ.pop('ANTHROPIC_API_KEY',None)
                 queue=Memory();queue.get_fresh=queue.get
                 smtp=SMTP();captured=[]
@@ -149,6 +150,21 @@ class IsolationTests(TestCase):
                 self.assertEqual(bot.EMAIL_CC,[])
             finally:
                 os.chdir(previous)
+
+    def test_live_suite_rejects_reruns_before_preparation_queue_or_smtp(self):
+        import risk_scenario_verification as suite
+        request = {'operation':'scenario-suite','self_test':True,'request_id':'rerun-test','send':True}
+        for attempt in ('2', '3'):
+            with self.subTest(attempt=attempt), \
+                    patch.dict(os.environ, {'GITHUB_RUN_ATTEMPT':attempt}), \
+                    patch.object(suite, 'prepare') as prepare, \
+                    patch.object(suite, 'Queue') as queue, \
+                    patch.object(suite.smtplib, 'SMTP_SSL') as smtp:
+                with self.assertRaisesRegex(RuntimeError, '검수 재실행 금지'):
+                    suite.run(request)
+                prepare.assert_not_called()
+                queue.assert_not_called()
+                smtp.assert_not_called()
 
     def test_live_failure_notification_is_owner_only_native_labelled_and_keeps_source(self):
         import risk_owner_verification as verify
