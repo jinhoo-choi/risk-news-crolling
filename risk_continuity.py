@@ -86,7 +86,7 @@ def pending_reviews(queue):
     return [read_review(queue, aid)[0] for aid in index['pending']]
 
 
-def prepare_reviews(queue, job, verdicts, reason='analysis_pending'):
+def prepare_reviews(queue, job, verdicts, reason='analysis_pending', reasons=None):
     """Return one atomic batch; unresolved copies must persist BEFORE any SMTP."""
     index, index_sha = review_index(queue)
     pending = set(index['pending'])
@@ -123,6 +123,9 @@ def prepare_reviews(queue, job, verdicts, reason='analysis_pending'):
                   'first_seen_at': previous.get('first_seen_at', instant), 'last_seen_at': instant,
                   'attempts': previous.get('attempts', 0)+(0 if same else 1),
                   'origin_jobs': origins, 'last_job_id': job['job_id'], 'reason': reason,
+                  'last_review_reason': (reasons or {}).get(aid, reason),
+                  'last_body_status': bodies[aid].get('body_status', 'unconfirmed'),
+                  'last_body_quality_reason': bodies[aid].get('body_quality_reason'),
                   'item': copy.deepcopy(source['item']), 'body': copy.deepcopy(source['body'])}
         record['source_hash'] = digest({'item': record['item'], 'body': record['body']})
         values[path], expected[path] = record, sha

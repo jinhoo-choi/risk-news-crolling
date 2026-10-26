@@ -119,6 +119,7 @@ from event_history import EventHistory, HISTORY_KEY, is_background_recap, materi
 from collections import Counter
 from quote_prices import resolve_symbol, fetch_quote, format_price, STATUS_LABELS
 from notice_filter import matches_notice_title
+from risk_body_quality import body_quality
 from risk_analysis_guard import (AnalysisIncompleteError, strict_json, validate_grade_map,
     read_seen_data, validate_seen_data, model_label, apply_verified_direct_incident)
 import re
@@ -1967,10 +1968,26 @@ def fetch_article_body(url: str, diagnostics=None) -> str:
             if diagnostics is not None:
                 diagnostics.update(code='body_size_limit', content_length=content_length)
             return ""
-        res_text = res.text
         res.raise_for_status()
-        soup = BeautifulSoup(res_text, "html.parser")
+        # requests defaults text/html without a charset to Latin-1. Parse bytes
+        # so HTML meta/BOM can declare UTF-8 or CP949 instead of freezing mojibake.
+        raw = getattr(res, 'content', None)
+        encoding = getattr(res, 'encoding', None)
+        if not isinstance(encoding, str) or encoding.lower() in {'iso-8859-1', 'latin-1'}:
+            encoding = None
+        soup = (BeautifulSoup(raw, "html.parser", from_encoding=encoding)
+                if isinstance(raw, bytes) else BeautifulSoup(res.text, "html.parser"))
         limit = 12000 if os.environ.get('RISK_ENGINE') == 'subscription' else 600
+        failed_candidate = ''
+        def acceptable(text):
+            nonlocal failed_candidate
+            if not text:
+                return False
+            if limit == 600 or body_quality(text[:limit])[0] == 'verified':
+                return True
+            if not failed_candidate:
+                failed_candidate = text
+            return False
         if re.match(r'https?://(?:www\.)?news1\.kr/', url):
             state = soup.select_one('script#__NEXT_DATA__')
             if state:
@@ -1982,7 +1999,7 @@ def fetch_article_body(url: str, diagnostics=None) -> str:
                     text = ' '.join(BeautifulSoup(part['content'], 'html.parser').get_text(' ', strip=True)
                                     for part in parts if isinstance(part, dict) and part.get('type') == 'text'
                                     and isinstance(part.get('content'), str))
-                    if text.strip():
+                    if acceptable(text.strip()):
                         return text[:limit]
         for unwanted in soup.select('script, style, nav, footer, aside, button'):
             unwanted.decompose()
@@ -1996,10 +2013,14 @@ def fetch_article_body(url: str, diagnostics=None) -> str:
             tag = soup.select_one(selector)
             if tag:
                 text = article_text(tag)
-                if text:
+                if acceptable(text):
                     return text[:limit]
         paragraphs = soup.find_all("p")
         text = " ".join(article_text(p) for p in paragraphs if len(article_text(p)) > 20)
+        if acceptable(text):
+            return text[:limit]
+        # Keep recognisable failed extraction for the manifest's unreadable reason.
+        text = failed_candidate or text
         if not text and diagnostics is not None:
             diagnostics.update(code='body_text_missing')
         return text[:limit]
