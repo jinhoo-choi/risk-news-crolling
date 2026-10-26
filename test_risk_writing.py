@@ -4,7 +4,6 @@ import hashlib
 import html
 import io
 import json
-import re
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -69,8 +68,10 @@ class Writing(unittest.TestCase):
                 document=self.render(article)
                 # Check exact payload, including the final customer instruction;
                 # a badge or a successful HTML build is insufficient.
-                self.assertIn(html.escape(article['action'],quote=True),document)
-                self.assertIn(html.escape(article['customer_notice'],quote=True),document)
+                self.assertTrue(html.escape(article['action'],quote=True) in document,
+                                case['id']+': complete action payload missing from native HTML')
+                self.assertTrue(html.escape(article['customer_notice'],quote=True) in document,
+                                case['id']+': complete customer care/final instruction missing from native HTML')
                 self.assertIn('고객케어 안내 추천 문구',document)
 
     def test_notice_suppression_and_html_escaping_are_preserved(self):
@@ -109,15 +110,18 @@ class Writing(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.integration.run_consume(queue,smtp)
         document=queue.data['previews/test.json']['html']
-        self.assertIn(html.escape(out['customer_notice'],quote=True),document)
+        self.assertTrue(html.escape(out['customer_notice'],quote=True) in document,
+                        'native consume removed or truncated the complete customer care payload')
         self.assertIn(case['entity'],document)
         self.assertEqual(queue.data['jobs/test.json']['status'],'delivery_complete')
 
     def test_action_prompt_cannot_restore_the_known_over_compression_instruction(self):
         # This is a policy regression, not a semantic quality score.
         prompt=(ROOT/'action_prompt.txt').read_text()
-        self.assertNotIn('한 조치는 25자 안팎으로 끊는다',prompt)
-        self.assertNotIn("'무슨 일 + 무엇을 확인하라'만 담는다",prompt)
+        self.assertFalse('한 조치는 25자 안팎으로 끊는다' in prompt,
+                         'known over-compression instruction was restored')
+        self.assertFalse("'무슨 일 + 무엇을 확인하라'만 담는다" in prompt,
+                         'customer impact/method explanation was removed from writing instructions')
         policy=json.loads((ROOT/'risk_policy.json').read_text())
         self.assertEqual(policy['action_rules']['sha256'],hashlib.sha256(prompt.encode()).hexdigest())
 
