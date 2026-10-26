@@ -146,9 +146,27 @@ def prepare():
     rows=''.join('<tr><td style="padding:8px;border-bottom:1px solid #ddd">'+html.escape(c['title'])+
                  '</td><td style="padding:8px;color:#166534">통과</td></tr>' for c in controls)
     document='<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font-family:sans-serif;margin:0;padding:20px"><h2>차단·경계·복구 시나리오</h2><p>가상 환경 검사입니다. 차단 대상의 실제 메일 발송은 없으며, 이 메일은 검수 결과표입니다.</p><table style="border-collapse:collapse;width:100%;max-width:640px">'+rows+'</table></body></html>'
-    prepared.append({'scenario':'S09','title':'차단·경계·복구 20개 시나리오','html':document,
+    prepared.append({'scenario':'S09','title':'차단·경계·복구 '+str(len(controls))+'개 검증','html':document,
                      'native_html':False,'simulation':True,'controls':controls,'selected':0})
     return prepared
+
+
+def scenario_summary(prepared):
+    """Report executed evidence, never a configured or hard-coded test count."""
+    native=[entry for entry in prepared if entry.get("native_html") is True]
+    controls=[control for entry in prepared for control in entry.get("controls", [])]
+    native_ids=[entry['scenario'] for entry in native]
+    control_tests=[control['test'] for control in controls]
+    if len(native_ids)!=len(set(native_ids)) or len(control_tests)!=len(set(control_tests)):
+        raise RuntimeError('중복 실행을 독립 검증 건수로 합산할 수 없음')
+    if any(not isinstance(entry.get('html'),str) or not entry['html'].strip() for entry in native):
+        raise RuntimeError('HTML 내용 없는 검증은 생성 완료로 보고할 수 없음')
+    if any(control.get("passed") is not True or control.get("tests", 0) < 1 for control in controls):
+        raise RuntimeError("미실행·실패 제어 검증을 통과로 보고할 수 없음")
+    return {"scenario_count":len(native)+len(controls),"native_scenarios":len(native),
+            "control_checks":len(controls),"mail_count":len(prepared),
+            "evidence":{"native_ids":native_ids,"control_tests":control_tests},
+            "generation_quality_evaluated":False,"recipient_inbox_verified":False}
 
 
 def capture_previews(prepared,queue,batch):
@@ -198,6 +216,7 @@ def run(request):
     sender,password=os.environ.get('EMAIL_SENDER',''),os.environ.get('EMAIL_PASSWORD','')
     real_smtp=smtplib.SMTP_SSL
     prepared=prepare()
+    summary=scenario_summary(prepared)
     if snapshot()!=before:
         raise RuntimeError('가상 검수 중 운영 파일 변경')
     if not request['send']:
@@ -206,7 +225,7 @@ def run(request):
         for entry in prepared:
             (path/(entry['scenario']+'.html')).write_text(entry['html'])
         (path/'results.json').write_text(json.dumps(prepared,ensure_ascii=False,indent=2))
-        print(json.dumps({'scenarios':28,'native_previews':8,'control_checks':20,'smtp_calls':0,'paid_ai_calls':0,'production_history_writes':0}))
+        print(json.dumps(dict(summary,scenarios=summary['scenario_count'],native_previews=summary['native_scenarios'],smtp_calls=0,paid_ai_calls=0,production_history_writes=0)))
         return
     if not sender or not password:
         raise RuntimeError('검수 SMTP 설정 없음')
@@ -251,12 +270,12 @@ def run(request):
                        before_hashes=before,after_hashes=snapshot(),native_html=entry['native_html'])
         queue.put(path,current,sha);accepted+=1
     queue.put('checks/'+request['request_id']+'.json',{'request_id':request['request_id'],
-              'scenario_count':28,'native_scenarios':8,'control_checks':20,'mail_count':9,
+              **summary,
               'smtp_accepted_this_run':accepted,'paid_ai_calls':0,'production_smtp_calls':0,
               'production_history_writes':0,'before_hashes':before,'after_hashes':snapshot(),
               'visual':visual,
               'code_commit':os.environ.get('GITHUB_SHA','unconfirmed')})
-    print(json.dumps({'scenario_count':28,'smtp_accepted':accepted,'paid_ai_calls':0,
+    print(json.dumps({**summary,'smtp_accepted':accepted,'paid_ai_calls':0,
                       'production_smtp_calls':0,'production_history_writes':0}))
 
 
