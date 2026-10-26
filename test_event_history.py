@@ -217,6 +217,35 @@ class PersistenceTests(unittest.TestCase):
                 env["cap"]()
             self.assertEqual(article["grade"] if env["filtered"] else None, expected, title)
 
+    def test_actual_price_override_requires_current_subscription_source(self):
+        with open(nm.__file__, encoding='utf-8') as source:
+            main = next(n for n in ast.parse(source.read()).body
+                        if isinstance(n, ast.FunctionDef) and n.name == 'main')
+        start = next(i for i, n in enumerate(main.body)
+                     if isinstance(n, ast.FunctionDef) and n.name == '_stage_hits')
+        end = next(i for i, n in enumerate(main.body) if isinstance(n, ast.Assign)
+                   and isinstance(n.value, ast.Name) and n.value.id == 'filtered_final')
+        gate = ast.FunctionDef(name='gate', args=ast.arguments(posonlyargs=[], args=[ast.arg(arg='filtered')],
+                              kwonlyargs=[], kw_defaults=[], defaults=[]), decorator_list=[],
+                              body=main.body[start:end+1]+[ast.Return(value=ast.Name(id='filtered', ctx=ast.Load()))])
+        code = compile(ast.fix_missing_locations(ast.Module(body=[gate], type_ignores=[])), 'native-price-gate', 'exec')
+        for source_day, expected in (('', False), ((NOW-timedelta(days=4)).date().isoformat(), False),
+                                     (NOW.date().isoformat(), True)):
+            with self.subTest(source_day=source_day):
+                article = dict(entity='검수기업', event_type='기타리스크', title='검수기업 입찰 제한에 법적대응',
+                               desc='', keyword='입찰 제한', grade='주의', _subscription_event_group='article:old',
+                               _subscription_price_date=source_day)
+                env = dict(nm.__dict__, event_history=EventHistory(now=NOW), now_kst=NOW,
+                           exposure_data={}, seen_stages=set(), seen_context={}, seen_entities_today={'검수기업'},
+                           seen_combos={('검수기업','기타리스크')}, load_entity_canonical_map=lambda: {},
+                           get_entity_price_drop=lambda *a: -9.78, find_exposure=lambda *a: [{}],
+                           _norm=lambda s: s, _sim=lambda *a: 0)
+                exec(code, env)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    final = env['gate']([article])
+                self.assertEqual(bool(final), expected)
+                self.assertEqual(bool(article.get('_material_price_resend')), expected)
+
     def test_actual_main_dedup_preserves_punctuated_material_changes(self):
         from difflib import SequenceMatcher
         with open(nm.__file__, encoding="utf-8") as source:

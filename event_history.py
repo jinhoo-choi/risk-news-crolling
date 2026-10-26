@@ -426,7 +426,7 @@ class EventHistory:
 
     def duplicate_statistic(self, article):
         """A new URL/publication date never reopens the same reviewed statistic."""
-        series = article.get('_subscription_stat_series')
+        series = article.get('_subscription_stat_series') or article.get('_subscription_snapshot_key')
         if not series:
             return False
         previous = [r for r in self.records
@@ -440,7 +440,7 @@ class EventHistory:
         return not date or bool(dates) and date <= max(dates)
 
     def record_statistic(self, article, scope):
-        series = article.get('_subscription_stat_series')
+        series = article.get('_subscription_stat_series') or article.get('_subscription_snapshot_key')
         if not series:
             return
         previous = self.matching(series, {'market_statistic'}, scope)

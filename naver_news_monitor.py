@@ -5899,7 +5899,11 @@ def main():
         # find_exposure() 사용 — 직접 dict 조회는 법인명 표기차이("중앙일보"↔
         # "중앙일보(주)")·영문 별칭(JTBC→제이티비씨)을 못 잡아 실제 익스포저가
         # 있는데도 재발송 기회를 놓친다.
-        if matched and entity:
+        # A live quote is not evidence that every old article about this company
+        # is fresh. Subscription recaps need their own verified current-day drop
+        # quote before bypassing history; independent new stages remain above.
+        if (matched and entity and (a.get('_subscription_event_group') is None
+                or a.get('_subscription_price_date') == now_kst.date().isoformat())):
             _exp_rows = find_exposure(entity, exposure_data)
             if _exp_rows:
                 _drop = get_entity_price_drop(entity, exposure_data)

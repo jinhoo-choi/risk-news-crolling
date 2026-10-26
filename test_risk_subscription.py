@@ -333,6 +333,7 @@ class Integration(unittest.TestCase):
         direct.pop('_subscription_stat_series')
         self.assertFalse(self.bot.decide_send_scope([statistic, direct], {})['self_only'])
         self.assertEqual(self.bot.filter_articles_for_scope([statistic, direct], {}, False), [direct])
+
         # Live portfolio crash is an independent gate, never replaced by a headline.
         with patch.object(self.bot.build_price_alert_section, 'last_alerted_count',
                           self.bot.MARKET_CRASH_STOCK_THRESHOLD, create=True), \
@@ -342,6 +343,99 @@ class Integration(unittest.TestCase):
             self.assertFalse(scope['self_only'])
             self.assertTrue(scope['market_crash'])
             self.assertEqual(self.bot.filter_articles_for_scope([statistic], {}, False, True), [statistic])
+
+    def cap_fixture(self):
+        queue = self.grouped_fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        date = now().astimezone(timezone(timedelta(hours=9))).date()
+        body = (f'코스피 급락으로 시장 전체 평가액이 감소했다. {date.year}년 {date.month}월 {date.day}일 기준 국내 10대 그룹의 시가총액은 약 3371조4410억원으로 집계됐다. '
+                '한국거래소와 금융정보업체 에프앤가이드에 따르면 지난달 말 4472조5308억원보다 약 1101조원 감소했다.')
+        for item, manifest in zip(job['input']['items'], job['body_manifest']):
+            item.update(title='10대 그룹 시가총액 1100조원 감소 '+item['article_id'], desc=body, description=body)
+            manifest['body'] = body
+            analysis = result['analyses'][item['article_id']]
+            analysis.update(entity='', entities=[], event_type='기타리스크', base_grade='주의',
+                            fact_summary='국내 10대 그룹 시가총액이 전월 말보다 1101조원 감소했다.',
+                            judgment={'핵심사건':'기타리스크','손실주체':'주주','당사연관':'직접','확정여부':'확정'},
+                            action='시장 전체 평가액 감소와 실제 보유자산 영향을 구분해 확인한다.',
+                            evidence=[{'source_segment':'body','source_hash':hashlib.sha256(body.encode()).hexdigest(),
+                                       'quote':body}], customer_notice=None)
+        result['event_groups'] = []  # Omitted model grouping must not reopen a snapshot.
+        job['input']['history_hash'] = hashlib.sha256(queue.remote_seen).hexdigest()
+        job['input']['raw_articles'] = copy.deepcopy(job['input']['items'])
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        return queue
+
+    def test_cap_snapshot_native_mail_then_sibling_replay_is_suppressed(self):
+        from event_history import EventHistory, HISTORY_KEY
+        from risk_provider import Provider
+        queue, smtp = self.cap_fixture(), SMTP()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        provider = Provider(job, result)
+        self.assertEqual(provider.event_groups['one'], provider.event_groups['two'])
+        self.run_consume(queue, smtp)
+        document = queue.data['previews/test.json']['html']
+        self.assertIn('1건 선별', document)
+        self.assertIn('https://example.invalid/test/two', document)
+        self.assertNotIn('https://example.invalid/test/one', document)
+        # Only the selected URL is delivered, but the same source snapshot
+        # suppresses a different URL in the next round even after serialization.
+        saved = json.loads(Path('seen_news.json').read_text())
+        history = EventHistory(saved[HISTORY_KEY])
+        row = copy.deepcopy(job['input']['items'][0])
+        provider.attach(row)
+        self.assertNotIn('_subscription_stat_series', row)
+        self.assertTrue(history.duplicate_statistic(row))
+        self.assertEqual(saved[HISTORY_KEY]['records'][0]['scope'], 'self')
+        # Execute a fresh native round from the saved state, with different URLs.
+        queue2 = self.cap_fixture()
+        self.run_consume(queue2, SMTP())
+        self.assertEqual(queue2.data['filter-logs/test.json']['final'], [])
+        self.assertNotIn('10대 그룹 시가총액 1100조원 감소', queue2.data['previews/test.json']['html'])
+
+    def test_cap_snapshot_requires_exact_source_identity_and_preserves_revisions(self):
+        from risk_provider import market_cap_snapshot
+        from datetime import date
+        published = date(2026, 10, 25)
+        body = ('한국거래소와 금융정보업체 에프앤가이드에 따르면 지난 23일 기준 국내 10대 그룹의 '
+                '시가총액은 약 3371조4410억원으로 집계됐다. 지난달 말 4472조5308억원보다 감소했다.')
+        original = market_cap_snapshot(body, published)
+        self.assertIsNotNone(original)
+        for changed in (body.replace('23일', '24일'), body.replace('10대', '20대'),
+                        body.replace('3371조4410', '3372조4410'), body.replace('4472조5308', '4473조5308')):
+            self.assertNotEqual(market_cap_snapshot(changed, published)[0], original[0])
+        for changed in (body.replace('23일 기준', '기준일 미상'), body.replace('에프앤가이드', '익명관계자'),
+                        body.replace('지난달 말', '일정 기간 전'), body.replace('23일', '32일')):
+            with self.subTest(changed=changed):
+                try:
+                    value = market_cap_snapshot(changed, published)
+                except ValueError:
+                    value = None
+                self.assertIsNone(value)
+        # A publication date cannot by itself create a new snapshot.
+        self.assertEqual(market_cap_snapshot(body, date(2026,10,26)), original)
+
+    def test_subscription_price_exception_requires_dated_verified_source_quote(self):
+        from risk_provider import Provider
+        queue = self.fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        published = now().astimezone(timezone(timedelta(hours=9))).date()
+        text = f'{published.year}년 {published.month}월 {published.day}일 한국투자증권 주가는 9.78% 내린 가격에 마감했다.'
+        for body_status, quote, expected in (
+                ('verified', text, published.isoformat()),
+                ('verified', '한국투자증권 주가는 9.78% 내린 가격에 마감했다.', ''),
+                ('verified', '효력정지 인용 시 영향이 없다고 밝혔다.', ''),
+                ('missing', text, '')):
+            with self.subTest(body_status=body_status, quote=quote):
+                job['body_manifest'][0]['body'] = text+' 효력정지 인용 시 영향이 없다고 밝혔다.'
+                a = result['analyses']['one']
+                a['body_status'] = body_status
+                a['evidence'][0]['quote'] = quote
+                provider = Provider(job, result)
+                row = copy.deepcopy(job['input']['items'][0])
+                provider.attach(row)
+                self.assertEqual(row['_subscription_price_date'], expected)
 
     def test_market_statistics_other_urls_do_not_resend_same_reference_day(self):
         queue, smtp = self.market_statistics_fixture(), SMTP()

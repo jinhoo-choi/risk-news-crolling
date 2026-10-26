@@ -7,8 +7,48 @@ import copy
 import hashlib
 import json
 import re
-from datetime import timedelta
+from datetime import timedelta, timezone
 from email.utils import parsedate_to_datetime
+from event_history import _amounts, _compact
+
+
+def source_date(year, month, day, published):
+    """Resolve an explicit source day; publication time supplies no event day."""
+    date = published.replace(year=int(year or published.year),
+                             month=int(month or published.month), day=int(day))
+    if date > published and not year:
+        date = (date.replace(year=date.year-1) if month else
+                (published.replace(day=1)-timedelta(days=1)).replace(day=int(day)))
+    return date if date <= published else None
+
+
+def market_cap_snapshot(body, published):
+    """Exact aggregate snapshot, not headline similarity or a shared sector.
+
+    Require authority, population, explicit reference day, aggregate value and
+    previous-month comparison in the source. Revisions/new days stay distinct.
+    """
+    text = _compact(body)
+    if not re.search(r'한국거래소.{0,30}에프앤가이드', text):
+        return None
+    match = re.search(
+        r'(?:(20\d{2})년)?(?:(\d{1,2})월)?(\d{1,2})일기준국내(\d+)대그룹의?'
+        r'(?:시가총액|시총)(?:은|는)?약?(\d[\d,.]*(?:조|억)(?:\d[\d,.]*억)?원)', text)
+    if not match:
+        return None
+    baseline = re.search(r'(?:지난달|전월)말약?(\d[\d,.]*(?:조|억)(?:\d[\d,.]*억)?원)',
+                         text[match.end():match.end()+160])
+    if not baseline:
+        return None
+    year, month, day, population, value = match.groups()
+    date = source_date(year, month, day, published)
+    if date is None or date.month != published.month or date.year != published.year:
+        return None  # Ambiguous "지난달" must not acquire a guessed base period.
+    base_date = date.replace(day=1)-timedelta(days=1)
+    key = ':'.join(('market', 'KRX-FnGuide', population+'대그룹시가총액',
+                    date.isoformat(), base_date.isoformat(),
+                    _amounts(value)[0], _amounts(baseline.group(1))[0]))
+    return key, date.isoformat()
 
 
 class Response:
@@ -33,11 +73,37 @@ class Provider:
         self.event_groups = {aid: str(i) for i, group in enumerate(result.get('event_groups', []))
                              for aid in group['article_ids']}
         self.stat_dates = {}
+        self.stat_series = {}
+        self.price_dates = {}
         market_candidates, statistic_members = set(), set()
         source = {a['article_id']: a for a in job['input']['items']}
         for aid, analysis in self.analyses.items():
             body = self.bodies[aid]['body']
             summary = analysis['fact_summary']
+            quotes = [e['quote'] for e in analysis['evidence']
+                      if e['source_segment'] == 'body' and e['quote'] in body]
+            try:
+                published = parsedate_to_datetime(source[aid]['pubDate']).astimezone(timezone(timedelta(hours=9))).date()
+                if analysis['body_status'] == 'verified':
+                    dates = []
+                    for quote in quotes:
+                        if not re.search(r'\d[\d,.]*\s*%.*(?:하락|내린|떨어|급락)', quote):
+                            continue
+                        for parts in re.findall(r'(?:(20\d{2})년\s*)?(?:(\d{1,2})월\s*)?(?<!\d)(\d{1,2})일', quote):
+                            date = source_date(*parts, published)
+                            if date:
+                                dates.append(date.isoformat())
+                    self.price_dates[aid] = max(dates, default='')
+                if (analysis['body_status'] == 'verified' and not analysis['entity']
+                        and not analysis['entities'] and analysis['event_type'] == '기타리스크'
+                        and analysis['judgment']['확정여부'] == '확정'
+                        and re.search(r'그룹.*(?:시가총액|시총)', summary)
+                        and any(re.search(r'시가총액|시총|(?:조|억)\s*원.*(?:감소|줄어)', q) for q in quotes)):
+                    snapshot = market_cap_snapshot(body, published)
+                    if snapshot:
+                        self.stat_series[aid], self.stat_dates[aid] = snapshot
+            except (KeyError, TypeError, ValueError, OverflowError):
+                pass  # No explicit usable source date means no automatic match.
             explicit_summary = re.search(r'미수금.{0,30}반대매매', summary)
             # Successive releases of this one market-wide statistic are one mail
             # item, even if the model split them by reference day or omitted a group.
@@ -99,6 +165,17 @@ class Provider:
                 else:
                     statistic_members.difference_update(members)
         self.event_groups.update(dict.fromkeys(statistic_members, 'market:금투협:미수금반대매매'))
+        self.stat_series.update(dict.fromkeys(statistic_members, 'market:금투협:미수금반대매매'))
+        # Never split or bridge a reviewed mixed group through an automatic key.
+        for group in result.get('event_groups', []):
+            members = group['article_ids']
+            keys = {self.stat_series.get(aid) for aid in members}
+            if len(keys) > 1:
+                for aid in members:
+                    if self.stat_series.get(aid, '').startswith('market:KRX-FnGuide:'):
+                        self.stat_series.pop(aid, None)
+                        self.stat_dates.pop(aid, None)
+        self.event_groups.update(self.stat_series)
 
     def analysis(self, article):
         return self.analyses[article['article_id']]
@@ -117,6 +194,8 @@ class Provider:
         article.pop('_subscription_event_group', None)
         article.pop('_subscription_stat_date', None)
         article.pop('_subscription_stat_series', None)
+        article.pop('_subscription_snapshot_key', None)
+        article['_subscription_price_date'] = self.price_dates.get(article['article_id'], '')
         group = self.event_groups.get(article['article_id'])
         if group is None and self.job.get('event_grouping_version') == 1:
             # Reviewed independent incidents must not enter legacy entity-wide
@@ -127,6 +206,9 @@ class Provider:
         if group == 'market:금투협:미수금반대매매':
             article['_subscription_stat_series'] = group
             article['fact_summary'] = a['fact_summary']
+        elif article['article_id'] in self.stat_series:
+            # Persist identity without borrowing KOFIA-only routing/render rules.
+            article['_subscription_snapshot_key'] = group
         if article['article_id'] in self.stat_dates:
             article['_subscription_stat_date'] = self.stat_dates[article['article_id']]
 
