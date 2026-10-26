@@ -1,0 +1,11 @@
+{
+  "synthetic": true,
+  "generation_context": "고정된 가상 기사·보유 유형을 이번 ChatGPT 실행에서 읽고 생성한다. 실제 기사·운영 회차·실메일이 아니다.",
+  "cases": [
+    {"id":"delisting","entity":"가상전자","event_type":"상장폐지","body_status":"verified","grade":"긴급","holding_type":"주식","title":"가상전자 상장폐지 결정, 정리매매 일정 추후 공지","body":"거래소는 가상전자의 상장폐지를 결정했다. 정리매매 기간과 최종 거래일은 아직 확정되지 않았으며 후속 공지에서 안내할 예정이다.","judgment_event":"상장폐지 결정","notice_required":["상장폐지","정리매매","보유 수량","주문 가능"],"notice_forbidden":["원금 손실 확정","정리매매가 시작됐","거래가 불가능","매도하시","추가 납입"]},
+    {"id":"rehabilitation_application","entity":"가상산업","event_type":"기업회생","body_status":"verified","grade":"긴급","holding_type":"주식","title":"가상산업 회생 절차 신청, 법원 개시 결정 미확인","body":"가상산업은 법원에 회생 절차 개시를 신청했다. 법원의 개시 결정은 아직 나오지 않았다. 거래소는 거래 제한 여부와 후속 조치를 별도 공지할 예정이다.","judgment_event":"회생 신청","notice_required":["신청","결정","거래","확인"],"notice_forbidden":["개시될 예정","개시됐습니다","회생계획 인가","상환이 보장","추가 납입"]},
+    {"id":"overseas_fire","entity":"가상테크","event_type":"기타리스크","body_status":"verified","grade":"긴급","holding_type":"해외주식","title":"가상테크 공장 화재로 생산 중단, 재가동 일정 미정","body":"해외 상장사 가상테크는 공장 화재로 생산이 중단됐다고 공시했다. 재가동 일정과 손실 규모는 아직 확인되지 않았다. 회사는 확인된 진행 상황을 후속 공시로 알릴 예정이다.","judgment_event":"공장 화재","notice_required":["화재","생산","보유","공시"],"notice_forbidden":["복구가 완료","재가동 예정일","신용 대출","담보비율","보상하겠습니다","매도하시"]},
+    {"id":"body_missing","entity":"가상바이오","event_type":"기타리스크","body_status":"missing","grade":"참고","holding_type":"주식","title":"가상바이오 생산시설 관련 소식","body":"","judgment_event":"생산시설 관련 보도","notice_required":[],"notice_forbidden":[],"must_suppress_notice":true},
+    {"id":"competitor_system","entity":"가상증권","event_type":"시스템장애","body_status":"verified","grade":"참고","holding_type":"주식","title":"가상증권 앱 접속 장애 발생, 고객 주문 영향 확인 중","body":"가상증권은 자사 앱 접속 장애가 발생해 고객 주문에 미친 영향을 확인 중이라고 밝혔다. 복구 시점과 보상 여부는 확정되지 않았다.","judgment_event":"경쟁사 앱 장애","notice_required":[],"notice_forbidden":[],"must_suppress_notice":true}
+  ]
+}
