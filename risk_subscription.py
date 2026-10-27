@@ -304,6 +304,8 @@ def collect(config, queue, verification=False, reviews_only=False):
            'body_quality_version': 1}
     if rules.get('event_grouping_version') == 1:
         job['event_grouping_version'] = 1
+    if rules.get('action_quality_version') == 1:
+        job['action_quality_version'] = 1
     if not verification:
         current_config(queue)
     frozen = freeze_exposure(job, exposure_raw, captured_at)

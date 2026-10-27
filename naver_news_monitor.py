@@ -6754,6 +6754,16 @@ JSON만 출력:
         a["_risk_score"] = calc_risk_score(a, exposure_data)
     filtered = dedup_same_mail_events(filtered)
 
+    # Sanitizers may remove an unsupported clause. Do not send an action whose
+    # source-linked task/method/trigger disappeared during post-processing.
+    if RISK_PROVIDER is not None and RISK_PROVIDER.job.get('action_quality_version') == 1:
+        from risk_result_validator import validate_action_plan
+        for article in filtered:
+            analysis = RISK_PROVIDER.analysis(article)
+            if article.get('grade') in ('긴급','주의') and analysis['body_status'] == 'verified':
+                validate_action_plan(analysis, article.get('title','')+'\n'+article.get('body',''),
+                                     action=article.get('action',''))
+
     # 발송 범위를 요약보다 먼저 확정한다 (2026-08-19).
     # 기존엔 요약을 filtered(선별 전체)로 만들고 그 뒤에 참고 등급을 걷어냈다.
     # 그래서 메일에 실리지 않은 기사가 요약문에만 등장했다.

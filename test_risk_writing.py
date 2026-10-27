@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import test_risk_subscription as integration_cases
-from risk_result_validator import digest, validate
+from risk_result_validator import digest, validate, validate_action_plan
 
 ROOT = Path(__file__).resolve().parent
 CASES = json.loads((ROOT/'tests/fixtures/risk_care_cases.json').read_text())['cases']
@@ -17,6 +17,77 @@ OUTPUTS = json.loads((ROOT/'tests/fixtures/risk_care_generated.json').read_text(
 
 
 class Writing(unittest.TestCase):
+    def action_plan_fixture(self):
+        queue=self.integration.fixture()
+        job,result=queue.data['jobs/test.json'],queue.data['results/test.json']
+        body=('가상방산은 입찰제한 대상 사업과 적용 기간을 공시했다. '
+              '집행정지 여부는 법원의 판단을 기다리고 있으며 신규 수주 영향은 아직 확정되지 않았다.')
+        action=('가상방산 보유 주식의 평가손을 재산출 → 입찰제한 대상 사업·기간을 회사 공시와 대조 → '
+                '법원의 집행정지 결정이 나오면 신규 수주에 미치는 영향을 재검토')
+        plan={'event_anchor':'입찰제한','current_task':'가상방산 보유 주식의 평가손을 재산출',
+              'check_source':'회사 공시','followup_condition':'법원의 집행정지 결정이 나오면',
+              'followup_task':'신규 수주에 미치는 영향을 재검토'}
+        item=job['input']['items'][0]
+        item.update(title='가상방산 입찰제한 공시, 집행정지 법원 판단 대기',description=body,desc=body,keyword='입찰제한')
+        job['input']['raw_articles']=[dict(item)]
+        job['body_manifest'][0].update(body=body,body_status='verified')
+        a=result['analyses']['one']
+        a.update(entity='가상방산',entities=['가상방산'],event_type='금감원제재',base_grade='주의',
+                 fact_summary=body,action=action,action_plan=plan,customer_notice=None,
+                 judgment={'핵심사건':'입찰제한','손실주체':'주주','당사연관':'직접','확정여부':'확정'},
+                 evidence=[{'source_segment':'body','source_hash':hashlib.sha256(body.encode()).hexdigest(),'quote':body}])
+        job['action_quality_version']=1
+        job['input_hash']=result['input_hash']=digest(job['input'])
+        job['body_manifest_hash']=result['body_manifest_hash']=digest(job['body_manifest'])
+        return queue
+
+    def test_execution_plan_rejects_missing_generic_or_ungrounded_parts(self):
+        import copy
+        queue=self.action_plan_fixture()
+        job,result=queue.data['jobs/test.json'],queue.data['results/test.json']
+        validate(result,job,job['input'],job['body_manifest'])
+        for fault in ('missing','generic','nominal','source','condition','final_trim'):
+            a=copy.deepcopy(result['analyses']['one'])
+            with self.subTest(fault=fault):
+                if fault=='missing': a.pop('action_plan')
+                elif fault=='generic':
+                    a['action_plan']['followup_task']='평가 영향 점검'
+                    a['action']+=' → 평가 영향 점검'
+                elif fault=='nominal':
+                    previous=a['action_plan']['current_task']
+                    a['action_plan']['current_task']='가상방산 보유 주식의 평가 변동과 입찰제한 효력을 회사 공시로 대조'
+                    a['action']=a['action'].replace(previous,a['action_plan']['current_task'])
+                elif fault=='source':
+                    a['action_plan']['event_anchor']='확정 부도'
+                    a['action']+=' → 확정 부도'
+                elif fault=='condition': a['action_plan']['followup_condition']='회사 공시'
+                with self.assertRaises(ValueError):
+                    validate_action_plan(a,job['body_manifest'][0]['body'],
+                                         action=a['action'][:25] if fault=='final_trim' else None)
+
+    def test_native_action_plan_survives_and_trimmed_action_blocks_smtp(self):
+        queue=self.action_plan_fixture()
+        exposure={'가상방산':[{'종목명':'가상방산','종목코드':'990001','종목유형':'주식','잔고(억)':'150','고객수':'1'}]}
+        smtp=integration_cases.SMTP()
+        with patch.object(self.bot,'load_exposure_data',return_value=exposure),contextlib.redirect_stdout(io.StringIO()):
+            self.integration.run_consume(queue,smtp)
+        action=queue.data['results/test.json']['analyses']['one']['action']
+        document=queue.data['previews/test.json']['html']
+        self.assertIn(html.escape(action,quote=True),document)
+        self.assertNotIn('action_plan',document)
+        self.assertTrue(smtp.calls)
+        # Recreate pristine synthetic history and mutate the real sanitizer path.
+        Path('seen_news.json').write_bytes(self.integration.before)
+        queue2=self.action_plan_fixture()
+        smtp2=integration_cases.SMTP()
+        with patch.object(self.bot,'load_exposure_data',return_value=exposure), \
+             patch.object(self.bot,'dedup_action_phrases',return_value=('가상방산 평가 영향 점검',[])), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             self.assertRaisesRegex(ValueError,'최종 문구 불일치'):
+            self.integration.run_consume(queue2,smtp2)
+        self.assertEqual(smtp2.calls,[])
+        self.assertEqual(Path('seen_news.json').read_bytes(),self.integration.before)
+
     def setUp(self):
         self.integration = integration_cases.Integration()
         self.integration.setUp()

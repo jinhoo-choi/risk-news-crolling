@@ -87,7 +87,8 @@ class CollectionQuality(unittest.TestCase):
         originals = {p: copy.deepcopy(v) for p, v in queue.data.items() if p.startswith('review/')}
         self.bot.is_hard_excluded = lambda *a: (False, '')
         self.bot.fetch_article_body = lambda *a: ''
-        self.collect(queue)
+        with patch.object(bridge, 'policy', return_value={'action_quality_version': 1}):
+            self.collect(queue)
         job = hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])
         actual = {b['article_id']: b for b in job['body_manifest']}
         self.assertEqual(set(actual), {r['article_id'] for r in CASES})
@@ -97,6 +98,7 @@ class CollectionQuality(unittest.TestCase):
             self.assertEqual(actual[row['article_id']]['body'], row['body'])
         self.assertEqual({p: queue.data[p] for p in originals}, originals)
         self.assertEqual(job['body_quality_version'], 1)
+        self.assertEqual(job['action_quality_version'], 1)
         self.assertEqual(job['paid_ai_calls'], 0)
         self.assertEqual(job['receipts'], {})
 
