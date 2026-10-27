@@ -69,6 +69,39 @@ def numbers(value):
     return {part.replace(',', '') for part in re.findall(r'\d+(?:[.,]\d+)*', value)}
 
 
+def validate_action_plan(analysis, source_text, action=None):
+    """Check source-linked execution details, not length or a quality score.
+
+    Semantic appropriateness and exposure suitability still need source review.
+    This contract also runs on the final post-processed text before any SMTP.
+    """
+    plan = analysis.get('action_plan')
+    if not isinstance(plan, dict):
+        raise ValueError('대응방안 실행 근거 누락')
+    action = analysis['action'] if action is None else action
+    for field in ('event_anchor','current_task','check_source','followup_condition','followup_task'):
+        value = plan.get(field)
+        if not isinstance(value, str) or not value.strip() or value not in action:
+            raise ValueError('대응방안 실행 항목 누락·최종 문구 불일치: '+field)
+    if plan['event_anchor'] not in source_text:
+        raise ValueError('대응방안 사건 근거가 원문에 없음')
+    if not re.search(r'공시|거래소|법원|회사 발표|공식 안내|시세|주문 내역|체결 내역|장애 공지', plan['check_source']):
+        raise ValueError('대응방안 대조 근거 불명확')
+    if not re.search(r'면(?:\s|$)|경우|때|(?:결정|공지|공시|발표|변경|발생|확인|악화|중단|재개|확정)\s*시(?:\s|$)',
+                     plan['followup_condition']):
+        raise ValueError('대응방안 후속 조건 불명확')
+    compact = lambda text: re.sub(r'\s+', '', text)
+    vague = {'공시확인','상태대조','고객안내준비','영향점검','평가영향점검',
+             '추가결정시','상황변경시','실제시장급락과당사관련현황을별도확인'}
+    if (any(compact(plan[f]) in vague for f in ('current_task','followup_condition','followup_task'))
+            or plan['current_task'] == plan['followup_task']):
+        raise ValueError('대응방안 추상 조치·조건 반복')
+    task = compact(plan['current_task'])
+    if (re.search(r'평가변동|관련현황|평가영향', task)
+            and not re.search(r'산출|재계산|재평가|분류|인계|미체결|담보부족|담보비율|청구내역|상환일정', task)):
+        raise ValueError('대응방안 현재 처리 업무가 추상적임')
+
+
 def validate(result, job, inputs, manifest):
     # 비유한 수와 bool을 숫자로 받지 않는다. bool은 JSON Schema도 거부한다.
     json.dumps(result, allow_nan=False)
@@ -169,6 +202,9 @@ def validate(result, job, inputs, manifest):
             text = analysis[field] or ''
             if numbers(text) - allowed_numbers:
                 raise ValueError('원문에 없는 수치: ' + field)
+        if (job.get('action_quality_version') == 1 and analysis['body_status'] == 'verified'
+                and analysis['base_grade'] in ('긴급','주의')):
+            validate_action_plan(analysis, '\n'.join(segments.values()))
         if len((analysis['customer_notice'] or '').splitlines()) > 5:
             raise ValueError('고객 안내 줄 수 초과')
     return {'classifications': len(ids), 'analyses': len(true_ids),

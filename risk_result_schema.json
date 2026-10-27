@@ -321,6 +321,45 @@
             "maxLength": 60
           },
           "description": "본문 인용으로 같은 사건의 직접 주체임을 검토한 회사만 기입. entities의 부분집합. 단순 계열사·배경 언급 제외."
+        },
+        "action_plan": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "event_anchor",
+            "current_task",
+            "check_source",
+            "followup_condition",
+            "followup_task"
+          ],
+          "properties": {
+            "event_anchor": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 120
+            },
+            "current_task": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 120
+            },
+            "check_source": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 120
+            },
+            "followup_condition": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 120
+            },
+            "followup_task": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 120
+            }
+          },
+          "description": "action_quality_version=1 회차의 검증된 긴급·주의에 필수. 원문 사건 표현과 최종 action의 실제 부분 문자열로 검수한다. 의미 판단을 자동 증명하지 않는다."
         }
       }
     }
