@@ -100,9 +100,9 @@ class Audit:
             return False
 
 
-def checkpoint(stage):
+def checkpoint(stage, **facts):
     if audit := ACTIVE.get():
-        audit.event(stage)
+        audit.event(stage, facts=facts or None)
 
 
 def record_error(stage, error, code='runtime_error', **facts):

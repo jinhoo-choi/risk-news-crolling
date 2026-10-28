@@ -24,16 +24,26 @@ class Queue:
         self.data = {'jobs/test.json': job, 'results/test.json': result, 'index.json': {'jobs': ['test']}}
         self.remote_seen = Path('seen_news.json').read_bytes()
         self.engine = 'subscription'
-    def get(self, path):
-        return copy.deepcopy(self.data.get(path)), digest(self.data[path]) if path in self.data else None
+        self.commits = {}
+    @staticmethod
+    def blob_sha(value):
+        raw = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False).encode()
+        return hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+    def get(self, path, ref=None):
+        data = self.data if ref is None else self.commits[ref]
+        return copy.deepcopy(data.get(path)), self.blob_sha(data[path]) if path in data else None
     def put(self, path, value, sha=None):
         if sha is not None and self.get(path)[1] != sha:
             raise RuntimeError('queue changed')
         self.data[path] = copy.deepcopy(value)
     def put_many(self, values, expected, deletions=()):
-        if any(self.get(path)[1] != sha for path, sha in expected.items()):
+        if any((self.blob_sha(self.data[path]) if path in self.data else None) != sha
+               for path, sha in expected.items()):
             raise RuntimeError('queue changed')
         self.data.update(copy.deepcopy(values))
+        commit = hashlib.sha1(json.dumps(self.data, sort_keys=True).encode()).hexdigest()
+        self.commits[commit] = copy.deepcopy(self.data)
+        return commit
     def source(self, path):
         if path == 'risk_subscription_config.json':
             return json.dumps({'engine': self.engine, 'policy_version': 'risk-subscription-v1'}).encode(), 'sha'
