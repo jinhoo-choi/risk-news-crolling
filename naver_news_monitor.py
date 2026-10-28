@@ -1331,7 +1331,10 @@ def _is_yeosin_dependent_clause(clause: str) -> bool:
     head = c[:6]
     return any(_NS_RE.sub("", k) in head for k in kws)
 
-_NOTICE_CLAUSE_RE = re.compile(r'(?:\s*(?:→|,|·)\s*)?[^→,·]{0,20}?고객\s*안내\s*준비[^→,·]{0,30}')
+# Remove only the unsupported notice phrase, never an arbitrary character window:
+# a 20-character prefix can start inside '공시되면' and erase the follow-up task.
+# The final action-plan guard still rejects any required phrase removed here.
+_NOTICE_CLAUSE_RE = re.compile(r'(?:\s*(?:→|,|·)\s*)?고객\s*안내\s*준비(?:\s*요청)?')
 _YEOSIN_TYPES_ACT = ("여신", "해외대출")
 _STOCK_TYPES_ACT  = ("주식", "해외주식")
 # 억. action_prompt.txt의 OB 제외 기준과 동일.
@@ -1576,6 +1579,22 @@ REVIEWED_ISSUER_TICKERS = {
     "네비우스 그룹": "NBIS",
     "어플라이드 디지털": "APLD",
 }
+
+
+def action_exposure_rows(entities, exposure_data):
+    """Keep each source row once across aliases, including same-code asset types.
+
+    find_exposure returns the original row objects. Separate source rows (even
+    identical-looking split balances) remain distinct for the downstream sum.
+    """
+    rows, seen = [], set()
+    for entity in entities:
+        for row in find_exposure(entity, exposure_data):
+            identity = id(row)
+            if identity not in seen:
+                seen.add(identity)
+                rows.append(row)
+    return rows
 
 
 def find_exposure(entity: str, exposure_data: dict) -> list:
@@ -6494,14 +6513,7 @@ JSON만 출력:
                     if _x not in _act_entities and _x not in _act_extra:
                         _act_extra.append(_x)
         _act_entities_full = list(_act_entities) + _act_extra
-        exp_rows = []
-        _seen_exp = set()
-        for _ae in _act_entities_full:
-            for r in find_exposure(_ae, exposure_data):
-                _rk = (r.get("종목명",""), r.get("종목코드",""))
-                if _rk not in _seen_exp:
-                    _seen_exp.add(_rk)
-                    exp_rows.append(r)
+        exp_rows = action_exposure_rows(_act_entities_full, exposure_data)
         # 해외주식 여부 — 익스포저 rows의 시장 컬럼 또는 keyword 패턴으로 판단
         is_overseas = any(r.get("시장","국내") == "해외" or r.get("종목유형","") in ("해외주식","해외대출") for r in exp_rows)
         def _fmt_exp(r):
