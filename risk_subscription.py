@@ -746,14 +746,37 @@ def notify_reviews(queue, job):
                     (' · 24시간 이상 미확인' if overdue else ' · 신규 확인 보류'))
     if not values:
         return
+    checkpoint('owner_notification')  # Production ACK is already durable.
     if not os.environ.get('EMAIL_PASSWORD'):
         raise RuntimeError('운영 알림 SMTP 설정 누락 — 발송 완료 상태 보존; Actions 확인 필요')
-    queue.put_many(values, expected)  # No SMTP unless the unique reservation is confirmed.
+    commit = None
+    try:
+        commit = queue.put_many(values, expected)
+        if not isinstance(commit, str) or not re.fullmatch(r'[0-9a-f]{40}', commit):
+            raise RuntimeError('운영 알림 선기록 commit 미확인 — SMTP 금지')
+    except Exception as error:
+        record_error('owner_notification', error, 'review_reservation_unconfirmed',
+                     reservation_commit=commit if isinstance(commit, str) and re.fullmatch(r'[0-9a-f]{40}', commit) else None)
+        raise  # An ambiguous write never authorizes a retry or SMTP.
     for path, value in values.items():
-        current, sha = getattr(queue, 'get_fresh', queue.get)(path)
-        if current != value or not sha:
-            raise RuntimeError('운영 알림 선기록 불일치 — SMTP 금지')
+        raw = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False).encode()
+        wanted_sha = hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+        sha = None
+        try:
+            # Read the commit returned by the confirmed CAS, not a cached moving
+            # main ref. Queue.get also verifies the returned blob's exact bytes.
+            current, sha = queue.get(path, ref=commit)
+            if current != value or sha != wanted_sha:
+                raise RuntimeError('운영 알림 선기록 불일치 — SMTP 금지')
+        except Exception as error:
+            record_error('owner_notification', error, 'review_reservation_readback_failed',
+                         reservation_commit=commit, read_ref=commit,
+                         expected_blob_sha=wanted_sha, observed_blob_sha=sha,
+                         notification_path=path)
+            raise
         expected[path] = sha
+    checkpoint('owner_notification', reservation_commit=commit, read_ref=commit,
+               verified_blob_shas=dict(expected), notification_count=len(values))
     bot = import_bot()
     run = os.environ.get('GITHUB_RUN_ID', '')
     details = ('회차: '+job['job_id']+'\n발송·이력 저장·ACK 완료. 전체 기사 분석은 미완료입니다.\n'
