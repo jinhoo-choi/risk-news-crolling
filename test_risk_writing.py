@@ -88,6 +88,74 @@ class Writing(unittest.TestCase):
         self.assertEqual(smtp2.calls,[])
         self.assertEqual(Path('seen_news.json').read_bytes(),self.integration.before)
 
+    def test_action_rows_preserve_asset_types_splits_and_deduplicate_alias_references(self):
+        credit={'종목명':'가상방산','종목코드':'990001','종목유형':'여신','잔고(억)':'40'}
+        stock={'종목명':'가상방산','종목코드':'990001','종목유형':'주식','잔고(억)':'150'}
+        split=dict(stock, **{'잔고(억)':'30'})
+        exposure={'가상방산':[credit,stock,split]}
+        rows=self.bot.action_exposure_rows(['가상방산','(주)가상방산','가상방산'],exposure)
+        self.assertEqual([id(r) for r in rows],[id(credit),id(stock),id(split)])
+        self.assertEqual(sum(float(r['잔고(억)']) for r in rows if r['종목유형']=='주식'),180)
+
+    def test_same_code_credit_first_retains_native_plan_and_html(self):
+        queue=self.action_plan_fixture()
+        analysis=queue.data['results/test.json']['analyses']['one']
+        analysis['action']+='하고 고객 안내 준비'
+        analysis['action_plan']['followup_task']+='하고 고객 안내 준비'
+        rows=[{'종목명':'가상방산','종목코드':'990001','종목유형':kind,
+               '잔고(억)':balance,'고객수':'1'} for kind,balance in [('여신','40'),('주식','150')]]
+        smtp=integration_cases.SMTP()
+        with patch.object(self.bot,'load_exposure_data',return_value={'가상방산':rows}), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.integration.run_consume(queue,smtp)
+        document=queue.data['previews/test.json']['html']
+        for key in ('followup_condition','followup_task'):
+            self.assertIn(html.escape(analysis['action_plan'][key],quote=True),document)
+        self.assertEqual(len(smtp.calls),3)
+
+    def test_notice_removal_preserves_condition_and_unrelated_task_but_guard_still_blocks(self):
+        action=('가상방산 평가손을 재산출하고 회사 공시와 대조 → '
+                '추가 어닝쇼크가 공시되면 담보부족 대응 대상을 재분류하고 고객 안내 준비')
+        plan={'event_anchor':'어닝쇼크','current_task':'가상방산 평가손을 재산출',
+              'check_source':'회사 공시','followup_condition':'추가 어닝쇼크가 공시되면',
+              'followup_task':'담보부족 대응 대상을 재분류하고 고객 안내 준비'}
+        credit=[{'종목유형':'여신','잔고(억)':'40'}]
+        cleaned,removed=self.bot.strip_unsupported_action_clauses(action,credit)
+        self.assertIn(plan['followup_condition'],cleaned)
+        self.assertIn('담보부족 대응 대상을 재분류',cleaned)
+        self.assertNotIn('고객 안내 준비',cleaned)
+        self.assertTrue(removed)
+        analysis={'action':action,'action_plan':plan,'body_status':'verified','base_grade':'주의'}
+        with self.assertRaisesRegex(ValueError,'followup_task'):
+            validate_action_plan(analysis,'추가 어닝쇼크가 공시됐다',action=cleaned)
+        stock=credit+[{'종목유형':'주식','잔고(억)':'150'}]
+        self.assertEqual(self.bot.strip_unsupported_action_clauses(action,stock),(action,[]))
+
+    def test_unheld_hsbc_native_reference_path_does_not_invent_exposure(self):
+        queue=self.action_plan_fixture()
+        job,result=queue.data['jobs/test.json'],queue.data['results/test.json']
+        # Synthetic event text; exercise the real no-exposure downgrade before
+        # action generation, rather than treating an isolated sanitizer as send scope.
+        old=json.dumps({'job':job,'result':result},ensure_ascii=False)
+        pair=json.loads(old.replace('가상방산','HSBC'))
+        job,result=pair['job'],pair['result']
+        body=job['body_manifest'][0]['body']
+        result['analyses']['one']['evidence'][0]['source_hash']=hashlib.sha256(body.encode()).hexdigest()
+        job['input_hash']=result['input_hash']=digest(job['input'])
+        job['body_manifest_hash']=result['body_manifest_hash']=digest(job['body_manifest'])
+        queue.data.update({'jobs/test.json':job,'results/test.json':result})
+        smtp=integration_cases.SMTP()
+        with patch.object(self.bot,'load_exposure_data',return_value={}),contextlib.redirect_stdout(io.StringIO()):
+            self.integration.run_consume(queue,smtp)
+        final=queue.data['filter-logs/test.json']['final']
+        self.assertTrue(final)
+        self.assertEqual(final[0]['grade'],'참고')
+        self.assertTrue(final[0]['_grade_locked'])
+        self.assertNotIn(html.escape(result['analyses']['one']['action'],quote=True),
+                         queue.data['previews/test.json']['html'])
+        self.assertEqual(queue.data['metrics/test.json']['provider_route_calls'].get('action',0),0)
+        self.assertEqual(self.bot.find_exposure('HSBC',{}),[])
+
     def setUp(self):
         self.integration = integration_cases.Integration()
         self.integration.setUp()
