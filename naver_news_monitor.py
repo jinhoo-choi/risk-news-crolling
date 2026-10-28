@@ -6498,7 +6498,8 @@ JSON만 출력:
         _seen_exp = set()
         for _ae in _act_entities_full:
             for r in find_exposure(_ae, exposure_data):
-                _rk = (r.get("종목명",""), r.get("종목코드",""))
+                # 같은 종목코드의 주식·여신은 서로 다른 보유 유형이다.
+                _rk = (r.get("종목명",""), r.get("종목코드",""), r.get("종목유형",""))
                 if _rk not in _seen_exp:
                     _seen_exp.add(_rk)
                     exp_rows.append(r)
