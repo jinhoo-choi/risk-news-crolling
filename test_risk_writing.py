@@ -88,6 +88,39 @@ class Writing(unittest.TestCase):
         self.assertEqual(smtp2.calls,[])
         self.assertEqual(Path('seen_news.json').read_bytes(),self.integration.before)
 
+    def test_same_ticker_stock_and_credit_keep_their_supported_actions(self):
+        # A ticker can have both stock and credit positions. Neither row is a
+        # duplicate of the other, even when the issuer name is also identical.
+        stock={'종목명':'가상방산','종목코드':'990001','종목유형':'주식',
+               '잔고(억)':'150','고객수':'1'}
+        credit={**stock,'종목유형':'여신','잔고(억)':'68'}
+        for positions in ([credit,stock,credit],[stock,credit,stock]):
+            with self.subTest(first_type=positions[0]['종목유형']):
+                Path('seen_news.json').write_bytes(self.integration.before)
+                queue=self.action_plan_fixture()
+                analysis=queue.data['results/test.json']['analyses']['one']
+                previous=analysis['action_plan']['followup_task']
+                analysis['action_plan']['followup_task']=previous+'하고 고객 안내 준비'
+                analysis['action']=analysis['action'].replace(
+                    previous,analysis['action_plan']['followup_task'])
+                captured=[]
+                native_strip=self.bot.strip_unsupported_action_clauses
+                def capture(action,rows):
+                    captured.append([r['종목유형'] for r in rows])
+                    return native_strip(action,rows)
+                smtp=integration_cases.SMTP()
+                with patch.object(self.bot,'load_exposure_data',
+                        return_value={'가상방산':positions}), \
+                     patch.object(self.bot,'strip_unsupported_action_clauses',capture), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    self.integration.run_consume(queue,smtp)
+                self.assertTrue(captured)
+                self.assertTrue(all(sorted(kinds)==['여신','주식'] for kinds in captured))
+                self.assertIn(html.escape(analysis['action'],quote=True),
+                              queue.data['previews/test.json']['html'])
+                self.assertEqual(queue.data['jobs/test.json']['status'],'delivery_complete')
+                self.assertTrue(smtp.calls)
+
     def setUp(self):
         self.integration = integration_cases.Integration()
         self.integration.setUp()
@@ -199,3 +232,4 @@ class Writing(unittest.TestCase):
 
 if __name__=='__main__':
     unittest.main()
+
