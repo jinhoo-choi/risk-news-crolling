@@ -26,7 +26,7 @@ from risk_delivery import Delivery
 from risk_provider import Provider
 from risk_outbox import make_packet, validate_packet, store_packet, legacy_packet
 from risk_shards import split_job, hydrate
-from risk_audit import checkpoint, record_error, run_audited, observe_pending, persist_unhandled
+from risk_audit import checkpoint, record_error, record_errors, run_audited, observe_pending, persist_unhandled
 from risk_continuity import (freeze_exposure, read_exposure, pending_reviews,
                              prepare_reviews, finish_reviews, delivery_view, delivery_verdicts, read_review)
 
@@ -270,11 +270,14 @@ def collect(config, queue, verification=False, reviews_only=False):
     checkpoint('body')
     with ThreadPoolExecutor(max_workers=6) as pool:
         manifest = list(pool.map(body, items))
+    diagnostics_batch = []
     for aid, diagnostics in body_errors:
         detail = dict(diagnostics)
         error = detail.pop('error', None)
         code = detail.pop('code')
-        record_error('body', error or RuntimeError(code), code, article_id=aid, **detail)
+        diagnostics_batch.append({'code': code, 'error': error or RuntimeError(code),
+                                  'facts': {'article_id': aid, **detail}})
+    record_errors('body', diagnostics_batch)
     # The live main can finish a prior run while collection is in progress.
     # Refresh delivery history; keep the exposure used to collect/filter this job.
     data, _ = queue.source('seen_news.json')

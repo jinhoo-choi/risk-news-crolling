@@ -3,6 +3,7 @@ import base64
 import copy
 import hashlib
 import json
+import threading
 from datetime import timedelta
 from pathlib import Path
 import unittest
@@ -603,6 +604,87 @@ class SnapshotRules(unittest.TestCase):
         self.assertEqual(queue.data['review/a.json']['attempts'], 12)
         self.assertEqual(queue.data['review/a.json']['status'], 'pending')
         self.assertEqual(queue.data['review/index.json']['pending'], ['a'])
+
+
+class ReviewReadConcurrency(unittest.TestCase):
+    def fixture(self, count=12):
+        queue = memory_fixtures.Memory()
+        ids = ['review'+str(i) for i in range(count)]
+        job = {'job_id': 'round', 'input': {'items': [
+            {'article_id': aid, 'title': 'immutable source'} for aid in ids]},
+            'body_manifest': [{'article_id': aid, 'body': 'immutable body'} for aid in ids]}
+        values, expected, _ = continuity.prepare_reviews(queue, job, dict.fromkeys(ids))
+        queue.put_many(values, expected)
+        return queue, job, ids
+
+    def concurrent_reads(self, queue):
+        original = queue.get
+        barrier, lock = threading.Barrier(6, timeout=3), threading.Lock()
+        stats = {'active': 0, 'maximum': 0, 'calls': []}
+        def get(path):
+            if not path.startswith('review/') or path == continuity.REVIEW_INDEX:
+                return original(path)
+            with lock:
+                stats['active'] += 1
+                stats['maximum'] = max(stats['maximum'], stats['active'])
+                stats['calls'].append(path)
+            try:
+                barrier.wait()
+                return original(path)
+            finally:
+                with lock:
+                    stats['active'] -= 1
+        return get, stats
+
+    def test_all_review_phases_bound_reads_preserve_order_and_original_shas(self):
+        for phase in ('pending', 'prepare', 'finish'):
+            with self.subTest(phase=phase):
+                queue, job, ids = self.fixture()
+                original = copy.deepcopy(queue.data)
+                shas = {aid: queue.get('review/'+aid+'.json')[1] for aid in ids}
+                get, stats = self.concurrent_reads(queue)
+                with patch.object(queue, 'get', side_effect=get):
+                    if phase == 'pending':
+                        result = continuity.pending_reviews(queue)
+                        self.assertEqual([r['article_id'] for r in result], ids)
+                    elif phase == 'prepare':
+                        _, expected, _ = continuity.prepare_reviews(queue, job, dict.fromkeys(ids))
+                    else:
+                        _, expected = continuity.finish_reviews(queue,
+                            {aid: {'sha': shas[aid], 'relevant': False} for aid in ids}, job['job_id'])
+                self.assertEqual(stats['maximum'], 6)
+                self.assertEqual(len(stats['calls']), len(ids))
+                self.assertEqual(len(set(stats['calls'])), len(ids))
+                self.assertEqual(queue.data, original)
+                if phase != 'pending':
+                    self.assertEqual({aid: expected['review/'+aid+'.json'] for aid in ids}, shas)
+
+    def test_prefetch_does_not_allow_changed_review_to_be_overwritten(self):
+        queue, job, ids = self.fixture(2)
+        values, expected, _ = continuity.prepare_reviews(queue, job, dict.fromkeys(ids))
+        queue.data['review/'+ids[0]+'.json']['reason'] = 'concurrent owner update'
+        with self.assertRaisesRegex(RuntimeError, 'changed'):
+            queue.put_many(values, expected)
+        self.assertEqual(queue.data['review/'+ids[0]+'.json']['reason'], 'concurrent owner update')
+
+    def test_missing_corrupt_or_failed_read_cannot_become_empty_pending(self):
+        for failure in ('missing', 'corrupt', 'unavailable'):
+            with self.subTest(failure=failure):
+                queue, _, ids = self.fixture(2)
+                path = 'review/'+ids[1]+'.json'
+                if failure == 'missing':
+                    del queue.data[path]
+                elif failure == 'corrupt':
+                    queue.data[path]['body']['body'] = 'changed source'
+                original = queue.get
+                def get(current):
+                    if failure == 'unavailable' and current == path:
+                        raise RuntimeError('GET unavailable')
+                    return original(current)
+                before = copy.deepcopy(queue.data)
+                with patch.object(queue, 'get', side_effect=get), self.assertRaises(RuntimeError):
+                    continuity.pending_reviews(queue)
+                self.assertEqual(queue.data, before)
 
 
 if __name__ == '__main__':
