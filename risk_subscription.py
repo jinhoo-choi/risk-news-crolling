@@ -469,13 +469,15 @@ def consume(queue, jid, self_test=False):
     def send(subject, html, self_only=False):
         if deferred_ids:
             html = html.replace("금일 리스크 뉴스 없음 — ", "")
-        targets = [bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER] if self_only else list(dict.fromkeys([bot.EMAIL_SENDER]+bot.EMAIL_RECEIVERS+bot.EMAIL_CC))
         if self_test:
             targets, self_only = [bot.NO_RESULT_RECEIVER], True
             subject = '[TEST] '+subject
+        else:
+            targets = [bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER] if self_only else bot.report_targets()
         if staged:
             raise RuntimeError('동일 회차 추가 메일 금지')
-        staged.update(subject=subject, html=html, targets=targets, self_only=self_only)
+        staged.update(subject=subject, html=html, targets=targets, self_only=self_only,
+                      recipient_route='configured' if self_only else 'configured_no_sender_copy')
         return True  # Stage native post-delivery history, without SMTP or main writes.
     def empty(subject, html):
         from risk_owner_verification import OWNER, ERROR_EMAIL
@@ -584,8 +586,10 @@ def finish_packet(queue, job, result, packet, bot, guard, native_send):
     if packet.get('recipient_route') == 'owner_status':
         from risk_owner_verification import OWNER, ERROR_EMAIL
         bot.NO_RESULT_RECEIVER = OWNER if self_test else ERROR_EMAIL
+    # Older immutable packets keep their original recipients and receipt contract.
+    include_sender_copy = packet.get('recipient_route', 'configured') == 'configured'
     targets = ([bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER] if packet['self_only']
-               else list(dict.fromkeys([bot.EMAIL_SENDER]+bot.EMAIL_RECEIVERS+bot.EMAIL_CC)))
+               else bot.report_targets(include_sender_copy=include_sender_copy))
     from risk_delivery import address_key
     if [address_key(t) for t in targets] != packet['expected_receipts']:
         raise RuntimeError('고정본 작성 이후 수신자 변경 — 발송 금지')
@@ -594,7 +598,8 @@ def finish_packet(queue, job, result, packet, bot, guard, native_send):
     current, _ = guard.read()
     if set(current.get('receipts', {})) != set(packet['expected_receipts']):
         with contextlib.redirect_stdout(io.StringIO()), patch.object(bot.smtplib, 'SMTP_SSL', guard.factory):
-            native_send(packet['subject'], packet['html'], self_only=packet['self_only'])
+            native_send(packet['subject'], packet['html'], self_only=packet['self_only'],
+                        include_sender_copy=include_sender_copy)
     guard.complete()
     if not self_test:
         checkpoint('history_local')

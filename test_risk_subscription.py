@@ -89,7 +89,8 @@ class Integration(unittest.TestCase):
         for key in ('EMAIL_SENDER','EMAIL_PASSWORD','EMAIL_RECEIVER','ANTHROPIC_API_KEY','NAVER_CLIENT_ID','NAVER_CLIENT_SECRET'):
             os.environ[key] = 'fake'
         os.environ['EMAIL_SENDER'] = 'sender@example.invalid'
-        os.environ['EMAIL_RECEIVER'] = 'group@example.invalid'
+        # Keep the three-target recovery fixture explicit, independent of SMTP login.
+        os.environ['EMAIL_RECEIVER'] = 'sender@example.invalid,group@example.invalid'
         os.environ['EMAIL_CC'] = 'cc@example.invalid'
         os.environ['NO_RESULT_RECEIVER'] = 'owner@example.invalid'
         os.environ['GITHUB_REF'] = 'refs/heads/main'
