@@ -52,7 +52,7 @@ def validate_packet(value, job, result):
             or (job.get('expected_receipts') and targets != job['expected_receipts'])):
         raise RuntimeError('발송 고정본 수신자 불일치')
     route = value.get('recipient_route', 'configured')
-    if route not in {'configured', 'owner_status'}:
+    if route not in {'configured', 'configured_no_sender_copy', 'owner_status'}:
         raise RuntimeError('발송 고정본 수신 경로 오류')
     if route == 'owner_status':
         from risk_owner_verification import OWNER, ERROR_EMAIL

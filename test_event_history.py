@@ -376,7 +376,7 @@ class PersistenceTests(unittest.TestCase):
             def sendmail(self, sender, targets, message):
                 return {targets[0]: (550, b"refused")} if targets[0] == "fail@example.com" else {}
         with patch.object(nm.smtplib, "SMTP_SSL", SMTP), patch.object(nm, "EMAIL_SENDER", "ok@example.com"), \
-             patch.object(nm, "EMAIL_RECEIVERS", ["fail@example.com"]), patch.object(nm, "EMAIL_CC", []), \
+             patch.object(nm, "EMAIL_RECEIVERS", ["ok@example.com", "fail@example.com"]), patch.object(nm, "EMAIL_CC", []), \
              patch.object(nm, "_notify_partial_failure"), contextlib.redirect_stdout(io.StringIO()):
             self.assertIs(nm.send_email("test", "test"), False)
         with patch.object(nm.smtplib, "SMTP_SSL", SMTP), patch.object(nm, "NO_RESULT_RECEIVER", "ok@example.com"), \

@@ -5618,7 +5618,16 @@ def _notify_partial_failure(subject: str, refused: dict, total: int):
         print(f"  ⚠️ 거부 경고 메일 발송도 실패: {_e}")
 
 
-def send_email(subject: str, html_body: str, self_only: bool = False):
+def report_targets(*, include_sender_copy=False):
+    """Explicit report recipients; old immutable plans may retain their sender copy."""
+    configured = EMAIL_RECEIVERS + EMAIL_CC
+    targets = list(dict.fromkeys(([EMAIL_SENDER] if include_sender_copy else []) + configured))
+    if not targets:
+        raise RuntimeError('정기 보고 수신자 미설정 — 발송 금지')
+    return targets
+
+
+def send_email(subject: str, html_body: str, self_only: bool = False, *, include_sender_copy=False):
     """리스크 메일 발송.
     self_only=True면 전체 수신자 대신 보낸사람(NO_RESULT_RECEIVER 우선, 없으면 SENDER)
     에게만 발송한다. 카드 본문(html_body)은 동일하게 유지된다.
@@ -5637,9 +5646,8 @@ def send_email(subject: str, html_body: str, self_only: bool = False):
     if self_only:
         targets = [NO_RESULT_RECEIVER if NO_RESULT_RECEIVER else EMAIL_SENDER]
     else:
-        # 발신자 본인도 명시적으로 대상에 포함 — To 헤더에만 넣고 envelope에서
-        # 빠뜨리면 본인도 미착신되는 문제를 방지. dict.fromkeys로 순서 유지 중복제거
-        targets = list(dict.fromkeys([EMAIL_SENDER] + EMAIL_RECEIVERS + EMAIL_CC))
+        # Keep every explicit group/direct recipient; SMTP login is not a recipient.
+        targets = report_targets(include_sender_copy=include_sender_copy)
 
     pending = list(targets)
     succeeded = []

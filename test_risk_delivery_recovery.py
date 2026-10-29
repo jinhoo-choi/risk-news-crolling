@@ -221,6 +221,85 @@ class Outbox(unittest.TestCase):
         q.get.assert_not_called()
 
 
+class ReportRouting(unittest.TestCase):
+    setUp = fixtures.Integration.setUp
+    tearDown = fixtures.Integration.tearDown
+    fixture = fixtures.Integration.fixture
+    run_consume = fixtures.Integration.run_consume
+
+    def test_groups_and_explicit_executive_keep_envelopes_without_implicit_sender(self):
+        from email import message_from_string
+        from email.utils import parseaddr
+        from risk_delivery import address_key
+        self.bot.EMAIL_RECEIVERS = ['general@example.invalid', 'pb@example.invalid']
+        self.bot.EMAIL_CC = ['executive@example.invalid', 'general@example.invalid']
+        q, smtp = self.fixture(), fixtures.SMTP()
+        self.run_consume(q, smtp)
+        targets = ['general@example.invalid', 'pb@example.invalid', 'executive@example.invalid']
+        self.assertEqual([c[0] for c in smtp.calls], [[a] for a in targets])
+        for recipients, raw in smtp.calls:
+            msg = message_from_string(raw)
+            self.assertEqual(parseaddr(msg['To'])[1], recipients[0])
+            self.assertIsNone(msg['Cc'])
+            self.assertIsNone(msg['Bcc'])
+        job = q.data['jobs/test.json']
+        self.assertEqual(job['expected_receipts'], [address_key(a) for a in targets])
+        self.assertNotIn(address_key(self.bot.EMAIL_SENDER), job['receipts'])
+        q.remote_seen = Path('seen_news.json').read_bytes()
+        bridge.acknowledge(q, 'test')
+        completed = copy.deepcopy(q.data['jobs/test.json'])
+        self.run_consume(q, smtp)
+        self.assertEqual(len(smtp.calls), 3)
+        self.assertEqual(q.data['jobs/test.json'], completed)
+        self.assertTrue(completed['ack'])
+
+    def test_explicit_sender_is_preserved_and_empty_config_cannot_fall_back(self):
+        self.bot.EMAIL_RECEIVERS = [self.bot.EMAIL_SENDER, 'general@example.invalid']
+        self.bot.EMAIL_CC = [self.bot.EMAIL_SENDER]
+        smtp = fixtures.SMTP()
+        with patch.object(smtplib, 'SMTP_SSL', lambda *a, **k: smtp):
+            self.bot.send_email('report', '<p>report</p>')
+        self.assertEqual([c[0] for c in smtp.calls], [[self.bot.EMAIL_SENDER], ['general@example.invalid']])
+        self.bot.EMAIL_RECEIVERS, self.bot.EMAIL_CC = [], []
+        with patch.object(smtplib, 'SMTP_SSL', side_effect=AssertionError('SMTP forbidden')):
+            with self.assertRaisesRegex(RuntimeError, '수신자 미설정'):
+                self.bot.send_email('report', '<p>report</p>')
+
+    def test_existing_all_accepted_sender_copy_packet_finishes_without_smtp_or_rewriting(self):
+        from risk_queue import digest
+        q, smtp = self.fixture(), fixtures.SMTP()
+        self.run_consume(q, smtp)  # All three explicitly configured targets accepted.
+        packet = q.data['outbox/test.json']
+        packet['recipient_route'] = 'configured'  # Pre-change frozen plan.
+        packet['packet_hash'] = digest({k: v for k, v in packet.items() if k != 'packet_hash'})
+        q.data['jobs/test.json']['outbox_hash'] = packet['packet_hash']
+        q.data['jobs/test.json']['created_at'] = now().isoformat()
+        frozen = copy.deepcopy(packet)
+        receipts = copy.deepcopy(q.data['jobs/test.json']['receipts'])
+        self.bot.EMAIL_RECEIVERS = ['group@example.invalid']  # Sender only came from old implicit copy.
+        Path('seen_news.json').write_bytes(self.before)
+        with patch.object(smtplib, 'SMTP_SSL', side_effect=AssertionError('accepted must not resend')):
+            bridge.recover(q, 'test')
+        self.assertEqual(q.data['outbox/test.json'], frozen)
+        self.assertEqual(q.data['jobs/test.json']['receipts'], receipts)
+        q.remote_seen = Path('seen_news.json').read_bytes()
+        bridge.acknowledge(q, 'test')
+        self.assertTrue(q.data['jobs/test.json']['ack'])
+
+    def test_group_rejection_keeps_history_and_never_falls_back_to_sender(self):
+        self.bot.EMAIL_RECEIVERS, self.bot.EMAIL_CC = ['general@example.invalid'], []
+        q, smtp = self.fixture(), fixtures.SMTP()
+        def refused(sender, recipients, raw):
+            smtp.calls.append((recipients, raw))
+            return {recipients[0]: (550, b'refused')}
+        smtp.sendmail = refused
+        with self.assertRaises(RuntimeError):
+            self.run_consume(q, smtp)
+        self.assertEqual([c[0] for c in smtp.calls], [['general@example.invalid']])
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+        self.assertFalse(q.data['jobs/test.json'].get('ack', False))
+
+
 class Recovery(unittest.TestCase):
     setUp = fixtures.Integration.setUp
     tearDown = fixtures.Integration.tearDown
@@ -370,6 +449,20 @@ class Recovery(unittest.TestCase):
         self.assertTrue(q.data['jobs/test.json']['ack'])
         self.resume(q, smtp)
         self.assertEqual(len(smtp.calls), 1)
+
+    def test_old_implicit_sender_partial_plan_recovers_only_unattempted_target(self):
+        from risk_queue import digest
+        q, original = self.partial()
+        packet = q.data['outbox/test.json']
+        packet['recipient_route'] = 'configured'
+        packet['packet_hash'] = digest({k: v for k, v in packet.items() if k != 'packet_hash'})
+        frozen = copy.deepcopy(packet)
+        self.bot.EMAIL_RECEIVERS = ['group@example.invalid']
+        fresh = fixtures.SMTP()
+        self.resume(q, fresh)
+        self.assertEqual([c[0] for c in fresh.calls], [['cc@example.invalid']])
+        self.assertEqual(q.data['outbox/test.json'], frozen)
+        self.assertEqual(len(q.data['jobs/test.json']['receipts']), 3)
 
     def test_all_accepted_recovery_restores_history_without_any_smtp(self):
         q, smtp = self.fixture(), fixtures.SMTP()
