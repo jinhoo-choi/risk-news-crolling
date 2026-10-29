@@ -33,6 +33,42 @@ class Evidence(unittest.TestCase):
     def records(self):
         return [v for p, v in self.q.data.items() if p.startswith('audit/')]
 
+    def test_body_diagnostics_keep_every_error_in_one_private_write(self):
+        record = audit.Audit(self.q, 'scheduled')
+        record.event('body')
+        token = audit.ACTIVE.set(record)
+        errors = [{'code': 'body_fetch_failed', 'error': TimeoutError('timeout '+str(i)),
+                   'facts': {'article_id': 'article'+str(i), 'authorization': 'private credential'}}
+                  for i in range(170)]
+        try:
+            with patch.object(self.q, 'put', wraps=self.q.put) as put:
+                self.assertTrue(audit.record_errors('body', errors))
+            self.assertEqual(put.call_count, 1)
+        finally:
+            audit.ACTIVE.reset(token)
+        saved = self.records()[0]
+        detail = saved['events'][-1]['facts']
+        self.assertEqual(saved['stage'], 'body')
+        self.assertEqual(detail['error_count'], 170)
+        self.assertEqual([e['error']['message'] for e in detail['errors']],
+                         ['timeout '+str(i) for i in range(170)])
+        self.assertNotIn('private credential', json.dumps(saved))
+
+    def test_batch_write_failure_preserves_all_errors_in_fallback(self):
+        record = audit.Audit(self.q, 'scheduled')
+        record.event('body')
+        token = audit.ACTIVE.set(record)
+        try:
+            with patch.object(self.q, 'put', side_effect=RuntimeError('write unavailable')):
+                self.assertFalse(audit.record_errors('body', [
+                    {'code':'body_fetch_failed', 'error':TimeoutError('first body')},
+                    {'code':'body_fetch_failed', 'error':TimeoutError('second body')}]))
+        finally:
+            audit.ACTIVE.reset(token)
+        fallback = Path('risk_audit_spool.jsonl').read_text()
+        for message in ('first body', 'second body', 'write unavailable'):
+            self.assertIn(message, fallback)
+
     def test_success_keeps_stages_and_no_delivery_mutation(self):
         original = copy.deepcopy(self.q.data)
         audit.run_audited(self.q, 'consume', 'test', lambda: audit.checkpoint('verify'))

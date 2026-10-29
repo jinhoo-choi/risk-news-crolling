@@ -4,6 +4,7 @@ import copy
 import csv
 import hashlib
 import io
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta, timezone
 
 from risk_queue import JOB_ID, digest, now
@@ -72,8 +73,8 @@ def review_index(queue):
     return index, sha
 
 
-def read_review(queue, article_id):
-    record, sha = queue.get('review/'+article_id+'.json')
+def _validated_review(article_id, snapshot):
+    record, sha = snapshot
     if (not record or record.get('article_id') != article_id or record.get('status') != 'pending'
             or record['item']['article_id'] != article_id or record['body']['article_id'] != article_id
             or record.get('source_hash') != digest({'item': record['item'], 'body': record['body']})):
@@ -81,9 +82,21 @@ def read_review(queue, article_id):
     return record, sha
 
 
+def read_review(queue, article_id):
+    return _validated_review(article_id, queue.get('review/'+article_id+'.json'))
+
+
+def _review_snapshots(queue, article_ids):
+    """Bound independent reads; retain order and each original CAS SHA."""
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        snapshots = list(pool.map(lambda aid: queue.get('review/'+aid+'.json'), article_ids))
+    return dict(zip(article_ids, snapshots))
+
+
 def pending_reviews(queue):
     index, _ = review_index(queue)
-    return [read_review(queue, aid)[0] for aid in index['pending']]
+    snapshots = _review_snapshots(queue, index['pending'])
+    return [_validated_review(aid, snapshots[aid])[0] for aid in index['pending']]
 
 
 def prepare_reviews(queue, job, verdicts, reason='analysis_pending', reasons=None):
@@ -96,22 +109,24 @@ def prepare_reviews(queue, job, verdicts, reason='analysis_pending', reasons=Non
     if (len(items) != len(job['input']['items']) or len(bodies) != len(job['body_manifest'])
             or set(items) != set(bodies)):
         raise RuntimeError('영속 보류 입력·본문 ID 중복·누락')
+    if any(aid not in items or aid not in bodies or not JOB_ID.fullmatch(aid) for aid in verdicts):
+        raise RuntimeError('보류 ID·본문 계약 오류')
+    snapshots = _review_snapshots(queue, [aid for aid, verdict in verdicts.items()
+                                         if verdict is None or aid in pending])
     instant = now().isoformat()
     for aid, verdict in verdicts.items():
-        if aid not in items or aid not in bodies or not JOB_ID.fullmatch(aid):
-            raise RuntimeError('보류 ID·본문 계약 오류')
         path = 'review/'+aid+'.json'
+        if aid in pending:
+            record, sha = _validated_review(aid, snapshots[aid])
         if verdict is not None:
             if aid in pending:
-                _, sha = read_review(queue, aid)
                 resolutions[aid] = {'sha': sha, 'relevant': verdict}
                 expected[path] = sha
             continue
-        record, sha = queue.get(path)
-        if aid in pending:
-            record, sha = read_review(queue, aid)
-        elif record is not None and record.get('status') != 'resolved':
-            raise RuntimeError('보류 원본과 색인 불일치')
+        if aid not in pending:
+            record, sha = snapshots[aid]
+            if record is not None and record.get('status') != 'resolved':
+                raise RuntimeError('보류 원본과 색인 불일치')
         if record and record.get('status') == 'resolved' and record.get('resolution_kind') == 'owner_excluded':
             continue  # Expiry/replay must not reopen an explicit owner no-send decision.
         previous = record or {}
@@ -145,10 +160,12 @@ def finish_reviews(queue, resolutions, job_id):
         return {}, {}
     index, index_sha = review_index(queue)
     values, expected = {}, {REVIEW_INDEX: index_sha}
+    if any(aid not in index['pending'] or type(resolution['relevant']) is not bool
+           for aid, resolution in resolutions.items()):
+        raise RuntimeError('보류 해결 색인·판정 오류')
+    snapshots = _review_snapshots(queue, list(resolutions))
     for aid, resolution in resolutions.items():
-        if aid not in index['pending'] or type(resolution['relevant']) is not bool:
-            raise RuntimeError('보류 해결 색인·판정 오류')
-        record, sha = read_review(queue, aid)
+        record, sha = _validated_review(aid, snapshots[aid])
         if sha != resolution['sha']:
             raise RuntimeError('보류 원본 변경 — ACK 전 해결 금지')
         record.update(status='resolved', resolved_at=now().isoformat(),

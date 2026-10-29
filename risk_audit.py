@@ -111,6 +111,17 @@ def record_error(stage, error, code='runtime_error', **facts):
     return False
 
 
+def record_errors(stage, errors):
+    """Persist every diagnostic in one event instead of one Git commit per error."""
+    if not errors or not (audit := ACTIVE.get()):
+        return False
+    details = [{'code': entry['code'], 'error': error_detail(entry['error']),
+                'facts': entry.get('facts', {})} for entry in errors]
+    return audit.event(stage, code='runtime_errors',
+                       facts={'error_count': len(details), 'errors': details},
+                       required=False, advance=False)
+
+
 def run_audited(queue, operation, job_id, action):
     audit = Audit(queue, operation, job_id)
     token = ACTIVE.set(audit)
