@@ -1,7 +1,1 @@
-{
-  "operation": "consume",
-  "job_id": "risk-production-41005983415",
-  "self_test": false,
-  "dry_run": false,
-  "request_id": "risk30-risk-production-41005983415-255ece2d"
-}
+{"operation":"consume","job_id":"risk-production-41135111977","self_test":false,"dry_run":false,"request_id":"risk31-3c44e4cd-a67d-452b-bb5d-399a9a938a20"}
