@@ -1,0 +1,31 @@
+name: Presentation report send to owner
+on:
+  push:
+    branches: [codex/risk-presentation-20261030]
+    paths: [risk_presentation_request.json]
+permissions:
+  contents: read
+concurrency:
+  group: risk-presentation-owner
+  cancel-in-progress: false
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Verify owner presentation path offline
+        run: python test_risk_presentation_send.py
+      - name: Send the exact stored report only to the existing owner
+        env:
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          RISK_QUEUE_TOKEN: ${{ secrets.RISK_QUEUE_TOKEN }}
+        run: python risk_presentation_send.py
