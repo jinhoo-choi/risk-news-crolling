@@ -1,7 +1,7 @@
 {
-  "request_id": "presentation-rehearsal-20261030-01",
+  "request_id": "presentation-command-test-20261030-02",
   "source_job_id": "risk-production-40869762988",
   "packet_hash": "55c2dd176ad47d1acb26bb50245ae025332cd66a65867060ed12008d9f6b0590",
-  "expires_at": "2026-10-30T03:45:00+00:00",
+  "expires_at": "2026-10-30T03:55:00+00:00",
   "confirm_owner_replay": true
 }
