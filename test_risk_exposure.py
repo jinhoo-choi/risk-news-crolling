@@ -18,6 +18,38 @@ def row(name, code='000001', kind='주식', bank='20', branch='5'):
 
 
 class Exposure(unittest.TestCase):
+    def test_confirmed_sanction_keeps_existing_exposure_floor_and_score(self):
+        name = '테스트반도체'
+        exp = {name: [row(name, bank='49', branch='10')]}
+        article = {'entity': name, 'entities': [name], 'event_type': '금감원제재',
+                   'title': f'코스닥 {name}, 거래처와 짜고 매출 부풀려…회사·전 대표 고발',
+                   '_ai_confidence': 0.93, 'customer_notice': '기존 안내'}
+        for initial in ('주의', '긴급'):
+            with self.subTest(initial=initial), redirect_stdout(io.StringIO()):
+                final = bot.regrade_by_score([dict(article, grade=initial)], exp)
+            self.assertEqual(len(final), 1)
+            self.assertEqual(final[0]['grade'], '참고')
+            self.assertEqual(final[0]['_risk_score'], 3.5)
+            self.assertEqual(bot.display_risk_score(final[0]), 1.8)
+            self.assertTrue(final[0]['_grade_locked'])
+            self.assertIsNone(final[0]['customer_notice'])
+            self.assertFalse(bot.is_market_news(final[0]))
+        for balance, expected in (('99', '참고'), ('100', '긴급')):
+            with self.subTest(balance=balance), redirect_stdout(io.StringIO()):
+                final = bot.regrade_by_score([dict(article, grade='긴급')],
+                    {name: [row(name, bank=balance, branch='0')]})
+            self.assertEqual(final[0]['grade'], expected)
+
+    def test_listing_followup_below_floor_stays_excluded(self):
+        name = '테스트반도체'
+        article = {'entity': name, 'entities': [name], 'event_type': '거래정지',
+                   'title': f'거래소, 거래정지 {name} 실질심사 대상 여부 내달 결정',
+                   'grade': '주의', '_ai_confidence': 0.93}
+        with redirect_stdout(io.StringIO()):
+            final = bot.regrade_by_score([article],
+                {name: [row(name, bank='49', branch='10')]})
+        self.assertEqual(final, [])
+
     def test_market_statistics_without_issuer_omit_exposure_card(self):
         for entity in ("", [], ["", " "]):
             with self.subTest(entity=entity), patch.object(bot, "find_exposure",
