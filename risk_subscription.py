@@ -718,6 +718,73 @@ def acknowledge(queue, jid):
                       'body_deferred_count': len(job.get('body_deferred_ids', []))}))
 
 
+def review_notice_rows(records, grouping):
+    """Presentation only: explicit whole-incident reviews, bound to frozen sources.
+
+    Never infer equivalence from headlines, dates, entities or shared markets.
+    Missing/stale/ambiguous annotations fall back to individual article rows.
+    Article reservations, pending records and all production state stay separate.
+    """
+    groups = grouping.get('groups', []) if isinstance(grouping, dict) and grouping.get('schema_version') == 1 else []
+    if not isinstance(groups, list):
+        groups = []
+    memberships = {}
+    for group in groups:
+        if isinstance(group, dict) and isinstance(group.get('members'), list):
+            for member in group['members']:
+                if isinstance(member, dict) and isinstance(member.get('article_id'), str):
+                    aid = member['article_id']
+                    memberships[aid] = memberships.get(aid, 0)+1
+    assignment = {}
+    for index, group in enumerate(groups):
+        if (not isinstance(group, dict) or group.get('review_scope') != 'complete_risk_event_set'
+                or not isinstance(group.get('label'), str) or not group['label'].strip()
+                or not isinstance(group.get('event_id'), str) or not JOB_ID.fullmatch(group['event_id'])
+                or not isinstance(group.get('members'), list) or len(group['members']) < 2):
+            continue
+        members = group['members']
+        if any(not isinstance(m, dict) or not isinstance(m.get('article_id'), str)
+               or memberships.get(m['article_id']) != 1 for m in members):
+            continue  # Overlapping annotations cannot bridge independent incidents.
+        for member in members:
+            aid = member['article_id']
+            if aid not in records:
+                continue
+            record, phase = records[aid]
+            body = record['body']
+            quotes = member.get('evidence_quotes')
+            if (member.get('source_hash') != record['source_hash']
+                    or body.get('body_status') != 'verified' or body.get('truncated')
+                    or body.get('source_url') != record['item']['url']
+                    or not isinstance(quotes, list) or not quotes
+                    or any(not isinstance(q, str) or not q.strip() or q not in body['body'] for q in quotes)):
+                continue
+            assignment[aid] = (index, phase)
+    buckets = {}
+    for aid, (record, phase) in records.items():
+        key = assignment.get(aid, ('article', aid))
+        buckets.setdefault(key, []).append((record, phase))
+    rows = []
+    for key, members in buckets.items():
+        lines = []
+        if len(members) > 1:
+            lines.append('[동일 사건 검토] '+groups[key[0]]['label']+' · 기사 '+str(len(members))+'건')
+            record, phase = members[0]
+            first_seen = min((r['first_seen_at'] for r, _ in members), key=utc_time)
+            lines.extend(['대표 기사: '+record['item']['title'], record['item']['url'],
+                          '관련 원문:\n'+'\n'.join(r['item']['url'] for r, _ in members[1:]),
+                          '묶음 최초 확인: '+first_seen+
+                          (' · 24시간 이상 미확인' if phase == 'overdue' else ' · 신규 확인 보류'),
+                          '개별 제목·최초 확인 시각·보류 사유는 원본 보류 기록에 보존했습니다.'])
+        else:
+            record, phase = members[0]
+            item = record['item']
+            lines.append(item['title']+'\n'+item['url']+'\n최초 확인: '+record['first_seen_at']+
+                         (' · 24시간 이상 미확인' if phase == 'overdue' else ' · 신규 확인 보류'))
+        rows.append('\n'.join(lines))
+    return rows
+
+
 def notify_reviews(queue, job):
     """One owner-only notice per unresolved article/stage, after delivery ACK.
 
@@ -727,7 +794,7 @@ def notify_reviews(queue, job):
     if job.get('status') != 'completed' or not job.get('ack') or not job.get('history_saved'):
         return
     ids = set(job.get('deferred_ids', []))-set(job.get('body_deferred_ids', []))
-    values, expected, rows = {}, {}, []
+    values, expected, records = {}, {}, {}
     instant = now()
     for aid in sorted(ids):
         record, _ = queue.get('review/'+aid+'.json')
@@ -749,11 +816,11 @@ def notify_reviews(queue, job):
                         'job_id': job['job_id'], 'status': 'sending',
                         'attempt_id': uuid.uuid4().hex, 'attempted_at': instant.isoformat()}
         expected[path] = sha
-        item = record['item']
-        rows.append(item['title']+'\n'+item['url']+'\n최초 확인: '+record['first_seen_at']+
-                    (' · 24시간 이상 미확인' if overdue else ' · 신규 확인 보류'))
+        records[aid] = (record, phase)
     if not values:
         return
+    grouping, _ = queue.get('review/notification-groups.json')
+    rows = review_notice_rows(records, grouping)
     checkpoint('owner_notification')  # Production ACK is already durable.
     if not os.environ.get('EMAIL_PASSWORD'):
         raise RuntimeError('운영 알림 SMTP 설정 누락 — 발송 완료 상태 보존; Actions 확인 필요')
@@ -794,7 +861,10 @@ def notify_reviews(queue, job):
         details += '\nActions: https://github.com/jinhoo-choi/risk-news-crolling/actions/runs/'+run
     try:
         with contextlib.redirect_stdout(io.StringIO()):
-            accepted = bot.send_email_error('기사 확인 필요 '+str(len(rows))+'건', details, operational=True)
+            summary = '기사 확인 필요 '+str(len(records))+'건'
+            if len(rows) < len(records):
+                summary += ' · 검토 묶음 '+str(len(rows))+'개'
+            accepted = bot.send_email_error(summary, details, operational=True)
     except Exception:
         accepted = False
     for value in values.values():

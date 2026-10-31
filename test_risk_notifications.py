@@ -70,6 +70,127 @@ class ReviewNotifications(unittest.TestCase):
         self.run_consume(queue, smtp)
         return queue, smtp
 
+    def notice_group_fixture(self):
+        queue, smtp = self.delivered()
+        job = queue.data['jobs/test.json']
+        first = queue.data['review/held.json']
+        first['body'].update(body='30일 미국 시장 하락. 독립 기업 사고는 없다.',
+                             body_status='verified', truncated=False,
+                             source_url=first['item']['url'])
+        first['source_hash'] = bridge.digest({'item': first['item'], 'body': first['body']})
+        second = copy.deepcopy(first)
+        second['article_id'] = second['item']['article_id'] = second['body']['article_id'] = 'sibling'
+        second['item'].update(title='같은 시장 움직임 재보도', url='https://example.invalid/sibling')
+        second['body']['source_url'] = second['item']['url']
+        second['source_hash'] = bridge.digest({'item': second['item'], 'body': second['body']})
+        queue.data['review/sibling.json'] = second
+        job['deferred_ids'].append('sibling')
+        grouping = {'schema_version': 1, 'groups': [{
+            'event_id': 'US-20261030-close', 'label': '10월 30일 미국 시장 하락',
+            'review_scope': 'complete_risk_event_set',
+            'members': [{'article_id': r['article_id'], 'source_hash': r['source_hash'],
+                         'evidence_quotes': ['30일 미국 시장 하락.']} for r in (first, second)]}]}
+        queue.data['review/notification-groups.json'] = grouping
+        return queue, smtp, grouping
+
+    def test_grouped_notice_preserves_individual_sources_reservations_and_production(self):
+        queue, smtp, grouping = self.notice_group_fixture()
+        reviews = {p: copy.deepcopy(v) for p, v in queue.data.items() if p.startswith('review/')}
+        before = Path('seen_news.json').read_bytes()
+        self.ack(queue, smtp)
+        subject, document = self.message(smtp.calls[-1])
+        self.assertIn('기사 확인 필요 2건 · 검토 묶음 1개', document)
+        self.assertEqual(document.count('[동일 사건 검토]'), 1)
+        self.assertEqual(document.count('대표 기사:'), 1)
+        self.assertIn('관련 원문:', document)
+        self.assertNotIn('같은 시장 움직임 재보도', document)
+        for aid in ('held', 'sibling'):
+            self.assertIn(queue.data['review/'+aid+'.json']['item']['url'], document)
+        self.assertEqual(reviews, {p: v for p, v in queue.data.items() if p.startswith('review/')})
+        self.assertEqual(Path('seen_news.json').read_bytes(), before)
+        notices = [v for p, v in queue.data.items() if p.startswith('notifications/')]
+        self.assertEqual(len(notices), 2)
+        self.assertTrue(all(v['status'] == 'accepted' for v in notices))
+        snapshot = copy.deepcopy(queue.data['jobs/test.json'])
+        bridge.notify_reviews(queue, snapshot)
+        self.assertEqual(len(smtp.calls), 4)
+        self.assertEqual(queue.data['jobs/test.json'], snapshot)
+
+    def test_invalid_stale_partial_and_overlapping_groups_fall_back_to_individual_rows(self):
+        queue, smtp, grouping = self.notice_group_fixture()
+        records = {aid: (queue.data['review/'+aid+'.json'], 'initial') for aid in ('held', 'sibling')}
+        cases = [None, {}, {'schema_version': 1, 'groups': None}]
+        for fault in ('hash', 'quote', 'scope', 'member', 'overlap', 'title_only'):
+            value = copy.deepcopy(grouping)
+            group = value['groups'][0]
+            if fault == 'hash': group['members'][1]['source_hash'] = '0'*64
+            if fault == 'quote': group['members'][1]['evidence_quotes'] = ['not in source']
+            if fault == 'scope': group['review_scope'] = 'headline_only'
+            if fault == 'member': group['members'][1]['article_id'] = []
+            if fault == 'overlap': value['groups'].append(copy.deepcopy(group))
+            if fault == 'title_only': group['members'][1].pop('evidence_quotes')
+            cases.append(value)
+        for value in cases:
+            with self.subTest(value=value):
+                self.assertEqual(len(bridge.review_notice_rows(records, value)), 2)
+        # A shared article never bridges a new independent risk into the group.
+        third = copy.deepcopy(records['held'][0])
+        third['item'].update(title='같은 시장이지만 기업 횡령 발생', url='https://example.invalid/crime')
+        records['crime'] = (third, 'initial')
+        rows = bridge.review_notice_rows(records, grouping)
+        self.assertEqual(len(rows), 2)
+        self.assertIn('기업 횡령', rows[1])
+        # No annotation may hide a routine bad body or its original metadata.
+        for field, value in (('body_status', 'unreadable'), ('truncated', True),
+                             ('source_url', 'https://example.invalid/other')):
+            changed = copy.deepcopy(records)
+            changed['sibling'][0]['body'][field] = value
+            self.assertEqual(len(bridge.review_notice_rows(changed, grouping)), 3)
+
+    def test_grouping_keeps_age_phases_separate_and_does_not_renotify_old_members(self):
+        queue, smtp, grouping = self.notice_group_fixture()
+        records = {aid: (queue.data['review/'+aid+'.json'], phase)
+                   for aid, phase in (('held', 'initial'), ('sibling', 'overdue'))}
+        rows = bridge.review_notice_rows(records, grouping)
+        self.assertEqual(len(rows), 2)
+        self.assertIn('24시간 이상', rows[1])
+        # Even a failed owner-only grouped notice retains both uncertain reservations.
+        failed = fixtures.native_fixtures.SMTP(fail_at=1)
+        with self.assertRaisesRegex(RuntimeError, '운영 알림 SMTP'):
+            self.ack(queue, failed)
+        self.assertTrue(queue.data['jobs/test.json']['ack'])
+        notices = [v for p, v in queue.data.items() if p.startswith('notifications/')]
+        self.assertEqual(len(notices), 2)
+        self.assertTrue(all(v['status'] == 'uncertain' for v in notices))
+        with patch.object(self.bot, 'send_email_error') as send:
+            bridge.notify_reviews(queue, queue.data['jobs/test.json'])
+        send.assert_not_called()
+
+    def test_existing_article_reservation_does_not_hide_a_new_group_member(self):
+        queue, smtp, grouping = self.notice_group_fixture()
+        self.ack(queue, smtp)
+        # The next source is reviewed explicitly, while both old article receipts
+        # remain accepted. Only the new article may enter this notice.
+        record = copy.deepcopy(queue.data['review/sibling.json'])
+        record['article_id'] = record['item']['article_id'] = record['body']['article_id'] = 'new'
+        record['item'].update(title='새 원문', url='https://example.invalid/new')
+        record['body']['source_url'] = record['item']['url']
+        record['source_hash'] = bridge.digest({'item': record['item'], 'body': record['body']})
+        queue.data['review/new.json'] = record
+        queue.data['jobs/test.json']['deferred_ids'].append('new')
+        grouping['groups'][0]['members'].append({
+            'article_id': 'new', 'source_hash': record['source_hash'],
+            'evidence_quotes': ['30일 미국 시장 하락.']})
+        queue.data['review/notification-groups.json'] = grouping
+        with patch.object(bridge.smtplib, 'SMTP_SSL', return_value=smtp):
+            bridge.notify_reviews(queue, queue.data['jobs/test.json'])
+        self.assertEqual(len(smtp.calls), 5)
+        document = self.message(smtp.calls[-1])[1]
+        self.assertIn('https://example.invalid/new', document)
+        self.assertNotIn('https://example.invalid/held', document)
+        self.assertNotIn('https://example.invalid/sibling', document)
+        self.assertIn('기사 확인 필요 1건', document)
+
     def message(self, call):
         recipients, raw = call
         message = message_from_string(raw)
