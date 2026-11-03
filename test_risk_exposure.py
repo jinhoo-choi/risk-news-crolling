@@ -46,7 +46,8 @@ class Exposure(unittest.TestCase):
     def test_reviewed_korean_names_resolve_only_exact_snapshot_ticker(self):
         names = [("코어위브", "CRWV", "CoreWeave, Inc."),
                  ("네비우스 그룹", "NBIS", "Nebius Group N.V."),
-                 ("어플라이드 디지털", "APLD", "Applied Digital Corporation")]
+                 ("어플라이드 디지털", "APLD", "Applied Digital Corporation"),
+                 ("루멘텀", "LITE", "Lumentum Holdings Inc.")]
         for alias, ticker, canonical in names:
             with self.subTest(alias=alias):
                 exp = {canonical: [row(canonical, ticker), row(canonical, ticker, "여신")],

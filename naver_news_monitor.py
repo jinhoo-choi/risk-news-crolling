@@ -1578,6 +1578,7 @@ REVIEWED_ISSUER_TICKERS = {
     "코어위브": "CRWV",
     "네비우스 그룹": "NBIS",
     "어플라이드 디지털": "APLD",
+    "루멘텀": "LITE",
 }
 
 
