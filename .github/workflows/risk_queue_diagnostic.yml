@@ -8,47 +8,66 @@ permissions:
 jobs:
   diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 8
     steps:
-      - name: Read existing queue access and rate-limit headers only
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify existing pending-review read path only
         env:
           RISK_QUEUE_TOKEN: ${{ secrets.RISK_QUEUE_TOKEN }}
         run: |
           python3 - <<'PY'
-          import json, os, urllib.request, urllib.error
-          token = os.environ.get('RISK_QUEUE_TOKEN', '')
-          if not token:
-              raise SystemExit('RISK_QUEUE_DIAG token_present=false')
-          for label, url in [
-              ('rate', 'https://api.github.com/rate_limit'),
-              ('private_metadata', 'https://api.github.com/repos/jinhoo-choi/insight-bot-data'),
-              ('private_ref', 'https://api.github.com/repos/jinhoo-choi/insight-bot-data/git/ref/heads/main'),
-              ('source_config', 'https://api.github.com/repos/jinhoo-choi/risk-news-crolling/contents/risk_subscription_config.json?ref=main')]:
-              request = urllib.request.Request(url, headers={
-                  'Authorization': 'Bearer '+token, 'Accept':'application/vnd.github+json',
-                  'X-GitHub-Api-Version':'2022-11-28', 'Cache-Control':'no-cache'})
-              try:
-                  response = urllib.request.urlopen(request, timeout=30)
-              except urllib.error.HTTPError as error:
-                  response = error
-              with response:
-                  raw = response.read(65536)
-                  try:
-                      data = json.loads(raw)
-                  except (ValueError, UnicodeError):
-                      data = {}
-                  message = data.get('message', '').lower()
-                  category = ('primary_rate_limit' if response.headers.get('X-RateLimit-Remaining') == '0'
-                              else 'secondary_rate_limit' if 'secondary rate limit' in message or 'abuse' in message
-                              else 'authorization' if any(s in message for s in ['resource not accessible','bad credentials','saml','permission','suspended'])
-                              else 'other' if response.code >= 400 else 'ok')
-                  result = {'probe':label, 'http':response.code, 'category':category,
-                            'smtp_calls':0, 'paid_ai_calls':0, 'writes':0}
-                  for field in ['X-RateLimit-Limit','X-RateLimit-Remaining','X-RateLimit-Used','X-RateLimit-Reset','Retry-After']:
-                      value = response.headers.get(field,'')
-                      result[field] = int(value) if value.isdigit() and len(value)<15 else None
-                  request_id = response.headers.get('X-GitHub-Request-Id','')
-                  import re
-                  result['request_id'] = request_id if re.fullmatch(r'[A-Za-z0-9:-]{1,100}',request_id) else 'unconfirmed'
-                  print('RISK_QUEUE_DIAG '+json.dumps(result,sort_keys=True))
+          import json, time, urllib.request
+          from risk_queue import Queue, REPOSITORY, digest
+          from risk_continuity import pending_reviews
+          from unittest.mock import patch
+          q = Queue()
+          request, get = q.request, q.get
+          calls, leases, times, remaining = [0], {}, [], []
+          def read_only(suffix, method='GET', data=None, repository=REPOSITORY):
+              if method != 'GET' or data is not None:
+                  raise AssertionError('diagnostic_write_forbidden')
+              calls[0] += 1
+              return request(suffix, method, data, repository)
+          def get_record(path, ref='main'):
+              value, sha = get(path, ref)
+              if path.startswith('review/') and path != 'review/index.json':
+                  leases[path] = sha
+              return value, sha
+          original = urllib.request.urlopen
+          def observe(req, *args, **kwargs):
+              times.append(time.monotonic())
+              response = original(req, *args, **kwargs)
+              number = response.headers.get('X-RateLimit-Remaining','')
+              if number.isdigit():
+                  remaining.append(int(number))
+              return response
+          q.request, q.get = read_only, get_record
+          started = time.monotonic()
+          with patch.object(urllib.request, 'urlopen', side_effect=observe):
+              q.preflight()
+              before, _ = q.get('jobs/risk-production-41776567223.json')
+              history, _ = q.source('seen_news.json')
+              records = pending_reviews(q)
+              if len(records) != len(leases):
+                  raise RuntimeError('review_count_mismatch')
+              head = q.request('/git/ref/heads/main')['object']['sha']
+              root = q.request('/git/commits/'+head)['tree']['sha']
+              start_tree_calls = calls[0]
+              actual = q.file_shas(leases, root)
+              tree_calls = calls[0]-start_tree_calls
+              if actual != leases:
+                  raise RuntimeError('review_snapshot_changed')
+              after, _ = q.get('jobs/risk-production-41776567223.json')
+              history_after, _ = q.source('seen_news.json')
+              if digest(before) != digest(after) or history != history_after:
+                  raise RuntimeError('production_snapshot_changed')
+          print('RISK_QUEUE_DIAG '+json.dumps({
+              'outcome':'passed', 'reviews_verified':len(records), 'lease_tree_reads':tree_calls,
+              'requests':calls[0], 'elapsed_seconds':round(time.monotonic()-started,2),
+              'minimum_start_interval':round(min(b-a for a,b in zip(times,times[1:])),3),
+              'remaining_first':remaining[0], 'remaining_last':remaining[-1],
+              'writes':0, 'smtp_calls':0, 'paid_ai_calls':0, 'production_unchanged':True
+          },sort_keys=True))
           PY
