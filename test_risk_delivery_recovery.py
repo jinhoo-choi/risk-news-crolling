@@ -7,6 +7,7 @@ import os
 import smtplib
 import unittest
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -16,10 +17,93 @@ import risk_subscription_request as request
 from risk_delivery import address_key
 from risk_outbox import sha, store_packet
 from risk_queue import Queue, QueueConflict, QueueReadUnavailable, digest, now
+import risk_queue
 import test_risk_subscription as fixtures
 
 
 class Conflicts(unittest.TestCase):
+    def test_parallel_readers_share_one_request_start_budget(self):
+        clock, starts = [0.0], []
+        def sleep(seconds):
+            clock[0] += seconds
+        def response(*args, **kwargs):
+            starts.append(clock[0])
+            value = Mock()
+            value.__enter__ = Mock(return_value=io.StringIO('{}'))
+            value.__exit__ = Mock(return_value=False)
+            return value
+        queues = [object.__new__(Queue) for _ in range(2)]
+        for q in queues:
+            q.token = 'synthetic-token'
+        with patch.object(risk_queue, '_NEXT_REQUEST_AT', 0.0), \
+                patch.object(risk_queue, '_RATE_LIMIT_ERROR', None), \
+                patch.object(risk_queue.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(risk_queue.time, 'sleep', side_effect=sleep), \
+                patch.object(risk_queue.urllib.request, 'urlopen', side_effect=response):
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                list(pool.map(lambda i: queues[i % 2].request('/contents/synthetic'), range(24)))
+        self.assertEqual(len(starts), 24)
+        self.assertTrue(all(b-a >= 0.149999 for a, b in zip(starts, starts[1:])))
+
+    def test_rate_limits_stop_pending_readers_and_writes_without_private_output(self):
+        cases = [(403, {'X-RateLimit-Remaining':'0', 'X-RateLimit-Reset':'2000000000'},
+                  'API rate limit exceeded', 'primary_rate_limit'),
+                 (403, {'Retry-After':'120'}, 'You have exceeded a secondary rate limit', 'secondary_rate_limit'),
+                 (429, {}, 'Too many requests', 'secondary_rate_limit')]
+        for code, headers, message, kind in cases:
+            with self.subTest(code=code, kind=kind):
+                q = object.__new__(Queue); q.token = 'synthetic-token'
+                body = json.dumps({'message':message, 'private':'PRIVATE ARTICLE synthetic-token'}).encode()
+                error = urllib.error.HTTPError('https://api.github.com', code, 'limited',
+                    dict(headers, **{'X-GitHub-Request-Id':'ABCD:1234'}), io.BytesIO(body))
+                output = io.StringIO()
+                with patch.object(risk_queue, '_RATE_LIMIT_ERROR', None), \
+                        patch.object(risk_queue, '_NEXT_REQUEST_AT', 0.0), \
+                        patch.object(risk_queue.urllib.request, 'urlopen', side_effect=error) as call, \
+                        contextlib.redirect_stdout(output):
+                    for method in ('GET', 'GET', 'PUT'):
+                        with self.assertRaisesRegex(RuntimeError, kind):
+                            q.request('/contents/PRIVATE_PATH', method)
+                    self.assertEqual(call.call_count, 1)
+                self.assertEqual(len(output.getvalue().splitlines()), 1)
+                self.assertTrue(risk_queue.HTTP_DIAGNOSTIC.fullmatch(output.getvalue().strip()))
+                for private in ('PRIVATE', q.token):
+                    self.assertNotIn(private, output.getvalue())
+
+    def test_permission_and_unknown_403_are_not_retried_or_called_rate_limits(self):
+        for body, kind in [(b'{"message":"Resource not accessible by personal access token"}', 'authorization'),
+                           (b'PRIVATE malformed body', 'unclassified')]:
+            q = object.__new__(Queue); q.token = 'synthetic-token'
+            error = urllib.error.HTTPError('https://api.github.com', 403, 'forbidden',
+                {'Retry-After':'PRIVATE', 'X-RateLimit-Remaining':'3\nPRIVATE',
+                 'X-GitHub-Request-Id':'bad\nPRIVATE'}, io.BytesIO(body))
+            output = io.StringIO()
+            with patch.object(risk_queue, '_RATE_LIMIT_ERROR', None), \
+                    patch.object(risk_queue.urllib.request, 'urlopen', side_effect=error) as call, \
+                    contextlib.redirect_stdout(output), self.assertRaisesRegex(RuntimeError, kind):
+                q.request('')
+            self.assertEqual(call.call_count, 1)
+            self.assertNotIn('PRIVATE', output.getvalue())
+            self.assertTrue(risk_queue.HTTP_DIAGNOSTIC.fullmatch(output.getvalue().strip()))
+
+    def test_atomic_batch_checks_932_leases_in_four_tree_reads(self):
+        q = object.__new__(Queue)
+        expected = {'review/synthetic'+str(i)+'.json': 'old'+str(i) for i in range(932)}
+        expected['review/missing.json'] = None
+        trees = {'root':[{'path':'subscription','type':'tree','sha':'subscription'}],
+                 'subscription':[{'path':'risk','type':'tree','sha':'risk'}],
+                 'risk':[{'path':'review','type':'tree','sha':'review'}],
+                 'review':[{'path':p.split('/')[-1], 'type':'blob', 'sha':sha}
+                           for p, sha in expected.items() if sha is not None]}
+        q.request = Mock(side_effect=lambda path: {'tree':trees[path.split('/')[-1]], 'truncated':False})
+        # Four trees, independent of record count; the fifth read is the commit
+        # used by put_many to obtain this root (see ref-race regression below).
+        self.assertEqual(q.file_shas(expected, 'root'), expected)
+        self.assertEqual(q.request.call_count, 4)
+        q.request = Mock(return_value={'tree':[], 'truncated':True})
+        with self.assertRaisesRegex(RuntimeError, '불완전'):
+            q.file_shas(expected, 'root')
+
     def test_conflict_diagnostics_distinguish_file_state_without_private_values(self):
         for state, fresh in [('same_file', ({'private': 'OLD'}, 'old')),
                              ('changed_file', ({'private': 'CHANGED'}, 'new')),
@@ -127,6 +211,13 @@ class Conflicts(unittest.TestCase):
         def api(path, method='GET', data=None):
             if path == '/git/ref/heads/main': return {'object': {'sha': head[0]}}
             if path.startswith('/git/commits/') and method == 'GET': return {'tree': {'sha': head[0]+'-tree'}}
+            if path.startswith('/git/trees/') and method == 'GET':
+                tree = path.split('/')[-1]
+                if tree.endswith('-tree'): entries = [{'path':'subscription','type':'tree','sha':'subscription'}]
+                elif tree == 'subscription': entries = [{'path':'risk','type':'tree','sha':'risk'}]
+                elif tree == 'risk': entries = [{'path':'jobs','type':'tree','sha':'jobs'}]
+                else: entries = [{'path':'test.json','type':'blob','sha':'unchanged'}]
+                return {'tree':entries,'truncated':False}
             if path == '/git/trees': bases.append(data['base_tree']); return {'sha': 'new-tree'}
             if path == '/git/commits': return {'sha': head[0]+'-child'}
             if method == 'PATCH':
@@ -136,13 +227,27 @@ class Conflicts(unittest.TestCase):
                     raise QueueConflict(method='PATCH', code=422)
                 return {}
             raise AssertionError(path)
-        q.request = api; q.get = Mock(return_value=({'old': True}, 'unchanged'))
+        q.request = Mock(side_effect=api); q.get = Mock(side_effect=AssertionError('per-file body GET forbidden'))
         with patch('risk_queue.time.sleep'):
             q.put_many({'jobs/test.json': {'ack': True}}, {'jobs/test.json': 'unchanged'})
         self.assertEqual(bases, ['one-tree', 'other-bot-tree'])
         self.assertEqual(len(refs), 2)
         self.assertTrue(all(r['force'] is False for r in refs))
-        self.assertEqual(q.get.call_args.kwargs, {'ref': 'other-bot'})
+        q.get.assert_not_called()
+        roots = [call.args[0] for call in q.request.call_args_list
+                 if call.args[0] in ('/git/trees/one-tree','/git/trees/other-bot-tree')]
+        self.assertEqual(roots, ['/git/trees/one-tree','/git/trees/other-bot-tree'])
+
+    def test_atomic_batch_changed_lease_blocks_before_any_write(self):
+        q = object.__new__(Queue)
+        q.request = Mock(side_effect=[{'object':{'sha':'fixed'}}, {'tree':{'sha':'root'}},
+            {'tree':[{'path':'subscription','type':'tree','sha':'subscription'}]},
+            {'tree':[{'path':'risk','type':'tree','sha':'risk'}]},
+            {'tree':[{'path':'review','type':'tree','sha':'review'}]},
+            {'tree':[{'path':'one.json','type':'blob','sha':'changed'}]}])
+        with self.assertRaisesRegex(RuntimeError, '원본 SHA 변경'):
+            q.put_many({'review/one.json':{'new':True}}, {'review/one.json':'original'})
+        self.assertTrue(all(len(call.args) == 1 for call in q.request.call_args_list))
 
 
 class Outbox(unittest.TestCase):
@@ -630,6 +735,22 @@ class Recovery(unittest.TestCase):
 
 
 class Request(unittest.TestCase):
+    def test_failure_forwards_only_safe_403_diagnostics(self):
+        value = {'operation':'consume', 'job_id':'test', 'self_test':False,
+                 'dry_run':False, 'request_id':'http-test'}
+        safe = ('RISK_QUEUE_HTTP method=GET http=403 kind=secondary_rate_limit '
+                'remaining=4700 reset=2000000000 retry_after=60 request_id=ABCD:1234')
+        error = request.subprocess.CalledProcessError(1, ['child'], output='\n'.join([
+            safe, safe+' PRIVATE', safe.replace('remaining=4700','remaining=PRIVATE'),
+            safe.replace('kind=secondary_rate_limit','kind=PRIVATE'), 'PRIVATE TRACE']),
+            stderr='PRIVATE RESPONSE')
+        output = io.StringIO()
+        with patch.object(request.Path, 'read_text', return_value=json.dumps(value)), \
+                patch.object(request.subprocess, 'run', side_effect=error), \
+                contextlib.redirect_stdout(output), self.assertRaises(request.subprocess.CalledProcessError):
+            request.main()
+        self.assertEqual(output.getvalue(), safe+'\n')
+
     def test_failure_forwards_only_fixed_queue_and_cleanup_diagnostics(self):
         value = {'operation':'consume', 'job_id':'test', 'self_test':False,
                  'dry_run':False, 'request_id':'conflict-test'}

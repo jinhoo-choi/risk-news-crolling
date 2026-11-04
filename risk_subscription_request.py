@@ -4,7 +4,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from risk_queue import JOB_ID
+from risk_queue import JOB_ID, HTTP_DIAGNOSTIC
 from risk_audit import STAGES, checkpoint, run_audited, persist_unhandled
 
 
@@ -46,7 +46,9 @@ def main():
         # Child stdout/stderr may contain private articles. Expose only fixed
         # outbox/queue phase metadata, never the captured traceback or payload.
         for line in (error.stdout or '').splitlines():
-            if re.fullmatch(r'RISK_OUTBOX_VERIFY (?:phase=put outcome=unconfirmed|'
+            if HTTP_DIAGNOSTIC.fullmatch(line):
+                print(line)
+            elif re.fullmatch(r'RISK_OUTBOX_VERIFY (?:phase=put outcome=unconfirmed|'
                             r'phase=read source=(?:put_commit|fresh) attempt=[1-3] '
                             r'outcome=(?:verified|missing|mismatch|unavailable|blocked) '
                             r'commit=(?:[0-9a-f]{40}|unconfirmed) http=(?:0|[1-5][0-9]{2}) '

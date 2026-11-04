@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -16,6 +17,16 @@ PREFIX = 'subscription/risk'
 BOT_ID = 'risk_monitor'
 POLICY = 'risk-subscription-v1'
 JOB_ID = re.compile(r'^[A-Za-z0-9_-]{1,80}$')
+HTTP_DIAGNOSTIC = re.compile(
+    r'RISK_QUEUE_HTTP method=(?:GET|POST|PUT|PATCH|DELETE) http=(?:403|429) '
+    r'kind=(?:primary_rate_limit|secondary_rate_limit|authorization|unclassified) '
+    r'remaining=(?:unknown|[0-9]{1,12}) reset=(?:unknown|[0-9]{1,12}) '
+    r'retry_after=(?:unknown|[0-9]{1,12}) request_id=[A-Za-z0-9:-]{1,100}')
+# One budget across the six readers and every Queue instance in this process.
+# 0.15 seconds caps request starts at 400/minute, leaving room for other bots.
+_REQUEST_LOCK = threading.Lock()
+_NEXT_REQUEST_AT = 0.0
+_RATE_LIMIT_ERROR = None
 
 
 class QueueConflict(RuntimeError):
@@ -50,6 +61,7 @@ class Queue:
             raise RuntimeError('RISK_QUEUE_TOKEN 미설정 — 비공개 자료 저장 중단')
 
     def request(self, suffix, method='GET', data=None, repository=REPOSITORY):
+        global _NEXT_REQUEST_AT, _RATE_LIMIT_ERROR
         if repository not in {REPOSITORY, 'jinhoo-choi/risk-news-crolling'}:
             raise ValueError('허용된 큐·운영 저장소만 접근')
         request = urllib.request.Request('https://api.github.com/repos/' + repository + suffix,
@@ -60,6 +72,15 @@ class Queue:
                 'X-GitHub-Api-Version': '2022-11-28'})
         attempts = 3 if method == 'GET' else 1
         for attempt in range(attempts):
+            with _REQUEST_LOCK:
+                if _RATE_LIMIT_ERROR is not None:
+                    # Stop queued readers and audit writes too. No blind retries
+                    # while this execution is known to be rate limited.
+                    raise RuntimeError(_RATE_LIMIT_ERROR)
+                delay = _NEXT_REQUEST_AT - time.monotonic()
+                if delay > 0:
+                    time.sleep(delay)
+                _NEXT_REQUEST_AT = time.monotonic() + 0.15
             try:
                 with urllib.request.urlopen(request, timeout=30) as response:
                     return json.load(response)
@@ -78,11 +99,38 @@ class Queue:
                     raise QueueConflict(request_id, kind, method, error.code) from None
                 if error.code == 404 and method == 'GET':
                     return None
-                if error.code in {429, 500, 502, 503, 504} and attempt+1 < attempts:
+                if error.code in {403, 429}:
+                    def number(header):
+                        value = error.headers.get(header, '') if error.headers else ''
+                        return value if re.fullmatch(r'[0-9]{1,12}', value) else 'unknown'
+                    remaining, reset, retry = (number(h) for h in
+                        ('X-RateLimit-Remaining', 'X-RateLimit-Reset', 'Retry-After'))
+                    try:
+                        detail = json.loads(error.read(8192)).get('message', '').lower()
+                    except (ValueError, AttributeError, TypeError):
+                        detail = ''
+                    kind = ('primary_rate_limit' if remaining == '0' else
+                            'secondary_rate_limit' if error.code == 429 or retry != 'unknown'
+                            or 'secondary rate limit' in detail or 'abuse' in detail else
+                            'authorization' if any(term in detail for term in
+                                ('resource not accessible', 'bad credentials', 'permission', 'saml', 'suspended'))
+                            else 'unclassified')
+                    diagnostic = (f'RISK_QUEUE_HTTP method={method} http={error.code} kind={kind} '
+                                  f'remaining={remaining} reset={reset} retry_after={retry} request_id={request_id}')
+                    if HTTP_DIAGNOSTIC.fullmatch(diagnostic):
+                        print(diagnostic)
+                    message = f'비공개 큐 {method} HTTP {error.code}; '+diagnostic
+                    if kind in {'primary_rate_limit', 'secondary_rate_limit'}:
+                        with _REQUEST_LOCK:
+                            _RATE_LIMIT_ERROR = message
+                    # No automatic write replay, nor a 1/2-second retry against
+                    # GitHub's reset/Retry-After. Preserve pending state instead.
+                    raise RuntimeError(message) from None
+                if error.code in {500, 502, 503, 504} and attempt+1 < attempts:
                     time.sleep(attempt+1)
                     continue
                 message = f'비공개 큐 {method} HTTP {error.code}; request_id={request_id}'
-                if method == 'GET' and error.code in {429, 500, 502, 503, 504}:
+                if method == 'GET' and error.code in {500, 502, 503, 504}:
                     raise QueueReadUnavailable(message, error.code, request_id) from None
                 raise RuntimeError(message) from None
             except (urllib.error.URLError, TimeoutError):
@@ -210,8 +258,9 @@ class Queue:
         for attempt in range(3):
             head = self.request('/git/ref/heads/main')['object']['sha']
             commit = self.request('/git/commits/'+head)
+            actual = self.file_shas(expected, commit['tree']['sha'])
             for path, wanted in expected.items():
-                if self.get(path, ref=head)[1] != wanted:
+                if actual[path] != wanted:
                     raise RuntimeError('큐 원본 SHA 변경 — 일괄 쓰기 보류')
             tree = self.request('/git/trees', 'POST', {'base_tree': commit['tree']['sha'], 'tree': entries})
             new = self.request('/git/commits', 'POST', {'message':'chore: private risk queue shards [skip ci]',
@@ -226,6 +275,40 @@ class Queue:
                 if current == head or attempt == 2:
                     raise
                 time.sleep(attempt+1)
+
+    def file_shas(self, paths, root):
+        """Check every CAS lease at one commit without downloading every body."""
+        pending = {}
+        for path in paths:
+            if '..' in path or path.startswith('/') or not path:
+                raise ValueError('큐 경로 오류')
+            node = pending
+            for part in (PREFIX+'/'+path).split('/'):
+                node = node.setdefault(part, {})
+        found = {path: None for path in paths}
+        def visit(sha, wanted, prefix=''):
+            tree = self.request('/git/trees/'+sha)
+            if not tree or tree.get('truncated') or not isinstance(tree.get('tree'), list):
+                raise RuntimeError('큐 SHA 트리 불완전 — 일괄 쓰기 보류')
+            entries = {entry['path']: entry for entry in tree['tree']}
+            if len(entries) != len(tree['tree']):
+                raise RuntimeError('큐 SHA 트리 중복 — 일괄 쓰기 보류')
+            for name, children in wanted.items():
+                entry = entries.get(name)
+                if entry is None:
+                    continue
+                full = prefix+name
+                if children:
+                    if entry['type'] != 'tree':
+                        raise RuntimeError('큐 SHA 디렉터리 형식 오류')
+                    visit(entry['sha'], children, full+'/')
+                else:
+                    if entry['type'] != 'blob':
+                        raise RuntimeError('큐 SHA 파일 형식 오류')
+                    found[full[len(PREFIX)+1:]] = entry['sha']
+        if pending:
+            visit(root, pending)
+        return found
 
 
 def connection(queue):
