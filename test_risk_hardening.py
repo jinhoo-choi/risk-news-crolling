@@ -308,6 +308,16 @@ class AtomicQueue(unittest.TestCase):
             calls.append((path, method, data))
             if path == '/git/ref/heads/main': return {'object': {'sha': 'head'}}
             if path == '/git/commits/head': return {'tree': {'sha': 'base'}}
+            if path.startswith('/git/trees/') and method == 'GET':
+                leaf = 'changed' if changed else 'sha'
+                trees = {'base':[{'path':'subscription','type':'tree','sha':'sub'}],
+                         'sub':[{'path':'risk','type':'tree','sha':'risk'}],
+                         'risk':[{'path':'jobs','type':'tree','sha':'jobs'},
+                                 {'path':'inputs','type':'tree','sha':'inputs'}],
+                         'jobs':[{'path':'old.json','type':'blob','sha':leaf}],
+                         'inputs':[{'path':'old','type':'tree','sha':'old'}],
+                         'old':[{'path':'items-000.json','type':'blob','sha':leaf}]}
+                return {'tree':trees[path.split('/')[-1]], 'truncated':False}
             if path == '/git/trees' and method == 'POST': return {'sha': 'tree'}
             if path == '/git/commits' and method == 'POST': return {'sha': 'commit'}
             if method == 'PATCH':
@@ -315,7 +325,7 @@ class AtomicQueue(unittest.TestCase):
                 return {}
             raise AssertionError('unexpected request')
         queue.request = request
-        queue.get = lambda p, ref='main': ({}, 'changed' if changed else 'sha')
+        queue.get = Mock(side_effect=AssertionError('CAS must use pinned tree SHAs'))
         return queue, calls
 
     def test_delete_and_metadata_share_one_commit_and_nonforce_ref(self):
