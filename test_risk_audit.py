@@ -172,6 +172,25 @@ class Evidence(unittest.TestCase):
         self.assertEqual(self.q.data['incidents/test-analysis-silent.json'], saved)
         self.assertEqual(job, before)
 
+    def test_collection_success_is_not_evidence_of_consume_history_or_ack(self):
+        with patch.dict(os.environ, RISK_AUDIT_OPERATION='collect-workflow', RISK_AUDIT_JOB_ID='test',
+                        RISK_AUDIT_COLLECT='success', RISK_AUDIT_CONSUME='success',
+                        RISK_AUDIT_HISTORY='success', RISK_AUDIT_ACK='success'), \
+                patch.object(audit, 'Queue', return_value=self.q):
+            audit.workflow_main()
+        record, = self.records()
+        self.assertEqual(record['events'][-2]['facts'], {'collect': 'success'})
+        self.assertEqual(record['operation'], 'collect-workflow')
+        self.assertNotIn('receipts', self.q.data.get('jobs/test.json', {}))
+
+    def test_collection_failure_remains_failure(self):
+        with patch.dict(os.environ, RISK_AUDIT_OPERATION='collect-workflow', RISK_AUDIT_JOB_ID='test',
+                        RISK_AUDIT_COLLECT='failure'), patch.object(audit, 'Queue', return_value=self.q):
+            audit.workflow_main()
+        record, = self.records()
+        self.assertEqual(record['state'], 'failed')
+        self.assertEqual(record['events'][-2]['facts'], {'collect': 'failure'})
+
     def test_recent_heartbeat_existing_result_and_terminal_job_do_not_report_silence(self):
         job = {'job_id': 'test', 'mode': 'production', 'status': 'pending',
                'created_at': (now()-timedelta(hours=2)).isoformat()}

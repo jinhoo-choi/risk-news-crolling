@@ -101,7 +101,7 @@ jobs:
           RISK_QUEUE_TOKEN: ${{ secrets.RISK_QUEUE_TOKEN }}
           RISK_AUDIT_OPERATION: collect-workflow
           RISK_AUDIT_JOB_ID: risk-production-${{ github.run_id }}
-          RISK_AUDIT_CONSUME: ${{ steps.collect.outcome }}
+          RISK_AUDIT_COLLECT: ${{ steps.collect.outcome }}
         run: |
           if [ -f risk_audit.py ]; then
             python risk_audit.py

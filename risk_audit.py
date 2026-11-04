@@ -219,7 +219,8 @@ def workflow_main():
     jid = os.environ.get('RISK_AUDIT_JOB_ID', '')
     if not jid:
         jid = json.loads(Path('risk_subscription_request.json').read_text())['job_id']
-    outcomes = {k: os.environ.get('RISK_AUDIT_'+k.upper(), '') for k in ('consume', 'history', 'ack')}
+    fields = ('collect',) if operation == 'collect-workflow' else ('consume', 'history', 'ack')
+    outcomes = {k: os.environ.get('RISK_AUDIT_'+k.upper(), '') for k in fields}
     def record():
         details = dict(outcomes)
         history_log = Path('risk_history_error.log')
