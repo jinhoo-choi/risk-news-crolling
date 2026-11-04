@@ -28,65 +28,7 @@ jobs:
           if actual != expected:
               raise SystemExit('merged_commit_mismatch')
           print('POSTMERGE_TESTED_COMMIT '+actual, flush=True)
-          commands = re.findall(r'^      - run: (.+)
-        env:
-          RISK_QUEUE_TOKEN: ${{ secrets.RISK_QUEUE_TOKEN }}
-        run: |
-          python3 - <<'PY'
-          import json, time, urllib.request
-          from risk_queue import Queue, REPOSITORY, digest
-          from risk_continuity import pending_reviews
-          from unittest.mock import patch
-          q = Queue()
-          request, get = q.request, q.get
-          calls, leases, times, remaining = [0], {}, [], []
-          def read_only(suffix, method='GET', data=None, repository=REPOSITORY):
-              if method != 'GET' or data is not None:
-                  raise AssertionError('diagnostic_write_forbidden')
-              calls[0] += 1
-              return request(suffix, method, data, repository)
-          def get_record(path, ref='main'):
-              value, sha = get(path, ref)
-              if path.startswith('review/') and path != 'review/index.json':
-                  leases[path] = sha
-              return value, sha
-          original = urllib.request.urlopen
-          def observe(req, *args, **kwargs):
-              times.append(time.monotonic())
-              response = original(req, *args, **kwargs)
-              number = response.headers.get('X-RateLimit-Remaining','')
-              if number.isdigit():
-                  remaining.append(int(number))
-              return response
-          q.request, q.get = read_only, get_record
-          started = time.monotonic()
-          with patch.object(urllib.request, 'urlopen', side_effect=observe):
-              q.preflight()
-              before, _ = q.get('jobs/risk-production-41776567223.json')
-              history, _ = q.source('seen_news.json')
-              records = pending_reviews(q)
-              if len(records) != len(leases):
-                  raise RuntimeError('review_count_mismatch')
-              head = q.request('/git/ref/heads/main')['object']['sha']
-              root = q.request('/git/commits/'+head)['tree']['sha']
-              start_tree_calls = calls[0]
-              actual = q.file_shas(leases, root)
-              tree_calls = calls[0]-start_tree_calls
-              if actual != leases:
-                  raise RuntimeError('review_snapshot_changed')
-              after, _ = q.get('jobs/risk-production-41776567223.json')
-              history_after, _ = q.source('seen_news.json')
-              if digest(before) != digest(after) or history != history_after:
-                  raise RuntimeError('production_snapshot_changed')
-          print('RISK_QUEUE_DIAG '+json.dumps({
-              'source_commit':'c8e6acbbaa92ea50f4e622a963ef577dc5486e36', 'outcome':'passed', 'reviews_verified':len(records), 'lease_tree_reads':tree_calls,
-              'requests':calls[0], 'elapsed_seconds':round(time.monotonic()-started,2),
-              'minimum_start_interval':round(min(b-a for a,b in zip(times,times[1:])),3),
-              'remaining_first':remaining[0], 'remaining_last':remaining[-1],
-              'writes':0, 'smtp_calls':0, 'paid_ai_calls':0, 'production_unchanged':True
-          },sort_keys=True))
-          PY
-, Path('.github/workflows/ci.yml').read_text(), re.M)
+          commands = re.findall(r'^      - run: (.+)$', Path('.github/workflows/ci.yml').read_text(), re.M)
           count = 0
           for command in commands:
               if command.startswith('pip install'):
@@ -150,7 +92,7 @@ jobs:
               if digest(before) != digest(after) or history != history_after:
                   raise RuntimeError('production_snapshot_changed')
           print('RISK_QUEUE_DIAG '+json.dumps({
-              'outcome':'passed', 'reviews_verified':len(records), 'lease_tree_reads':tree_calls,
+              'source_commit':'c8e6acbbaa92ea50f4e622a963ef577dc5486e36', 'outcome':'passed', 'reviews_verified':len(records), 'lease_tree_reads':tree_calls,
               'requests':calls[0], 'elapsed_seconds':round(time.monotonic()-started,2),
               'minimum_start_interval':round(min(b-a for a,b in zip(times,times[1:])),3),
               'remaining_first':remaining[0], 'remaining_last':remaining[-1],
