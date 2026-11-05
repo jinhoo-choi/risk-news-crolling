@@ -3,12 +3,16 @@ import re
 
 # Only source words that connect an index subject to its own numeric movement.
 # Never consume arbitrary company names between the index and decline predicate.
+_MOVEMENT_VALUES = (
+    r'(?>(?:포인트|퍼센트|p|약|이상|가량|정도|장중|개장\s*직후|'
+    r'오전|오후|현재|일|시|분|대|넘게|[\d\s.,%+\-()])*)'
+)
 _INDEX_DECLINE = re.compile(
     r'(?:코스피|코스닥)\s*(?:지수)?(?!\s*(?:보다|대비))(?:는|은|가|이|도)?\s*'
-    r'(?:(?:(?:전\s*거래일|전일|전날|직전\s*거래일)(?:\s*종가)?'
-    r'(?:\s*\([\d.,%]+\))?\s*(?:대비하여|대비해|대비|보다)?|'
-    r'포인트|퍼센트|p|약|이상|가량|정도|장중|개장\s*직후|오전|오후|현재|일|시|분|대|넘게)|'
-    r'[\d\s.,%+\-()])*'
+    + _MOVEMENT_VALUES +
+    r'(?:(?:전\s*거래일|전일|전날|직전\s*거래일)(?:\s*종가)?'
+    r'(?:\s*\([\d.,%]+\))?\s*(?:대비하여|대비해|대비|보다)?\s*)?'
+    + _MOVEMENT_VALUES +
     r'(?:급락|폭락|하락|내렸|내린|내려|붕괴)'
 )
 _NEGATED = re.compile(r'않|아니|없|할\s*수|가능|전망|예상|우려')
