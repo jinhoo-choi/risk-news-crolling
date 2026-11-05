@@ -119,7 +119,7 @@ from event_history import EventHistory, HISTORY_KEY, is_background_recap, materi
 from collections import Counter
 from quote_prices import resolve_symbol, fetch_quote, format_price, STATUS_LABELS
 from notice_filter import matches_notice_title
-from risk_body_quality import body_quality
+from risk_body_quality import body_quality, structured_body
 from risk_analysis_guard import (AnalysisIncompleteError, strict_json, validate_grade_map,
     read_seen_data, validate_seen_data, model_label, apply_verified_direct_incident)
 import re
@@ -1999,6 +1999,11 @@ def fetch_article_body(url: str, diagnostics=None) -> str:
                 if isinstance(raw, bytes) else BeautifulSoup(res.text, "html.parser"))
         limit = 12000 if os.environ.get('RISK_ENGINE') == 'subscription' else 600
         failed_candidate = ''
+        def clipped(text):
+            if diagnostics is not None and len(text) > limit:
+                diagnostics['truncated'] = True
+            return text[:limit]
+
         def acceptable(text):
             nonlocal failed_candidate
             if not text:
@@ -2020,7 +2025,11 @@ def fetch_article_body(url: str, diagnostics=None) -> str:
                                     for part in parts if isinstance(part, dict) and part.get('type') == 'text'
                                     and isinstance(part.get('content'), str))
                     if acceptable(text.strip()):
-                        return text[:limit]
+                        return clipped(text)
+        if limit == 12000:
+            embedded = structured_body(soup, url)
+            if embedded:
+                return clipped(embedded)
         for unwanted in soup.select('script, style, nav, footer, aside, button'):
             unwanted.decompose()
         def article_text(tag):
@@ -2034,16 +2043,16 @@ def fetch_article_body(url: str, diagnostics=None) -> str:
             if tag:
                 text = article_text(tag)
                 if acceptable(text):
-                    return text[:limit]
+                    return clipped(text)
         paragraphs = soup.find_all("p")
         text = " ".join(article_text(p) for p in paragraphs if len(article_text(p)) > 20)
         if acceptable(text):
-            return text[:limit]
+            return clipped(text)
         # Keep recognisable failed extraction for the manifest's unreadable reason.
         text = failed_candidate or text
         if not text and diagnostics is not None:
             diagnostics.update(code='body_text_missing')
-        return text[:limit]
+        return clipped(text)
     except Exception as error:
         if diagnostics is not None:
             diagnostics.update(code='body_fetch_failed', error=error)

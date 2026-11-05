@@ -52,8 +52,13 @@ def validate_packet(value, job, result):
             or (job.get('expected_receipts') and targets != job['expected_receipts'])):
         raise RuntimeError('발송 고정본 수신자 불일치')
     route = value.get('recipient_route', 'configured')
-    if route not in {'configured', 'configured_no_sender_copy', 'owner_status'}:
+    if route not in {'configured', 'configured_no_sender_copy', 'owner_status', 'executives_to_groups_cc'}:
         raise RuntimeError('발송 고정본 수신 경로 오류')
+    if route == 'executives_to_groups_cc' and (
+            len(targets) != 5 or value['self_only'] or value['self_test'] or job['mode'] != 'production'):
+        raise RuntimeError('임원·그룹스 경로는 전체 운영 보고 전용')
+    if job.get('report_layout_version') == 1 and not value['self_only'] and route != 'executives_to_groups_cc':
+        raise RuntimeError('새 운영 보고의 임원·그룹스 역할 누락')
     if route == 'owner_status':
         from risk_owner_verification import OWNER, ERROR_EMAIL
         recipient = OWNER if value['self_test'] else ERROR_EMAIL

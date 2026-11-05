@@ -1,4 +1,5 @@
 """Reject recognisable extraction failures; this is not a fact/attribution check."""
+import json
 import re
 
 
@@ -30,3 +31,28 @@ def body_quality(text):
     if not korean and not english:
         return 'unreadable', 'body_summary_only' if summary else 'body_no_article_prose'
     return 'verified', 'body_prose_present'
+
+
+def structured_body(soup, url):
+    """Read publisher JSON-LD only for the article explicitly bound to this URL."""
+    for tag in soup.select('script[type="application/ld+json"]'):
+        try:
+            data = json.loads(tag.get_text())
+        except (ValueError, TypeError, RecursionError):
+            continue
+        nodes = data if isinstance(data, list) else [data]
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            if isinstance(node.get('@graph'), list):
+                nodes.extend(node['@graph'])
+            if node.get('@type') not in ('Article', 'NewsArticle'):
+                continue
+            page = node.get('mainEntityOfPage') or node.get('url')
+            if isinstance(page, dict):
+                page = page.get('@id')
+            text = node.get('articleBody')
+            if (page == url and isinstance(text, str) and '<' not in text
+                    and body_quality(text.strip()[:12000])[0] == 'verified'):
+                return text.strip()
+    return ''

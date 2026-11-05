@@ -48,6 +48,26 @@ class NativeContinuity(unittest.TestCase):
         values, expected, _ = continuity.prepare_reviews(queue, job, {aid: None})
         queue.put_many(values, expected)
 
+    def test_same_round_recheck_requires_frozen_quote_and_routes_verified_peer(self):
+        queue = self.mixed()
+        job = queue.data['jobs/test.json']
+        job['review_pass_version'] = 1
+        result = queue.data['results/test.json']
+        row = result['classifications'][1]
+        for review in [None, {'blocker':'entity', 'quote':'다른 기사에서 가져온 문장'}]:
+            if review:
+                row['recheck'] = review
+            with self.assertRaisesRegex(ValueError, '재판정'):
+                bridge.validate(result, job, job['input'], job['body_manifest'])
+        row['recheck'] = {'blocker':'body_unusable', 'quote':'직접 주체를 확인할 문단이 부족하다'}
+        self.run_consume(queue, native_fixtures.SMTP())
+        state = queue.data['jobs/test.json']
+        self.assertEqual(state['body_deferred_ids'], ['held'])
+        self.assertEqual(state['deferred_ids'], ['held'])
+        self.assertNotIn('https://example.invalid/held', Path('seen_news.json').read_text())
+        self.assertIn('https://example.invalid/test/one', queue.data['previews/test.json']['html'])
+        self.assertEqual(state['status'], 'delivery_complete')
+
     def test_owner_exclusion_removes_only_requested_article_without_rewriting_result(self):
         queue, smtp = self.mixed(), native_fixtures.SMTP()
         self.seed_review(queue, 'held')
