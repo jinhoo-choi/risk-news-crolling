@@ -14,7 +14,7 @@
 | 수집 트리거 | **cron-job.org**가 GitHub Actions를 호출 — 수집 성공은 발송 완료가 아님 |
 | 구독 분석 | 기존 Work 예약 6acf8adfe0c08191bce40518eef296be가 고정 입력을 분석·결과 저장·소비 요청 |
 | 발송 완료 | consume Actions 성공 + 전원 accepted + main 이력 저장 + ACK 확인 |
-| 수신자 | `risk_aigent@googlegroups.com`, `risk_aigent_pb@googlegroups.com` + 발신자 본인 |
+| 정기 전체 보고 수신자 | 받는사람은 그룹장 1명·본부장 2명, 참조는 기존 그룹스 2곳. 검수·오류·0건은 지정된 본인 경로 사용 |
 | 핵심 파일 | `naver_news_monitor.py`(본체), `exposure_data.csv`(익스포저), `filter_prompt.txt`(AI 규칙) |
 
 ---
@@ -34,6 +34,11 @@
    기존 고정본·정책·원본·수신자·이력 해시 조건을 통과한 명시적 복구만 허용한다.
 5. completed/history_saved/ack와 accepted가 모두 확인된 뒤 본인 한정 발송 여부,
    Gmail 발신본/수신함을 대조한다. 정상 0건·기사 보류·분석 미완료·실제 장애를 구별한다.
+
+전체 보고는 새 운영 회차의 수신자 역할 키를 설정과 대조하고, To 3명과 Cc 2곳을 표시한 메일 한 통을 보낸다.
+MAIL·RCPT 단계의 연결 단절은 본문 전송 전이므로 한 번만 다시 연결한다. DATA 직전 접수 대상 전체를 선기록한다.
+DATA 이후 응답이 끊기면 접수 불확실로 잠그고 자동 재전송하지 않는다. 일부 주소가 거부되면 접수·거부를 각각 기록하고 이력과 ACK를 보류한다.
+기존 고정본은 생성 당시 수신·영수증 계약으로만 복구한다. 미종결 전송이 다음 수집을 막으면 회차 ID, 미시도·거부·접수·불확실 수신자와 다음 수집 영향을 즉시 담당자에게 보고한다.
 
 ### 비공개 큐 HTTP 403/429 (2026-11-04)
 
@@ -308,7 +313,9 @@ awk -F',' 'NR>1 && $20!="" && $20+0<140' exposure_data.csv | wc -l   # 영
 ## 2026-10-15 영속 보류 재검토
 
 구독 수집은 기사 본문을 최대 12,000자로 확보하며 매체별 본문 컨테이너를 먼저 읽는다. 기존 API 경로의 600자 상한은 유지한다.
-담당자의 명시적인 보류 해소 요청에는 기존 risk_subscription_request.json과 소비 워크플로를 재사용해 operation=collect-review, job_id=pending-review, self_test=false, dry_run=false로 영속 보류만 재수집할 수 있다. 이 단계는 새로운 뉴스 검색·운영 SMTP·seen·ACK 없이 새 유효 production 입력만 만든다. 기존 미종결 전송 잠금과 고정 잔고·원본·정책 해시 검증은 유지한다.
+기존 구독 분석 예약이 1차 보류 후보를 같은 회차에서 다시 검토한다. 고정 원문의 사건 문단과 거래일, 직접 법인, 같은 회차의 다른 보도와 공식 공시를 대조한다. 적격 기사는 사용자에게 판정을 요청할 필요 없이 정상 점수·중복 검증을 거쳐 발송한다. 제외 근거가 확정되면 그 이유와 함께 제외한다. 불확실성이 남으면 사실을 추측하지 않고 다음 회차로 이월한다.
+새 운영 회차(review_pass_version=1)에서 읽을 수 있다고 수집된 본문을 재검토한 뒤에도 null이면 분류 행 recheck에 blocker(body_unusable, entity, event_stage, date, conflicting_evidence)와 고정 본문의 실제 인용 quote를 남긴다. 메뉴·다른 기사뿐인 페이지는 body_unusable로 구분한다. 분석 시간 부족은 미처리로 기록하고 체크포인트부터 이어간다.
+정규 수집은 기존 영속 보류도 재수집한다. 별도 요청으로 보류만 재수집할 때는 기존 collect-review 절차와 미종결 회차 잠금을 적용한다.
 재판정 뒤 기존 consume→이력 push→ACK 순서가 완료돼야 보류를 resolved로 바꾼다. 본문을 확보하지 못한 건은 null로 남기며 만료·횟수만으로 false 처리하지 않는다.
 
 continuity_version=1 회차에서는 true 분석이라도 body_status가 verified가 아니면 발송 단계의 별도 보류로 유지한다. 원본 분류·분석은 수정하지 않고, 해당 기사를 native 입력·seen·보류 해결 대상에서 제외한다. 검증을 마친 나머지 기사는 기존 절차로 처리하며 보류는 다음 회차에 재검토한다. 기존 API·legacy 본문 검증 차단은 유지한다.

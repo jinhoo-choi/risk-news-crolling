@@ -23,6 +23,20 @@ CASES = json.loads((Path(__file__).parent / 'tests/fixtures/risk_body_deferred_e
 
 
 class ExtractionQuality(unittest.TestCase):
+    def test_structured_body_must_match_article_url_and_preserve_truncation(self):
+        bot = bridge.import_bot()
+        url = 'https://example.invalid/this-article'
+        body = '회사는 생산을 일시 중단했다고 밝혔다. ' * 710
+        nodes = [{'@type':'NewsArticle', 'url':url + '/other', 'articleBody':'다른 기사다.'},
+                 {'@type':'NewsArticle', 'mainEntityOfPage':{'@id':url}, 'articleBody':body}]
+        response = SimpleNamespace(headers={}, text='<script type="application/ld+json">' +
+                                   json.dumps({'@graph':nodes}) + '</script>', raise_for_status=lambda: None)
+        with patch.dict(os.environ, RISK_ENGINE='subscription'), patch.object(bot.requests.Session, 'get', return_value=response):
+            diagnostics = {}
+            self.assertEqual(bot.fetch_article_body(url, diagnostics), body[:12000])
+            self.assertTrue(diagnostics['truncated'])
+            self.assertEqual(bot.fetch_article_body(url + '/unrelated'), '')
+
     def test_observed_failure_excerpts_and_two_readable_sources(self):
         for row in CASES:
             with self.subTest(article_id=row['article_id'], title=row['title']):

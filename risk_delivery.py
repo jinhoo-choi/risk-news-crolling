@@ -1,7 +1,10 @@
 """Durable per-recipient SMTP reservations; no retry after uncertain DATA."""
 import hashlib
+import smtplib
+import sys
 import uuid
 from email import message_from_string
+from email.policy import SMTP
 from email.utils import getaddresses
 
 from risk_queue import now
@@ -10,6 +13,19 @@ from risk_audit import checkpoint, record_error
 
 def address_key(address):
     return hashlib.sha256(address.encode()).hexdigest()
+
+
+def report_headers(targets, roles):
+    """Resolve the approved three To and two Cc keys against live addresses."""
+    if not isinstance(roles, dict):
+        raise RuntimeError('업무 보고 수신 역할 설정 누락')
+    to, cc = roles.get('to'), roles.get('cc')
+    if not isinstance(to, list) or len(to) != 3 or not isinstance(cc, list) or len(cc) != 2:
+        raise RuntimeError('업무 보고 To/Cc 인원 불일치')
+    by_key = {address_key(address): address for address in targets}
+    if len(set(to + cc)) != 5 or set(to + cc) != set(by_key):
+        raise RuntimeError('승인된 업무 보고 수신자 불일치')
+    return [by_key[k] for k in to], [by_key[k] for k in cc]
 
 
 def close_smtp(server, primary=None):
@@ -75,6 +91,92 @@ class Delivery:
         if not expected or set(receipts) != expected or any(v != 'accepted' for v in receipts.values()):
             raise RuntimeError('수신자 전원 접수 확인 전 이력 저장 금지')
         return job
+
+    def send_report(self, sender, password, message):
+        """One envelope and one DATA. A pre-DATA disconnect can safely reconnect."""
+        headers = [addr for field in ('To', 'Cc')
+                   for _, addr in getaddresses(message.get_all(field, []))]
+        if headers != self.targets or message.get('Bcc'):
+            raise RuntimeError('보고 헤더와 고정 수신자 불일치')
+        wire = message.as_bytes(policy=SMTP)
+        # Resume only the original frozen message and only recipients never attempted.
+        job, _ = self.read()
+        pending = [a for a in self.targets if address_key(a) not in job.get('receipts', {})]
+        if not pending:
+            return
+        for attempt in range(2):
+            self.check_config()
+            checkpoint('smtp_connect')
+            server = None
+            try:
+                server = self.real_smtp('smtp.gmail.com', 465, timeout=30)
+                server.ehlo()
+                server.login(sender, password)
+                code, _ = server.mail(sender)
+                if code != 250:
+                    raise RuntimeError(f'SMTP MAIL FROM 거부 ({code}) — DATA 미시도')
+                ready, refused = [], []
+                for address in pending:
+                    code, _ = server.rcpt(address)
+                    if code in (250, 251):
+                        ready.append(address_key(address))
+                    elif code == 421:
+                        raise smtplib.SMTPServerDisconnected('RCPT 421 before DATA')
+                    else:
+                        refused.append(address_key(address))
+                if not ready:
+                    raise RuntimeError('모든 RCPT 거부 — DATA 미시도')
+            except (smtplib.SMTPServerDisconnected, ConnectionError, TimeoutError) as error:
+                if server is not None:
+                    server.close()
+                record_error('smtp_connect', error, 'smtp_disconnected_before_data')
+                if attempt == 0:
+                    continue
+                raise
+            except Exception:
+                if server is not None:
+                    close_smtp(server, sys.exc_info()[1])
+                raise
+            break
+
+        def reserve(job):
+            expected = [address_key(a) for a in self.targets]
+            if (job.get('status') != 'sending' or job.get('expected_receipts') != expected
+                    or set(job['receipts']) != set(expected) - set(ready + refused)
+                    or any(state != 'accepted' for state in job['receipts'].values())
+                    or job.get('attempted_count', 0) != len(job['receipts'])):
+                raise RuntimeError('이미 시도한 수신자 재전송 금지')
+            job['receipts'].update(dict.fromkeys(ready, 'sending'))
+            job['receipts'].update(dict.fromkeys(refused, 'rejected'))
+            job['attempted_count'] = len(job['receipts'])
+
+        def record(job, state):
+            if job.get('status') != 'sending' or any(job['receipts'].get(k) != 'sending' for k in ready):
+                raise RuntimeError('SMTP 선기록 변경 — 발송 상태 확인 필요')
+            job['receipts'].update(dict.fromkeys(ready, state))
+            if state != 'accepted' or refused:
+                job['status'] = 'uncertain'
+
+        try:
+            self.check_config()
+            checkpoint('smtp_data')
+            self.change(reserve)
+            try:
+                self.smtp_calls += 1
+                code, _ = server.data(wire)
+            except smtplib.SMTPDataError as error:
+                code = error.smtp_code
+            except Exception as error:
+                record_error('smtp_data', error, 'smtp_data_unconfirmed')
+                self.change(lambda j: record(j, 'uncertain'))
+                raise RuntimeError('SMTP DATA 응답 미확인 — 재발송 금지') from error
+            state = 'accepted' if code == 250 else 'rejected'
+            self.change(lambda j: record(j, state))
+            checkpoint('smtp_receipt')
+            if refused or state != 'accepted':
+                raise RuntimeError('SMTP 일부 또는 전원 거부 — 이력·ACK 보류')
+        finally:
+            close_smtp(server, sys.exc_info()[1])
 
     def factory(self, host, port, **kwargs):
         if (host, port) != ('smtp.gmail.com', 465):

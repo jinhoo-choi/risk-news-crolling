@@ -123,6 +123,30 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 160
+        },
+        "recheck": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "blocker",
+            "quote"
+          ],
+          "properties": {
+            "blocker": {
+              "enum": [
+                "body_unusable",
+                "entity",
+                "event_stage",
+                "date",
+                "conflicting_evidence"
+              ]
+            },
+            "quote": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            }
+          }
         }
       }
     },

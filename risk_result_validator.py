@@ -123,6 +123,19 @@ def validate(result, job, inputs, manifest):
     source = {item['article_id']: item for item in inputs['items']}
     bodies = {item['article_id']: item for item in manifest}
     verdicts = {item['article_id']: item['relevant'] for item in result['classifications']}
+    for row in result['classifications']:
+        body = bodies[row['article_id']]
+        recheck = row.get('recheck')
+        needs_recheck = (job.get('review_pass_version') == 1 and row['relevant'] is None
+                         and body['body_status'] == 'verified')
+        if needs_recheck:
+            quote = recheck['quote'] if recheck else ''
+            whole_short_body = (recheck and recheck['blocker'] == 'body_unusable'
+                                and quote == body['body'].strip())
+            if not quote.strip() or quote not in body['body'] or len(quote) < 8 and not whole_short_body:
+                raise ValueError('본문 확인 보류 재판정 근거 누락·인용 불일치: ' + row['article_id'])
+        elif recheck:
+            raise ValueError('재판정 보류 근거 적용 대상 불일치')
     true_ids = {key for key, verdict in verdicts.items() if verdict is True}
     if set(result['analyses']) != true_ids:
         raise ValueError('확정 후보 분석 누락·추가')

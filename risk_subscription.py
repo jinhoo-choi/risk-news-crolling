@@ -22,7 +22,7 @@ from unittest.mock import patch
 from risk_queue import Queue, JOB_ID, now, digest
 from risk_result_validator import validate, utc_time
 from risk_body_quality import body_quality
-from risk_delivery import Delivery
+from risk_delivery import Delivery, address_key, report_headers
 from risk_provider import Provider
 from risk_outbox import make_packet, validate_packet, store_packet, legacy_packet
 from risk_shards import split_job, hydrate
@@ -247,6 +247,7 @@ def collect(config, queue, verification=False, reviews_only=False):
     def body(article):
         diagnostics = {}
         text = bot.fetch_article_body(article['url'], diagnostics) or ''
+        truncated = diagnostics.pop('truncated', False) or len(text) > 12000
         if diagnostics:
             with lock:
                 body_errors.append((article['article_id'], diagnostics))
@@ -263,10 +264,11 @@ def collect(config, queue, verification=False, reviews_only=False):
             if status == 'missing':
                 text = saved['body']
                 status, quality_reason = saved_status, saved_reason
+                truncated = saved.get('truncated', False)
         # Preserve failed extraction text as evidence; never promote menus to verified.
         return {'article_id': article['article_id'], 'body': text[:12000],
                 'body_status': status, 'body_quality_reason': quality_reason,
-                'source_url': article['url'], 'truncated': len(text) > 12000}
+                'source_url': article['url'], 'truncated': truncated}
     checkpoint('body')
     with ThreadPoolExecutor(max_workers=6) as pool:
         manifest = list(pool.map(body, items))
@@ -310,6 +312,8 @@ def collect(config, queue, verification=False, reviews_only=False):
     if rules.get('action_quality_version') == 1:
         job['action_quality_version'] = 1
     if not verification:
+        job['review_pass_version'] = 1
+        job['report_layout_version'] = 1
         current_config(queue)
     frozen = freeze_exposure(job, exposure_raw, captured_at)
     if job['exposure_snapshot']['sha256'] != job['input']['exposure_hash']:
@@ -422,6 +426,8 @@ def consume(queue, jid, self_test=False):
     body_deferred_ids = {aid for aid in deferred_ids
                          if bodies[aid]['body_status'] in {'missing', 'unreadable'}
                          or result['analyses'].get(aid, {}).get('body_status') in {'missing', 'unreadable'}}
+    body_deferred_ids.update(row['article_id'] for row in result['classifications']
+                             if row.get('recheck', {}).get('blocker') == 'body_unusable')
     alert_deferred_ids = [aid for aid in deferred_ids if aid not in body_deferred_ids]
     reasons = {row['article_id']: row['reason'] for row in result['classifications']}
     values, expected, resolutions = ({}, {}, {}) if self_test else prepare_reviews(queue, job, verdicts, reasons=reasons)
@@ -479,8 +485,11 @@ def consume(queue, jid, self_test=False):
             targets = [bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER] if self_only else bot.report_targets()
         if staged:
             raise RuntimeError('동일 회차 추가 메일 금지')
-        staged.update(subject=subject, html=html, targets=targets, self_only=self_only,
-                      recipient_route='configured' if self_only else 'configured_no_sender_copy')
+        route = 'configured' if self_only else 'configured_no_sender_copy'
+        if not self_only and job.get('report_layout_version') == 1:
+            to, cc = report_headers(targets, config.get('report_recipient_keys'))
+            targets, route = to + cc, 'executives_to_groups_cc'
+        staged.update(subject=subject, html=html, targets=targets, self_only=self_only, recipient_route=route)
         return True  # Stage native post-delivery history, without SMTP or main writes.
     def empty(subject, html):
         from risk_owner_verification import OWNER, ERROR_EMAIL
@@ -581,8 +590,16 @@ def finish_packet(queue, job, result, packet, bot, guard, native_send):
     """SMTP uses only a persisted plan; history is published after all receipts."""
     validate_packet(packet, job, result)
     self_test = packet['self_test']
-    guard.check_config = lambda: current_config(queue, self_test, job['input']['items'], packet['html'])
-    guard.check_config()
+    grouped = packet.get('recipient_route') == 'executives_to_groups_cc'
+    def confirm_config():
+        config = current_config(queue, self_test, job['input']['items'], packet['html'])
+        if grouped:
+            to, cc = report_headers(bot.report_targets(), config.get('report_recipient_keys'))
+            if [address_key(a) for a in to + cc] != packet['expected_receipts']:
+                raise RuntimeError('고정본 작성 이후 수신자 역할 변경 — 발송 금지')
+            return to, cc
+    guard.check_config = confirm_config
+    headers = confirm_config()
     before, _ = queue.source('seen_news.json')
     if hashlib.sha256(before).hexdigest() not in {packet['source_history_hash'], packet['seen_after_hash']}:
         raise RuntimeError('발송 계획 이후 main 이력 변경 — 자동 합치기 금지')
@@ -593,16 +610,24 @@ def finish_packet(queue, job, result, packet, bot, guard, native_send):
     include_sender_copy = packet.get('recipient_route', 'configured') == 'configured'
     targets = ([bot.NO_RESULT_RECEIVER or bot.EMAIL_SENDER] if packet['self_only']
                else bot.report_targets(include_sender_copy=include_sender_copy))
-    from risk_delivery import address_key
+    if grouped:
+        to, cc = headers
+        targets = to + cc
     if [address_key(t) for t in targets] != packet['expected_receipts']:
         raise RuntimeError('고정본 작성 이후 수신자 변경 — 발송 금지')
     checkpoint('smtp_prepare')
     guard.prepare(targets)
     current, _ = guard.read()
     if set(current.get('receipts', {})) != set(packet['expected_receipts']):
-        with contextlib.redirect_stdout(io.StringIO()), patch.object(bot.smtplib, 'SMTP_SSL', guard.factory):
-            native_send(packet['subject'], packet['html'], self_only=packet['self_only'],
-                        include_sender_copy=include_sender_copy)
+        if grouped:
+            message = bot._build_msg(packet['subject'], packet['html'], to[0])
+            message.replace_header('To', ', '.join(to))
+            message['Cc'] = ', '.join(cc)
+            guard.send_report(bot.EMAIL_SENDER, bot.EMAIL_PASSWORD, message)
+        else:
+            with contextlib.redirect_stdout(io.StringIO()), patch.object(bot.smtplib, 'SMTP_SSL', guard.factory):
+                native_send(packet['subject'], packet['html'], self_only=packet['self_only'],
+                            include_sender_copy=include_sender_copy)
     guard.complete()
     if not self_test:
         checkpoint('history_local')
@@ -781,6 +806,8 @@ def review_notice_rows(records, grouping):
             item = record['item']
             lines.append(item['title']+'\n'+item['url']+'\n최초 확인: '+record['first_seen_at']+
                          (' · 24시간 이상 미확인' if phase == 'overdue' else ' · 신규 확인 보류'))
+            if record.get('last_review_reason'):
+                lines.append('재확인 사유: ' + record['last_review_reason'])
         rows.append('\n'.join(lines))
     return rows
 
@@ -801,7 +828,7 @@ def notify_reviews(queue, job):
         if record and record.get('status') == 'resolved':
             continue
         record, _ = read_review(queue, aid)
-        if record['body']['body_status'] in {'missing', 'unreadable'}:
+        if record.get('last_body_status', record['body']['body_status']) in {'missing', 'unreadable'}:
             continue
         overdue = instant-utc_time(record['first_seen_at']) >= timedelta(hours=24)
         phase = 'overdue' if overdue else 'initial'
@@ -855,7 +882,7 @@ def notify_reviews(queue, job):
     bot = import_bot()
     run = os.environ.get('GITHUB_RUN_ID', '')
     details = ('회차: '+job['job_id']+'\n발송·이력 저장·ACK 완료. 전체 기사 분석은 미완료입니다.\n'
-               '아래 기사는 발송·seen에서 제외한 채 보존했습니다. 원문·공시를 확인하고 판정을 제출해 주세요.\n\n'+
+               '근거가 부족한 기사는 보존했습니다. 다음 회차에서 봇이 원문을 다시 대조해 발송 여부를 판정합니다.\n\n'+
                '\n\n'.join(rows))
     if run.isdigit():
         details += '\nActions: https://github.com/jinhoo-choi/risk-news-crolling/actions/runs/'+run

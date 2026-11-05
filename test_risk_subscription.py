@@ -8,10 +8,12 @@ import smtplib
 import tempfile
 import unittest
 from datetime import timedelta, timezone
-from email.utils import format_datetime
+from email import message_from_bytes
+from email.utils import format_datetime, getaddresses
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+from risk_delivery import address_key
 from risk_queue import now, digest
 from risk_subscription import consume, acknowledge, expire_and_check
 
@@ -150,6 +152,73 @@ class Integration(unittest.TestCase):
         self.assertEqual(queue.data['jobs/test.json']['status'], 'completed')
         self.assertTrue(queue.data['jobs/test.json']['ack'])
         self.assertEqual(queue.data['jobs/test.json']['paid_ai_calls'], 0)
+
+    def executive_fixture(self):
+        queue = self.fixture()
+        queue.data['jobs/test.json']['report_layout_version'] = 1
+        to = [f'leader{i}@example.invalid' for i in range(3)]
+        cc = [f'list{i}@example.invalid' for i in range(2)]
+        self.bot.EMAIL_RECEIVERS, self.bot.EMAIL_CC = cc[:1], cc[1:] + to
+        roles = {'to': list(map(address_key, to)), 'cc': list(map(address_key, cc))}
+        source = queue.source
+        def configured(path):
+            raw, sha = source(path)
+            if path == 'risk_subscription_config.json':
+                raw = json.dumps(dict(json.loads(raw), report_recipient_keys=roles)).encode()
+            return raw, sha
+        queue.source = configured
+        smtp = Mock()
+        smtp.mail.return_value = smtp.rcpt.return_value = smtp.data.return_value = (250, b'OK')
+        return queue, smtp, to, cc
+
+    def test_executives_to_groups_cc_one_data_after_safe_mail_reconnect(self):
+        queue, smtp, to, cc = self.executive_fixture()
+        smtp.mail.side_effect = [smtplib.SMTPServerDisconnected('before MAIL reply'), (250, b'OK')]
+        self.run_consume(queue, smtp)
+        self.assertEqual(smtp.login.call_count, 2)
+        self.assertEqual([c.args[0] for c in smtp.rcpt.call_args_list], to + cc)
+        smtp.data.assert_called_once()
+        msg = message_from_bytes(smtp.data.call_args.args[0])
+        for key, expected in [('To', to), ('Cc', cc)]:
+            self.assertEqual([a for _, a in getaddresses(msg.get_all(key))], expected)
+        self.assertIsNone(msg['Bcc'])
+        self.assertEqual(getaddresses(msg.get_all('From'))[0][1], self.bot.EMAIL_SENDER)
+        self.assertEqual(queue.data['jobs/test.json']['receipts'], dict.fromkeys(map(address_key, to + cc), 'accepted'))
+        queue.remote_seen = Path('seen_news.json').read_bytes()
+        acknowledge(queue, 'test')
+        self.assertTrue(queue.data['jobs/test.json']['ack'])
+
+    def test_executive_group_partial_rcpt_refusal_preserves_four_receipts(self):
+        queue, smtp, to, cc = self.executive_fixture()
+        smtp.rcpt.side_effect = [(550 if a == to[1] else 250, b'response') for a in to + cc]
+        with self.assertRaisesRegex(RuntimeError, '거부'):
+            self.run_consume(queue, smtp)
+        smtp.data.assert_called_once()
+        states = queue.data['jobs/test.json']['receipts']
+        self.assertEqual(states[address_key(to[1])], 'rejected')
+        self.assertEqual(list(states.values()).count('accepted'), 4)
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+        with self.assertRaises(RuntimeError):
+            acknowledge(queue, 'test')
+
+    def test_executive_group_data_disconnect_locks_all_and_prevents_resend(self):
+        queue, smtp, to, cc = self.executive_fixture()
+        smtp.data.side_effect = smtplib.SMTPServerDisconnected('after submission')
+        with self.assertRaisesRegex(RuntimeError, 'DATA 응답'):
+            self.run_consume(queue, smtp)
+        self.assertEqual(queue.data['jobs/test.json']['receipts'], dict.fromkeys(map(address_key, to + cc), 'uncertain'))
+        with self.assertRaises(RuntimeError):
+            self.run_consume(queue, smtp)
+        smtp.data.assert_called_once()
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+
+    def test_unapproved_executive_recipient_fails_before_smtp(self):
+        queue, smtp, _, _ = self.executive_fixture()
+        self.bot.EMAIL_CC[-1] = 'unapproved@example.invalid'
+        with self.assertRaisesRegex(RuntimeError, '수신자 불일치'):
+            self.run_consume(queue, smtp)
+        smtp.login.assert_not_called()
+        self.assertEqual(queue.data['jobs/test.json']['receipts'], {})
 
     def grouped_fixture(self):
         queue = self.fixture()
