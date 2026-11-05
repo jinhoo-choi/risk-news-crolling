@@ -1,6 +1,7 @@
 """Expiration/collection/retention regressions: synthetic data, no API or SMTP."""
 import contextlib
 import copy
+import hashlib
 import io
 import json
 import os
@@ -106,6 +107,32 @@ class Collection(unittest.TestCase):
         self.assertIn('created_at', queue.data['jobs/old.json'])
         self.assertIn('expired_at', queue.data['jobs/old.json'])
         self.assertEqual(queue.data['jobs/old.json']['status'], 'expired')
+
+    def test_natural_collection_after_partial_close_preserves_changed_and_new_sources(self):
+        rows = [{'title': name, 'url': 'https://example.invalid/'+name}
+                for name in ('same', 'updated', 'new')]
+        original = '회사가 사실관계를 공시했다.'
+        def version(row):
+            aid = hashlib.sha256((row['url']+'\0'+row['title']).encode()).hexdigest()[:24]
+            return bridge.source_version({'article_id': aid, 'source_url': row['url'],
+                                          'body_status': 'verified', 'body': original})
+        closed = job(status='closed_partial')
+        closed.update(receipts={'r': 'accepted'}, expected_receipts=['r', 's'], attempted_count=1)
+        record = {'versions': [version(row) for row in rows[:2]], 'reported_ids': ['representative'],
+                  'receipts_hash': digest(closed['receipts']), 'expected_hash': digest(closed['expected_receipts']),
+                  'attempted_count': 1}
+        closed['partial_closure'] = record
+        queue = Memory([closed])
+        queue.data['index.json']['partial_closures'] = {'old': digest(record)}
+        self.bot.crawl_naver_news.return_value = rows
+        self.bot.is_hard_excluded = lambda *args: (False, '')
+        self.bot.fetch_article_body = lambda url, _: original + (' 법원이 처분을 확정했다.' if url.endswith('updated') else '')
+        self.collect(queue)
+        new_job = bridge.hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])
+        for field in ('items', 'raw_articles'):
+            self.assertEqual({row['url'] for row in new_job['input'][field]}, {row['url'] for row in rows[1:]})
+        self.assertEqual({body['source_url'] for body in new_job['body_manifest']}, {row['url'] for row in rows[1:]})
+        self.assertEqual(queue.data['jobs/old.json'], closed)
 
     def test_verification_expiry_does_not_alert(self):
         queue = Memory([job(mode='verification')])

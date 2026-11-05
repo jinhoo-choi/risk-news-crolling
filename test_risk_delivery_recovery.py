@@ -16,6 +16,7 @@ import risk_subscription as bridge
 import risk_subscription_request as request
 from risk_delivery import address_key
 from risk_outbox import sha, store_packet
+from risk_partial_close import close_partial, source_version
 from risk_queue import Queue, QueueConflict, QueueReadUnavailable, digest, now
 import risk_queue
 import test_risk_subscription as fixtures
@@ -433,6 +434,91 @@ class Recovery(unittest.TestCase):
     def resume(self, q, smtp):
         with patch.object(smtplib, 'SMTP_SSL', lambda *a, **k: smtp):
             bridge.recover(q, 'test')
+
+    def writeoff_fixture(self):
+        q = fixtures.Integration.grouped_fixture(self)
+        q.data['jobs/test.json']['paid_ai_calls'] = 0
+        with self.assertRaises(RuntimeError):
+            self.run_consume(q, fixtures.SMTP(fail_at=2))
+        j, job_sha = q.get('jobs/test.json')
+        packet, out_sha = q.get('outbox/test.json')
+        q.data['partial-close-requests/test.json'] = {
+            'operation':'close_without_resend', 'job_id':'test', 'request_id':'approved',
+            'job_sha':job_sha, 'outbox_sha':out_sha, 'result_sha':q.get('results/test.json')[1],
+            'sent_html_hash':sha(packet['html']), 'reported_article_ids':['two'],
+            'accepted_sent_messages':{k:'abc012345678' for k,v in j['receipts'].items() if v == 'accepted'}}
+        return q
+
+    def test_partial_close_preserves_receipts_and_releases_only_unchanged_versions(self):
+        q = self.writeoff_fixture()
+        old = q.get('jobs/test.json')[0]
+        before = copy.deepcopy(q.data)
+        with patch.object(smtplib, 'SMTP_SSL', side_effect=AssertionError('SMTP forbidden')):
+            close_partial(q, 'test', 'approved')
+            close_partial(q, 'test', 'approved')
+        job = q.get('jobs/test.json')[0]
+        self.assertEqual(job['receipts'], old['receipts'])
+        self.assertEqual(job['attempted_count'], 2)
+        self.assertEqual(job['status'], 'closed_partial')
+        self.assertFalse(job.get('ack') or job.get('history_saved'))
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+        self.assertEqual({p for p in q.data if q.data[p] != before[p]}, {'index.json','jobs/test.json'})
+        versions = set()
+        bridge.expire_and_check(q, versions)
+        self.assertEqual(job['partial_closure']['reported_ids'], ['two'])
+        self.assertEqual(versions, {source_version(b) for b in old['body_manifest']})
+        revised = dict(old['body_manifest'][0], body='같은 매체가 새로운 처분 내용을 추가했다.')
+        self.assertNotIn(source_version(revised), versions)
+        # A rolled scheduling index still carries the original closure evidence.
+        q.data['index.json']['jobs'] = []
+        bridge.expire_and_check(q)
+        q.data['jobs/test.json']['receipts'].clear()
+        with self.assertRaisesRegex(RuntimeError,'종결 증거'):
+            bridge.expire_and_check(q)
+        with self.assertRaises(RuntimeError):
+            bridge.acknowledge(q,'test')
+        with self.assertRaises(RuntimeError):
+            self.resume(q,fixtures.SMTP())
+
+    def test_partial_close_rejects_stale_approval_wrong_sent_copy_and_unmailed_article(self):
+        for field, value in [('job_sha','old'), ('sent_html_hash','wrong'),
+                             ('reported_article_ids',['one','two']), ('accepted_sent_messages',{})]:
+            with self.subTest(field=field):
+                q = self.writeoff_fixture()
+                q.data['partial-close-requests/test.json'][field] = value
+                with self.assertRaises(RuntimeError):
+                    close_partial(q,'test','approved')
+                self.assertEqual(q.data['jobs/test.json']['status'],'uncertain')
+                self.assertNotIn('partial_closures', q.data['index.json'])
+
+    def test_public_close_request_never_enters_consume_and_skips_history_ack(self):
+        import risk_subscription_request as request
+        q = self.writeoff_fixture()
+        wake = {'operation': 'close-partial', 'job_id': 'test', 'self_test': False,
+                'dry_run': False, 'request_id': 'approved'}
+        Path('risk_subscription_request.json').write_text(json.dumps(wake))
+        with patch('risk_queue.Queue', return_value=q), patch.object(q, 'preflight', create=True), \
+                patch.object(request.subprocess, 'run') as process, \
+                patch.object(smtplib, 'SMTP_SSL') as smtp, patch.dict(os.environ, GITHUB_OUTPUT='workflow-output'):
+            with patch.dict(os.environ, GITHUB_REF='refs/heads/topic'), self.assertRaises(RuntimeError):
+                request.main()
+            with patch.dict(os.environ, GITHUB_REF='refs/heads/main'):
+                request.main()
+        process.assert_not_called()
+        smtp.assert_not_called()
+        self.assertEqual(Path('workflow-output').read_text().splitlines(), ['job_id=test', 'needs_ack=false'])
+        self.assertEqual(q.get('jobs/test.json')[0]['status'], 'closed_partial')
+
+    def test_partial_close_conflicting_receipt_lease_keeps_old_lock(self):
+        q = self.writeoff_fixture()
+        put = q.put_many
+        def race(values, expected):
+            q.data['jobs/test.json']['delivery_revision'] = 'other-worker'
+            return put(values, expected)
+        with patch.object(q,'put_many',race), self.assertRaises(RuntimeError):
+            close_partial(q,'test','approved')
+        with self.assertRaisesRegex(RuntimeError,'미종결'):
+            bridge.expire_and_check(q)
 
     def test_all_accepted_finish_and_cleanup_conflicts_keep_original_then_recover_smtp_zero(self):
         q, smtp = self.fixture(), fixtures.SMTP()
