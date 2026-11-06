@@ -147,6 +147,60 @@
               "maxLength": 400
             }
           }
+        },
+        "exclusion_review": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "rule_quote",
+            "kind",
+            "evidence",
+            "reviewed"
+          ],
+          "properties": {
+            "rule_quote": {
+              "type": "string",
+              "minLength": 12,
+              "maxLength": 600
+            },
+            "kind": {
+              "enum": [
+                "non_risk",
+                "other_entity",
+                "procedural",
+                "resolved",
+                "not_eligible"
+              ]
+            },
+            "evidence": {
+              "$ref": "#/$defs/evidence"
+            },
+            "reviewed": {
+              "const": true
+            },
+            "countercheck": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason",
+                "evidence",
+                "reviewed"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 16,
+                  "maxLength": 400
+                },
+                "evidence": {
+                  "$ref": "#/$defs/evidence"
+                },
+                "reviewed": {
+                  "const": true
+                }
+              }
+            }
+          }
         }
       }
     },

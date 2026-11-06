@@ -17,6 +17,17 @@ SCHEMA = json.loads(Path(__file__).with_name('risk_result_schema.json').read_tex
 Draft202012Validator.check_schema(SCHEMA)
 VALIDATOR = Draft202012Validator(SCHEMA)
 
+# Review triggers only; these never assign relevance, scores or grades.
+EXCLUSION_RISK = re.compile(r'상장폐지|상폐|거래정지|부도|파산|회생|횡령|배임|감사의견|'
+                            r'관리종목|반대매매|강제청산|차환실패|미상환|미지급|'
+                            r'부실|채무불이행|등급.{0,8}(?:강등|하향)|실적쇼크|급락|폭락|'
+                            r'장애|오류|먹통|접속불가|제재|과태료|과징금|입찰제한|'
+                            r'해킹|유출|보안사고|고객피해|금전손실|수사|영업중단')
+_FILTER_TEXT = Path(__file__).with_name('filter_prompt.txt').read_text()
+EXCLUSION_RULES = re.findall(r'^- (.+)$', _FILTER_TEXT.split('[항상 relevant:false]', 1)[1]
+                            .split('[판단 예시', 1)[0], re.M)
+EXCLUSION_RULES.append('위 8가지 미해당 시 무조건 relevant:false.')
+
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
@@ -102,6 +113,33 @@ def validate_action_plan(analysis, source_text, action=None):
         raise ValueError('대응방안 현재 처리 업무가 추상적임')
 
 
+def validate_exclusion(row, article, body):
+    review = row.get('exclusion_review')
+    if not review:
+        raise ValueError('제외 원문·규칙 검토 근거 누락: '+row['article_id'])
+    rule = review['rule_quote']
+    if not any(rule in allowed for allowed in EXCLUSION_RULES) or re.search(r'모호|확신 없', rule):
+        raise ValueError('제외 규칙 인용 누락·불확실성을 제외로 대체')
+    segments = {'title': article['title'], 'description': article['description'], 'body': body['body']}
+    def check(evidence):
+        source = segments[evidence['source_segment']]
+        if (evidence['source_hash'] != text_digest(source) or evidence['quote'] not in source
+                or not evidence['quote'].strip()
+                or evidence['source_segment'] == 'body' and body['body_status'] != 'verified'):
+            raise ValueError('제외 원문 해시·인용·본문 상태 불일치')
+    check(review['evidence'])
+    risky = any(EXCLUSION_RISK.search(re.sub(r'\s+', '', segment)) for segment in segments.values())
+    counter = review.get('countercheck')
+    if risky:
+        if review['kind'] == 'non_risk' or body['body_status'] != 'verified' or not counter:
+            raise ValueError('위험 후보 제외는 검증 본문·별도 재심사 필요')
+        if (counter['evidence']['source_segment'] != 'body'
+                or not EXCLUSION_RISK.search(re.sub(r'\s+', '', counter['evidence']['quote']))):
+            raise ValueError('위험 후보 제외 재심사의 사건 본문 인용 누락')
+    if counter:
+        check(counter['evidence'])
+
+
 def validate(result, job, inputs, manifest):
     # 비유한 수와 bool을 숫자로 받지 않는다. bool은 JSON Schema도 거부한다.
     json.dumps(result, allow_nan=False)
@@ -125,6 +163,10 @@ def validate(result, job, inputs, manifest):
     verdicts = {item['article_id']: item['relevant'] for item in result['classifications']}
     for row in result['classifications']:
         body = bodies[row['article_id']]
+        if job.get('exclusion_review_version') == 1 and row['relevant'] is False:
+            validate_exclusion(row, source[row['article_id']], body)
+        elif row.get('exclusion_review'):
+            raise ValueError('제외 검토 적용 대상·버전 불일치')
         recheck = row.get('recheck')
         needs_recheck = (job.get('review_pass_version') == 1 and row['relevant'] is None
                          and body['body_status'] == 'verified')
