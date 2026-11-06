@@ -104,14 +104,14 @@ def review_source(item, body):
             'body_status': body.get('body_status')}
 
 
-def review_catalog(queue):
-    """Migrate legacy entries once; expire only the active index, not originals."""
+def review_catalog(queue, migrate=False):
+    """Normal collection reads metadata only; explicit maintenance migrates sources."""
     index, sha = review_index(queue)
     before = copy.deepcopy(index)
     catalog = index.setdefault('sources', {})
     if not isinstance(catalog, dict):
         raise RuntimeError('보류 원문 색인 형식 오류')
-    missing = [aid for aid in index['pending'] if aid not in catalog]
+    missing = [aid for aid in index['pending'] if aid not in catalog] if migrate else []
     for aid, snapshot in _review_snapshots(queue, missing).items():
         record, _ = _validated_review(aid, snapshot)
         catalog[aid] = record.get('last_source') or review_source(record['item'], record['body'])
@@ -122,7 +122,7 @@ def review_catalog(queue):
                 or source.get('body_status') not in {'verified', 'missing', 'unreadable', 'unconfirmed', None}):
             raise RuntimeError('보류 원문 색인 형식 오류')
     index['pending'] = [aid for aid in index['pending']
-                        if review_age(catalog[aid], now()) == 'eligible']
+                        if aid not in catalog or review_age(catalog[aid], now()) == 'eligible']
     if index != before:
         queue.put(REVIEW_INDEX, index, sha)
         index, sha = review_index(queue)
@@ -201,6 +201,8 @@ def prepare_reviews(queue, job, verdicts, reason='analysis_pending', reasons=Non
         record['last_source'] = review_source(items[aid], bodies[aid])
         # Original publication age cannot be reset by a later crawl.
         record['last_source']['published_at'] = record['item'].get('published_at') or record['item'].get('pubDate')
+        record['analysis_state'] = 'unprocessed' if aid in job.get('_unprocessed_ids', []) else 'review'
+        record['last_source']['analysis_state'] = record['analysis_state']
         catalog[aid] = record['last_source']
         values[path], expected[path] = record, sha
         if job.get('review_pass_version') == 2 and review_age(catalog[aid], now()) != 'eligible':
@@ -245,6 +247,7 @@ def finish_reviews(queue, resolutions, job_id):
 def delivery_verdicts(job, result, excluded_ids=()):
     """Continuity jobs hold missing-body positives until native body checks can pass."""
     verdicts = {r['article_id']: r['relevant'] for r in result['classifications']}
+    verdicts.update(dict.fromkeys(result.get('unprocessed_ids', [])))
     if job.get('continuity_version') == 1:
         for aid, analysis in result['analyses'].items():
             if aid in job.get('_validation_holds', {}):
@@ -270,6 +273,8 @@ def delivery_view(job, result, excluded_ids=()):
     view['input']['raw_articles'] = [a for a in view['input']['raw_articles'] if a['article_id'] not in deferred]
     view['input']['items'] = [a for a in view['input']['items'] if a['article_id'] not in deferred]
     view['body_manifest'] = [b for b in view['body_manifest'] if b['article_id'] not in deferred]
+    if 'unprocessed_ids' in answers:
+        answers['unprocessed_ids'] = []
     answers['classifications'] = [r for r in answers['classifications'] if r['article_id'] not in deferred]
     answers['analyses'] = {aid: a for aid, a in answers['analyses'].items() if aid not in deferred}
     answers['event_groups'] = [dict(g, article_ids=[aid for aid in g['article_ids'] if aid not in deferred])

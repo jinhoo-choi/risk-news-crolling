@@ -91,6 +91,16 @@
         }
       },
       "description": "전건 비교 후 동일 사건 그룹. 같은 원인·거래일의 반복 보도만 묶고 독립 사건은 분리한다. 대표기사는 코드의 최종 점수로 선정한다."
+    },
+    "unprocessed_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100
+      },
+      "description": "delivery_focus_version=1 운영 회차의 명시적 최초 분석 미처리 ID. classifications와 겹치지 않고 두 집합 합이 원본 전체 ID여야 한다. null/false 판정이 아니다."
     }
   },
   "$defs": {

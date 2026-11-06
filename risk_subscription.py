@@ -226,13 +226,15 @@ def reusable_exclusions(queue, index, job):
             return []
         old = hydrate(queue, previous)
         result, _ = queue.get('results/'+jid+'.json')
-        validate(result, old, old['input'], old['body_manifest'])
+        checked = validate(result, old, old['input'], old['body_manifest'])
         sources = {a['article_id']: a for a in old['input']['items']}
         bodies = {b['article_id']: b for b in old['body_manifest']}
         new_sources = {a['article_id']: a for a in job['input']['items']}
         new_bodies = {b['article_id']: b for b in job['body_manifest']}
         return [copy.deepcopy(row) for row in result['classifications']
-                if row['relevant'] is False and row.get('exclusion_review', {}).get('reviewed') is True
+                if row['relevant'] is False and row['article_id'] not in checked.get('held_articles', {})
+                and (old.get('exclusion_review_version') == 2
+                     or row.get('exclusion_review', {}).get('reviewed') is True)
                 and row['article_id'] in new_sources
                 and sources[row['article_id']] == new_sources[row['article_id']]
                 and bodies[row['article_id']] == new_bodies[row['article_id']]
@@ -240,7 +242,7 @@ def reusable_exclusions(queue, index, job):
     return []
 
 
-def collect(config, queue, verification=False, reviews_only=False):
+def collect(config, queue, verification=False, reviews_only=False, review_ids=None):
     checkpoint('collect')
     if reviews_only and verification:
         raise RuntimeError("보류 재수집은 운영 회차만 허용")
@@ -286,18 +288,39 @@ def collect(config, queue, verification=False, reviews_only=False):
         Path(state_file).write_bytes(data)
     exposure_raw = Path('exposure_data.csv').read_bytes()
     captured_at = now().isoformat()
-    catalog = {} if verification else review_catalog(queue)[0].get('sources', {})
+    review_state = {'pending': [], 'sources': {}} if verification else review_catalog(queue)[0]
+    catalog = dict(review_state.get('sources', {}))
+    # Legacy holds without a small index are skipped, never read before fresh news.
+    for aid in set(review_state['pending'])-catalog.keys():
+        catalog[aid] = {'published_at': None, 'item_hash': None, 'body_hash': None}
     excluded = set(current_config(queue, verification).get('excluded_article_ids', []))
     catalog = {aid: source for aid, source in catalog.items() if aid not in excluded}
     ages = {aid: review_age(source, now()) for aid, source in catalog.items()}
-    backlog = [read_review(queue, aid)[0] for aid in catalog
-               if reviews_only and ages[aid] == 'eligible']
-    # Keep immutable pending originals; dispatch them only after the regular
-    # delivery, via the existing collect-review route. No implicit age reset.
-    reviews = [r for r in backlog if ages[r['article_id']] == 'eligible'] if reviews_only else []
-    if reviews_only and not reviews:
-        raise RuntimeError('재검토할 영속 보류 없음')
+    # No automatic evidence retry: default follow-up is first analysis only.
+    selected = set(review_ids or [])
+    if selected and not reviews_only:
+        raise RuntimeError('기사 지정은 보류 후속 수집에만 허용')
+    if selected-set(review_state['pending']):
+        raise RuntimeError('활성 보류에 없는 기사 지정')
+    reviews = []
+    if reviews_only:
+        selected = selected or {aid for aid, source in catalog.items()
+                               if source.get('analysis_state') == 'unprocessed'
+                               and aid in review_state['pending']}
+        for aid in sorted(selected-excluded):
+            if ages.get(aid) == 'expired':
+                continue
+            record, _ = read_review(queue, aid)
+            if review_age(record['item'], now()) != 'eligible':
+                continue
+            reviews.append(record)
+            previous_source = record.get('last_source') or review_source(record['item'], record['body'])
+            catalog[aid] = previous_source
+        if not reviews:
+            print(json.dumps({'job_id': 'pending-review', 'status': 'no_change', 'inputs': 0, 'paid_ai_calls': 0}))
+            return
     replay = {r['article_id']: r for r in reviews}
+    first_analysis = {aid for aid, record in replay.items() if record.get('analysis_state') == 'unprocessed'}
     seen = bot.load_seen_urls()
     exposure = bot.load_exposure_data()
     keywords = [] if reviews_only else list(dict.fromkeys(bot.KEYWORDS+bot.get_overseas_keywords(exposure)))
@@ -370,6 +393,8 @@ def collect(config, queue, verification=False, reviews_only=False):
             article['_review_first_seen_at'] = replay[article['article_id']]['first_seen_at']
     body_errors = []
     def body(article):
+        if article['article_id'] in first_analysis:
+            return copy.deepcopy(replay[article['article_id']]['body'])
         diagnostics = {}
         try:
             text = bot.fetch_article_body(article['url'], diagnostics) or ''
@@ -397,7 +422,7 @@ def collect(config, queue, verification=False, reviews_only=False):
                                   'facts': {'article_id': aid, **detail}})
     record_errors('body', diagnostics_batch)
     # A fetch is not a new analysis: only changed, usable evidence can reopen a hold.
-    unchanged = {b['article_id'] for b in manifest if b['article_id'] in previous_sources
+    unchanged = {b['article_id'] for b in manifest if b['article_id'] in previous_sources and b['article_id'] not in first_analysis
                  and (b['body_status'] != 'verified' or
                       review_source({}, b)['body_hash'] == previous_sources[b['article_id']]['body_hash'])}
     items = [a for a in items if a['article_id'] not in unchanged]
@@ -452,6 +477,8 @@ def collect(config, queue, verification=False, reviews_only=False):
                                  'expired_count': sum(v == 'expired' for v in ages.values()),
                                  'date_unconfirmed_count': sum(v == 'date_unconfirmed' for v in ages.values())}
         job['review_pass_version'] = rules.get('review_pass_version', 1)
+        if rules.get('delivery_focus_version') == 1:
+            job['delivery_focus_version'] = 1
         job['report_layout_version'] = 1
         job['smtp_evidence_version'] = 1
         current_config(queue)
@@ -500,6 +527,7 @@ def verify_job(queue, jid, self_test=False):
     if 'held_articles' in info:
         job['_validation_holds'] = info['held_articles']
         job['_validation_omissions'] = info['omitted_fields']
+        job['_unprocessed_ids'] = info.get('unprocessed_ids', [])
     if job.get('continuity_version') == 1 and policy().get('continuity', {}).get('version') != 1:
         raise RuntimeError('연속 운영 정책 미승인 — 발송 보류')
     if not info['consume_ready'] and (self_test or job.get('continuity_version') != 1):
@@ -586,9 +614,11 @@ def consume(queue, jid, self_test=False):
                              result['analyses'][aid].get('body_status') in {'missing', 'unreadable'})}
     body_deferred_ids.update(row['article_id'] for row in result['classifications']
                              if isinstance(row.get('recheck'), dict) and row['recheck'].get('blocker') == 'body_unusable')
-    alert_deferred_ids = [aid for aid in deferred_ids if aid not in body_deferred_ids]
-    reasons = {row['article_id']: row['reason'] for row in result['classifications']}
+    unprocessed_ids = set(job.get('_unprocessed_ids', []))
+    alert_deferred_ids = [aid for aid in deferred_ids if aid not in body_deferred_ids | unprocessed_ids]
+    reasons = {row['article_id']: row.get('reason', '') for row in result['classifications']}
     reasons.update(job.get('_validation_holds', {}))
+    reasons.update(dict.fromkeys(job.get('_unprocessed_ids', []), '최초 분석 미처리: 검증 기사 우선 안내 후 이어서 처리'))
     values, expected, resolutions = ({}, {}, {}) if self_test else prepare_reviews(queue, job, verdicts, reasons=reasons)
     overdue_count = sum(utc_time(values['review/'+aid+'.json']['first_seen_at']) <= now()-timedelta(hours=24)
                         for aid in deferred_ids if 'review/'+aid+'.json' in values)
@@ -601,6 +631,8 @@ def consume(queue, jid, self_test=False):
     if job.get('review_pass_version') == 2:
         metadata['validation_holds'] = job['_validation_holds']
         metadata['omitted_fields'] = job['_validation_omissions']
+    if job.get('delivery_focus_version') == 1:
+        metadata['unprocessed_ids'] = job.get('_unprocessed_ids', [])
     metadata['owner_excluded_ids'] = sorted(excluded_ids.intersection(verdicts))
     if values or resolutions:
         values['jobs/'+jid+'.json'], expected['jobs/'+jid+'.json'] = metadata, sha
@@ -618,16 +650,18 @@ def consume(queue, jid, self_test=False):
         if previous != value:
             queue.put(path, value, old_sha)
     def review_notice(subject, document, empty=False):
-        if not alert_deferred_ids:
+        if not alert_deferred_ids and not unprocessed_ids:
             if empty and body_deferred_ids:
                 subject = subject.replace('신규 뉴스 없음', '본문 확인된 발송 후보 없음').replace('해당 뉴스 없음', '본문 확인된 발송 후보 없음')
                 document = document.replace('AI 리스크 탐지 결과<br>해당하는 뉴스가 없습니다.',
                                             '본문 확인된 기사에서<br>발송 조건에 해당하는 뉴스가 없습니다.')
             return subject, document
         label = '확인 보류 '+str(len(alert_deferred_ids))+'건'
+        if unprocessed_ids:
+            label += ' · 최초 분석 미처리 '+str(len(unprocessed_ids))+'건'
         if alert_overdue_count:
             label += ' · 24시간 이상 미확인 '+str(alert_overdue_count)+'건'
-        banner = '<div style="padding:12px;color:#92400e;background:#fffbeb">'+html.escape(label)+' — 판정 미완료 기사는 발송·정상 처리에서 제외하고 다음 회차에 다시 확인합니다.</div>'
+        banner = '<div style="padding:12px;color:#92400e;background:#fffbeb">'+html.escape(label)+' — 미처리는 최초 분석을 이어가며, 판정 보류는 새 근거가 확보될 때 다시 확인합니다.</div>'
         document = re.sub(r'(<body\b[^>]*>)', lambda m: m[1]+banner, document, count=1)
         document = document.replace('금일 리스크 뉴스 없음', '검증 완료 발송 후보 없음')
         if empty:
@@ -654,6 +688,8 @@ def consume(queue, jid, self_test=False):
         staged.update(subject=subject, html=html, targets=targets, self_only=self_only, recipient_route=route)
         return True  # Stage native post-delivery history, without SMTP or main writes.
     def empty(subject, html):
+        if job.get('_unprocessed_ids'):
+            raise RuntimeError('적격 발송 기사 없음 — 미처리 분석을 계속해야 함')
         from risk_owner_verification import OWNER, ERROR_EMAIL
         # Operational status only; normal/reference reports retain configured recipients.
         bot.NO_RESULT_RECEIVER = OWNER if self_test else ERROR_EMAIL
@@ -855,6 +891,7 @@ def recover(queue, jid):
     if 'held_articles' in info:
         job['_validation_holds'] = info['held_articles']
         job['_validation_omissions'] = info['omitted_fields']
+        job['_unprocessed_ids'] = info.get('unprocessed_ids', [])
     if (not info['consume_ready'] and job.get('continuity_version') != 1
             or job.get('continuity_version') == 1 and policy().get('continuity', {}).get('version') != 1):
         raise RuntimeError('복구 연속 처리 정책 미승인')
@@ -1003,7 +1040,7 @@ def notify_reviews(queue, job):
     """
     if job.get('status') != 'completed' or not job.get('ack') or not job.get('history_saved'):
         return
-    ids = set(job.get('deferred_ids', []))-set(job.get('body_deferred_ids', []))
+    ids = set(job.get('deferred_ids', []))-set(job.get('body_deferred_ids', []))-set(job.get('unprocessed_ids', []))
     values, expected, records = {}, {}, {}
     instant = now()
     for aid in sorted(ids):
@@ -1065,7 +1102,7 @@ def notify_reviews(queue, job):
     bot = import_bot()
     run = os.environ.get('GITHUB_RUN_ID', '')
     details = ('회차: '+job['job_id']+'\n발송·이력 저장·ACK 완료. 전체 기사 분석은 미완료입니다.\n'
-               '근거가 부족한 기사는 보존했습니다. 다음 회차에서 봇이 원문을 다시 대조해 발송 여부를 판정합니다.\n\n'+
+               '근거가 부족한 기사는 보존했습니다. 발행 후 12시간 안에 새 본문·공식 근거가 확보될 때만 다시 확인합니다.\n\n'+
                '\n\n'.join(rows))
     if run.isdigit():
         details += '\nActions: https://github.com/jinhoo-choi/risk-news-crolling/actions/runs/'+run
@@ -1111,8 +1148,9 @@ def notify_error(error, context=''):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('operation', choices=['scheduled', 'collect-test', 'collect-review', 'consume', 'recover', 'ack', 'connection', 'rollback-check', 'notify-error'])
+    parser.add_argument('operation', choices=['scheduled', 'collect-test', 'collect-review', 'index-reviews', 'consume', 'recover', 'ack', 'connection', 'rollback-check', 'notify-error'])
     parser.add_argument('--job-id')
+    parser.add_argument('--article-id', action='append', help='새 근거가 확인된 보류 기사만 명시적으로 지정')
     parser.add_argument('--self-test', action='store_true')
     args = parser.parse_args()
     config = json.loads(Path(CONFIG).read_text())
@@ -1131,7 +1169,13 @@ def main():
 
 def dispatch(args, config, queue):
     if args.operation in {'scheduled', 'collect-test', 'collect-review'}:
-        collect(config, queue, args.operation == 'collect-test', args.operation == 'collect-review')
+        collect(config, queue, args.operation == 'collect-test', args.operation == 'collect-review', getattr(args, 'article_id', None))
+    elif args.operation == 'index-reviews':
+        queue.preflight()
+        current_config(queue)
+        expire_and_check(queue)
+        index, _ = review_catalog(queue, migrate=True)
+        print(json.dumps({'active_reviews': len(index['pending']), 'paid_ai_calls': 0, 'smtp_calls': 0}))
     elif args.operation == 'consume':
         consume(queue, args.job_id or '', args.self_test)
     elif args.operation == 'recover':

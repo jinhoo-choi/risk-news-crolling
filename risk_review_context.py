@@ -167,6 +167,82 @@ def analysis_plan(job, checkpoints=(), max_bytes=12000):
             'scope': 'local_resume_only_final_validation_required'}
 
 
+def ready_result(job, checkpoints, model_used='unconfirmed'):
+    """Explicit pending partition; do not invent a null/false verdict for unread IDs."""
+    from risk_result_validator import validate
+    plan = analysis_plan(job, checkpoints)
+    result = {key: job[key] for key in ('job_id', 'input_hash', 'policy_hash', 'body_manifest_hash')}
+    result.update(schema_version=1, policy_version='risk-subscription-v1',
+                  analysis_engine='chatgpt_subscription', model_used=model_used,
+                  classifications=plan['classifications'], analyses=plan['analyses'],
+                  event_groups=plan['event_groups'])
+    if plan['pending_ids']:
+        result['unprocessed_ids'] = plan['pending_ids']
+    validate(result, job, job['input'], job['body_manifest'])
+    return result
+
+
+def narrative_targets(job, result, bot):
+    """Run native selection locally, stop before writing text, history or sending.
+
+    Caller supplies the frozen exposure/seen files in a private working directory.
+    Every external request and SMTP connection is blocked, including fallbacks.
+    This is a target plan, not a semantic review or delivery authorization.
+    """
+    import contextlib
+    import io
+    import socket
+    from pathlib import Path
+    from unittest.mock import patch
+    from risk_result_validator import validate
+    from risk_continuity import delivery_view
+    from risk_provider import Provider
+    checked = validate(result, job, job['input'], job['body_manifest'])
+    for field, filename in (('history_hash', 'seen_news.json'), ('exposure_hash', 'exposure_data.csv')):
+        if hashlib.sha256(Path(filename).read_bytes()).hexdigest() != job['input'][field]:
+            raise ValueError('대표기사 계획의 고정 이력·잔고 해시 불일치')
+    local = copy.deepcopy(job)
+    local['_validation_holds'] = checked.get('held_articles', {})
+    local['_validation_omissions'] = checked.get('omitted_fields', {})
+    local['_unprocessed_ids'] = checked.get('unprocessed_ids', [])
+    view, answers = delivery_view(local, result, set())
+    provider = Provider(view, answers)
+    selected = []
+    class Complete(Exception):
+        pass
+    def stop(rows):
+        selected.extend(provider.by_url[a['url']] for a in original_select(rows)
+                        if a.get('grade') in ('긴급', '주의'))
+        raise Complete()
+    def empty(*args, **kwargs):
+        raise Complete()
+    original_select = bot.dedup_same_mail_events
+    names = ('RISK_PROVIDER', 'CLAUDE_MODEL', 'CLAUDE_FILTER_MODEL', 'CLAUDE_ACTION_MODEL',
+             'CLAUDE_VERIFY_MODEL', 'CLAUDE_VERIFY_HIGH_MODEL', '_LAST_ANALYSIS_ENGINE',
+             '_LAST_VERIFY_MODEL', 'KEYWORDS', 'get_overseas_keywords', 'crawl_naver_news', 'fetch_article_body')
+    before = {name: getattr(bot, name, None) for name in names}
+    try:
+        with contextlib.ExitStack() as stack:
+            for name in names:
+                stack.enter_context(patch.object(bot, name, before[name], create=True))
+            provider.install(bot)
+            stack.enter_context(patch.object(bot, 'dedup_same_mail_events', stop))
+            for name in ('send_email', 'send_email_no_result'):
+                stack.enter_context(patch.object(bot, name, empty))
+            for name in ('save_seen_urls', 'save_run_stats', 'save_filter_log', 'flush_owner_warnings'):
+                stack.enter_context(patch.object(bot, name, side_effect=RuntimeError('계획 중 저장·알림 금지')))
+            stack.enter_context(patch.object(bot, 'build_price_alert_section', lambda *a, **k: ''))
+            stack.enter_context(patch.object(bot, 'load_competitor_notices', return_value=[]))
+            stack.enter_context(patch.object(bot.smtplib, 'SMTP_SSL', side_effect=RuntimeError('계획 중 SMTP 금지')))
+            stack.enter_context(patch.object(bot.requests.sessions.Session, 'request', side_effect=RuntimeError('계획 중 HTTP 금지')))
+            stack.enter_context(patch.object(socket.socket, 'connect', side_effect=RuntimeError('계획 중 외부 접속 금지')))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            bot.main()
+    except Complete:
+        pass
+    return selected
+
+
 def usage_observation(*, stage, engine, measurement_source, usage=None,
                       elapsed_ms=None, attempt_number=None, retry_reason=None):
     """Preserve absent counters as unknown. Never infer platform usage from API0.

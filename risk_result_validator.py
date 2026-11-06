@@ -234,7 +234,11 @@ def validate(result, job, inputs, manifest):
     held, omissions = {}, {}
     for error in VALIDATOR.iter_errors(result):
         path = list(error.absolute_path)
-        if (streamlined and len(path) >= 3 and path[0] == 'classifications'
+        if (streamlined and len(path) == 2 and path[0] == 'classifications'
+                and error.validator == 'required'
+                and set(error.validator_value)-set(error.instance) == {'reason'}):
+            held[error.instance['article_id']] = '분류 사유 누락'
+        elif (streamlined and len(path) >= 3 and path[0] == 'classifications'
                 and path[2] not in {'article_id', 'relevant'}):
             aid = result['classifications'][path[1]].get('article_id')
             held[aid] = '분류 사유 형식 오류'
@@ -260,8 +264,12 @@ def validate(result, job, inputs, manifest):
     ids = [item['article_id'] for item in inputs['items']]
     if len(ids) != len(set(ids)):
         raise ValueError('입력 ID 중복')
+    unprocessed = set(result.get('unprocessed_ids', []))
+    if unprocessed and (not streamlined or job.get('delivery_focus_version') != 1):
+        raise ValueError('미처리 분리 미승인 회차')
     classified = [item['article_id'] for item in result['classifications']]
-    if len(classified) != len(set(classified)) or set(classified) != set(ids):
+    if (len(classified) != len(set(classified)) or set(classified) & unprocessed
+            or set(classified) | unprocessed != set(ids)):
         raise ValueError('전건 ID 계약 위반')
     body_ids = [item['article_id'] for item in manifest]
     if len(body_ids) != len(set(body_ids)) or set(body_ids) != set(ids):
@@ -345,11 +353,15 @@ def validate(result, job, inputs, manifest):
                 raise
             for aid in active:
                 held[aid] = str(error)
-    summary = {'classifications': len(ids), 'analyses': len(true_ids),
-               'needs_review': len({aid for aid, value in verdicts.items() if value is None} | set(held)),
-               'consume_ready': not held and not any(value is None for value in verdicts.values())}
+    if unprocessed and not (true_ids-set(held)):
+        raise ValueError('미처리만 있는 회차를 정상 0건으로 소비 금지')
+    summary = {'classifications': len(classified), 'analyses': len(true_ids),
+               'needs_review': len({aid for aid, value in verdicts.items() if value is None} | set(held) | unprocessed),
+               'consume_ready': not unprocessed and not held and not any(value is None for value in verdicts.values())}
     if streamlined:
         summary.update(held_articles=held, omitted_fields=omissions)
+        if job.get('delivery_focus_version') == 1:
+            summary['unprocessed_ids'] = sorted(unprocessed)
     return summary
 
 

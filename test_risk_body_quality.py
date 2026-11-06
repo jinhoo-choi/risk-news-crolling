@@ -82,7 +82,7 @@ class CollectionQuality(unittest.TestCase):
 
     def collect(self, queue):
         # Extraction invariants now run in the post-delivery review route.
-        bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
+        bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True, review_ids=queue.data['review/index.json']['pending'])
 
     def test_older_snapshot_without_status_is_preserved_without_inventing_verified(self):
         queue = collection_cases.Memory()

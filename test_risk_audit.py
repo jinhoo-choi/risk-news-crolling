@@ -194,13 +194,21 @@ class Evidence(unittest.TestCase):
     def test_recent_heartbeat_existing_result_and_terminal_job_do_not_report_silence(self):
         job = {'job_id': 'test', 'mode': 'production', 'status': 'pending',
                'created_at': (now()-timedelta(hours=2)).isoformat()}
-        audit.observe_pending(self.q, job)  # A result already exists.
+        audit.observe_pending(self.q, dict(job, result_saved_at=now().isoformat()))  # Recently saved result.
         self.q.data.pop('results/test.json')
         self.q.data['analysis-attempts/test.json'] = {'updated_at': now().isoformat(), 'stage': 'analyzing'}
         audit.observe_pending(self.q, job)
         self.q.data.pop('analysis-attempts/test.json')
         audit.observe_pending(self.q, dict(job, status='completed'))
         self.assertFalse(any(p.startswith('incidents/') for p in self.q.data))
+
+    def test_saved_result_without_dispatch_is_observed_without_resending(self):
+        job = {'job_id': 'test', 'mode': 'production', 'status': 'pending',
+               'created_at': (now()-timedelta(hours=2)).isoformat()}
+        audit.observe_pending(self.q, job)
+        incident = self.q.data['incidents/test-delivery-pending-after-result.json']
+        self.assertTrue(incident['result_present'])
+        self.assertFalse(incident['cause_confirmed'])
 
     def test_blocked_legacy_utc_record_is_reported_immediately_and_invalid_time_is_distinct(self):
         self.q.data.pop('results/test.json')
