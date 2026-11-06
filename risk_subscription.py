@@ -15,7 +15,7 @@ import tempfile
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,10 +27,11 @@ from risk_delivery import (Delivery, address_key, report_headers, rejection_evid
 from risk_partial_close import checked_closure, source_version
 from risk_provider import Provider
 from risk_outbox import make_packet, validate_packet, store_packet, legacy_packet
-from risk_shards import split_job, hydrate
+from risk_shards import split_job, hydrate, chunks
 from risk_audit import checkpoint, record_error, record_errors, run_audited, observe_pending, persist_unhandled
 from risk_continuity import (freeze_exposure, read_exposure, pending_reviews,
-                             prepare_reviews, finish_reviews, delivery_view, delivery_verdicts, read_review)
+                             prepare_reviews, finish_reviews, delivery_view, delivery_verdicts, read_review,
+                             review_age)
 
 CONFIG = 'risk_subscription_config.json'
 POLICY = 'risk_policy.json'
@@ -204,6 +205,41 @@ def prune_terminal_inputs(queue, retention_days=7):
         queue.put_many({path: job}, expected, deletions=deletions)
 
 
+def reusable_exclusions(queue, index, job):
+    """Optional exact-context answers; never remove IDs or reuse positives/nulls.
+
+    Changed history/exposure/day/policy requires fresh review even for the same
+    source. Consumers still validate the complete newly submitted result.
+    """
+    current = now()
+    for jid in reversed(index['jobs']):
+        previous, _ = queue.get('jobs/'+jid+'.json')
+        if not previous or previous.get('status') != 'completed' or previous.get('mode') != 'production':
+            continue
+        created = utc_time(previous['created_at'])
+        if (not timedelta(0) <= current-created <= timedelta(hours=12)
+                or created.astimezone(timezone(timedelta(hours=9))).date()
+                   != current.astimezone(timezone(timedelta(hours=9))).date()
+                or previous['policy_hash'] != job['policy_hash']
+                or any(previous['input'].get(k) != job['input'].get(k)
+                       for k in ('history_hash', 'exposure_hash'))):
+            return []
+        old = hydrate(queue, previous)
+        result, _ = queue.get('results/'+jid+'.json')
+        validate(result, old, old['input'], old['body_manifest'])
+        sources = {a['article_id']: a for a in old['input']['items']}
+        bodies = {b['article_id']: b for b in old['body_manifest']}
+        new_sources = {a['article_id']: a for a in job['input']['items']}
+        new_bodies = {b['article_id']: b for b in job['body_manifest']}
+        return [copy.deepcopy(row) for row in result['classifications']
+                if row['relevant'] is False and row.get('exclusion_review', {}).get('reviewed') is True
+                and row['article_id'] in new_sources
+                and sources[row['article_id']] == new_sources[row['article_id']]
+                and bodies[row['article_id']] == new_bodies[row['article_id']]
+                and review_age(new_sources[row['article_id']], current) == 'eligible']
+    return []
+
+
 def collect(config, queue, verification=False, reviews_only=False):
     checkpoint('collect')
     if reviews_only and verification:
@@ -213,6 +249,25 @@ def collect(config, queue, verification=False, reviews_only=False):
         current_config(queue)
     suppressed_versions = set()
     index, sha = expire_and_check(queue, suppressed_versions)
+    after_job_id = None
+    if reviews_only:
+        later_reviews = False
+        for jid in reversed(index['jobs']):
+            parent, _ = queue.get('jobs/'+jid+'.json')
+            if parent.get('mode') != 'production':
+                continue
+            if parent['input'].get('snapshot_mode') == 'review_replay':
+                later_reviews = True
+                continue
+            if (parent.get('status') != 'completed' or parent.get('ack') is not True
+                    or parent.get('history_saved') is not True):
+                raise RuntimeError('정규 발송·이력·ACK 완료 전 보류 후속 수집 금지')
+            if later_reviews:
+                raise RuntimeError('해당 정규 회차의 보류 후속 회차 이미 존재')
+            after_job_id = jid
+            break
+        if after_job_id is None:
+            raise RuntimeError('보류 후속 수집의 완료된 정규 회차 없음')
     if not verification:
         current_config(queue)
         try:
@@ -227,9 +282,13 @@ def collect(config, queue, verification=False, reviews_only=False):
         Path(state_file).write_bytes(data)
     exposure_raw = Path('exposure_data.csv').read_bytes()
     captured_at = now().isoformat()
-    reviews = [] if verification else pending_reviews(queue)
+    backlog = [] if verification else pending_reviews(queue)
     excluded = set(current_config(queue, verification).get('excluded_article_ids', []))
-    reviews = [r for r in reviews if r['article_id'] not in excluded]
+    backlog = [r for r in backlog if r['article_id'] not in excluded]
+    ages = {r['article_id']: review_age(r['item'], now()) for r in backlog}
+    # Keep immutable pending originals; dispatch them only after the regular
+    # delivery, via the existing collect-review route. No implicit age reset.
+    reviews = [r for r in backlog if ages[r['article_id']] == 'eligible'] if reviews_only else []
     if reviews_only and not reviews:
         raise RuntimeError('재검토할 영속 보류 없음')
     replay = {r['article_id']: r for r in reviews}
@@ -273,11 +332,12 @@ def collect(config, queue, verification=False, reviews_only=False):
         article['article_id'] = hashlib.sha256((article['url']+'\0'+article['title']).encode()).hexdigest()[:24]
         article['description'] = article.get('desc', '')
         article['published_at'] = article.get('pubDate', '')
-        if article['article_id'] in excluded:
+        if article['article_id'] in excluded or not reviews_only and article['article_id'] in ages:
             continue
         if not bot.is_hard_excluded(article['title'], article.get('desc', ''), article['url'])[0]:
             items.append(article)
-    raw = [a for a in raw if a['article_id'] not in excluded]
+    raw = [a for a in raw if a['article_id'] not in excluded
+           and (reviews_only or a['article_id'] not in ages)]
     item_ids = {a['article_id'] for a in items}
     raw_ids = {a['article_id'] for a in raw}
     for record in reviews:
@@ -365,6 +425,13 @@ def collect(config, queue, verification=False, reviews_only=False):
     if rules.get('action_quality_version') == 1:
         job['action_quality_version'] = 1
     if not verification:
+        job['review_dispatch'] = {'version': 1, 'max_publication_age_hours': 12,
+                                 'phase': 'post_delivery' if reviews_only else 'regular',
+                                 'after_job_id': after_job_id,
+                                 'pending_total': len(backlog),
+                                 'eligible_count': sum(v == 'eligible' for v in ages.values()),
+                                 'expired_count': sum(v == 'expired' for v in ages.values()),
+                                 'date_unconfirmed_count': sum(v == 'date_unconfirmed' for v in ages.values())}
         job['review_pass_version'] = 1
         job['report_layout_version'] = 1
         job['smtp_evidence_version'] = 1
@@ -373,6 +440,18 @@ def collect(config, queue, verification=False, reviews_only=False):
     if job['exposure_snapshot']['sha256'] != job['input']['exposure_hash']:
         raise RuntimeError('수집 중 잔고 변경 — 스냅샷 불일치')
     small, values = split_job(job)
+    if not verification and not reviews_only:
+        try:
+            reused = reusable_exclusions(queue, index, job)
+            refs = []
+            for i, part in enumerate(chunks(reused)):
+                path = 'inputs/'+jid+'/exclusion-reuse-'+str(i).zfill(3)+'.json'
+                values[path] = part
+                refs.append({'path': path, 'sha256': digest(part), 'count': len(part)})
+            small['exclusion_reuse'] = refs
+        except Exception as error:
+            # Cache absence/failure never blocks fresh analysis or delivery.
+            record_error('collect', error, 'exclusion_reuse_unavailable')
     values.update(frozen)
     index['jobs'] = (index['jobs']+[jid])[-60:]
     values['jobs/'+jid+'.json'] = small

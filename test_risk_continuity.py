@@ -48,6 +48,19 @@ class NativeContinuity(unittest.TestCase):
         values, expected, _ = continuity.prepare_reviews(queue, job, {aid: None})
         queue.put_many(values, expected)
 
+    def test_review_aging_after_collection_is_held_before_smtp(self):
+        queue = self.fixture()
+        job = self.frozen(queue)
+        item = job['input']['items'][0]
+        item.update(_review_replay=True, published_at=(now()-timedelta(hours=12, seconds=1)).isoformat())
+        job['input_hash'] = queue.data['results/test.json']['input_hash'] = digest(job['input'])
+        smtp = native_fixtures.SMTP()
+        self.run_consume(queue, smtp)
+        self.assertEqual(queue.data['jobs/test.json']['deferred_ids'], ['one'])
+        self.assertEqual(queue.data['review/one.json']['status'], 'pending')
+        self.assertNotIn(item['url'], self.bot.load_seen_urls())
+        self.assertNotIn(item['url'], queue.data['previews/test.json']['html'])
+
     def test_same_round_recheck_requires_frozen_quote_and_routes_verified_peer(self):
         queue = self.mixed()
         job = queue.data['jobs/test.json']
@@ -464,9 +477,15 @@ class ReplayCollection(unittest.TestCase):
 
     def seed(self):
         queue = memory_fixtures.Memory()
+        parent = memory_fixtures.job('regular', status='completed')
+        parent.update(ack=True, history_saved=True, policy_hash='previous-policy',
+                      created_at=now().isoformat())
+        parent['input']['snapshot_mode'] = 'natural_collection'
+        queue.data['jobs/regular.json'] = parent
+        queue.data['index.json']['jobs'] = ['regular']
         item = {'article_id': 'held', 'title': '실제 사건 주체 확인 기사', 'desc': '보류 원문 설명',
                 'description': '보류 원문 설명', 'url': 'https://example.invalid/held',
-                'pubDate': (now()-timedelta(days=60)).isoformat()}
+                'pubDate': (now()-timedelta(hours=1)).isoformat()}
         body = {'article_id': 'held', 'body': '본문에 확인 가능한 사실을 보존한다.',
                 'body_status': 'verified', 'source_url': item['url']}
         job = {'job_id': 'old', 'input': {'items': [item]}, 'body_manifest': [body]}
@@ -492,16 +511,54 @@ class ReplayCollection(unittest.TestCase):
                 bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
         self.assertNotIn('jobs/risk-production-hardening-test.json', queue.data)
 
-    def test_sixty_day_old_review_replays_with_original_body_outside_collection_window(self):
+    def test_regular_collection_leaves_backlog_for_post_delivery_without_mutation(self):
         queue = self.seed()
+        before = copy.deepcopy(queue.data['review/held.json'])
         self.collect(queue)
         small = queue.data['jobs/risk-production-hardening-test.json']
         full = hydrate(queue, small)
-        self.assertEqual([a['article_id'] for a in full['input']['items']], ['held'])
-        self.assertTrue(full['input']['items'][0]['_review_replay'])
-        self.assertEqual(full['body_manifest'][0]['body'], queue.data['review/held.json']['body']['body'])
-        self.assertEqual(queue.data['review/held.json']['status'], 'pending')
+        self.assertEqual(full['input']['items'], [])
+        self.assertEqual(full['review_dispatch']['eligible_count'], 1)
+        self.assertEqual(full['review_dispatch']['phase'], 'regular')
+        self.assertEqual(queue.data['review/held.json'], before)
         self.assertIn('exposure_snapshot', small)
+
+    def test_pending_same_id_in_fresh_search_is_deferred_before_body_fetch(self):
+        queue = self.seed()
+        record = queue.data['review/held.json']
+        item = record['item']
+        aid = hashlib.sha256((item['url']+'\0'+item['title']).encode()).hexdigest()[:24]
+        item['article_id'] = record['article_id'] = record['body']['article_id'] = aid
+        record['source_hash'] = digest({'item': item, 'body': record['body']})
+        queue.data['review/'+aid+'.json'] = queue.data.pop('review/held.json')
+        queue.data['review/index.json']['pending'] = [aid]
+        self.bot.crawl_naver_news.return_value = [copy.deepcopy(item)]
+        self.bot.fetch_article_body = lambda *a: self.fail('backlog body before delivery')
+        self.collect(queue)
+        full = hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])
+        self.assertEqual(full['input']['items'], [])
+        self.assertEqual(full['input']['raw_articles'], [])
+
+    def test_expired_or_unknown_review_never_replays_and_original_is_preserved(self):
+        for value in [(now()-timedelta(hours=12, seconds=1)).isoformat(),
+                      (now()-timedelta(days=60)).isoformat(), '', 'bad', '2026-11-06T10:00:00']:
+            with self.subTest(value=value):
+                queue = self.seed()
+                record = queue.data['review/held.json']
+                record['item']['pubDate'] = value
+                record['source_hash'] = digest({'item': record['item'], 'body': record['body']})
+                before = copy.deepcopy(queue.data)
+                with self.assertRaisesRegex(RuntimeError, '재검토할 영속 보류 없음'):
+                    bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
+                self.assertEqual(queue.data, before)
+
+    def test_publication_age_boundary_and_timezones_do_not_use_first_seen(self):
+        current = bridge.utc_time('2026-11-06T12:00:00Z')
+        for value, expected in [('2026-11-06T00:00:00Z', 'eligible'),
+                                ('Fri, 06 Nov 2026 09:00:00 +0900', 'eligible'),
+                                ('2026-11-05T23:59:59Z', 'expired'),
+                                ('2026-11-06T12:00:01Z', 'date_unconfirmed')]:
+            self.assertEqual(continuity.review_age({'published_at': value, 'first_seen_at': current.isoformat()}, current), expected)
 
     def test_manual_review_collection_reads_only_backlog_without_new_search_or_smtp(self):
         queue = self.seed()
@@ -511,9 +568,33 @@ class ReplayCollection(unittest.TestCase):
         full = hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])
         self.assertEqual([a['article_id'] for a in full['input']['items']], ['held'])
         self.assertEqual(full['input']['snapshot_mode'], 'review_replay')
+        self.assertEqual(full['review_dispatch']['after_job_id'], 'regular')
         self.bot.crawl_naver_news.assert_not_called()
         self.assertEqual(queue.data['review/held.json']['status'], 'pending')
         self.assertEqual(queue.data['jobs/risk-production-hardening-test.json']['receipts'], {})
+
+    def test_review_requires_completed_regular_history_ack_and_only_one_followup(self):
+        for mutation in ('no-parent', 'no-ack', 'no-history', 'expired', 'already-collected'):
+            with self.subTest(mutation=mutation):
+                queue = self.seed()
+                parent = queue.data['jobs/regular.json']
+                if mutation == 'no-parent':
+                    queue.data['index.json']['jobs'] = []
+                elif mutation == 'no-ack':
+                    parent['ack'] = False
+                elif mutation == 'no-history':
+                    parent['history_saved'] = False
+                elif mutation == 'expired':
+                    parent['status'] = 'expired'
+                else:
+                    previous = copy.deepcopy(parent)
+                    previous.update(job_id='review-previous')
+                    previous['input']['snapshot_mode'] = 'review_replay'
+                    queue.data['jobs/review-previous.json'] = previous
+                    queue.data['index.json']['jobs'].append('review-previous')
+                with self.assertRaisesRegex(RuntimeError, '보류 후속'):
+                    bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
+                self.assertNotIn('jobs/risk-production-hardening-test.json', queue.data)
 
     def test_exposure_is_captured_once_and_not_refreshed_after_filter(self):
         queue = self.seed()
@@ -536,10 +617,10 @@ class ReplayCollection(unittest.TestCase):
         self.collect(queue)
         full = hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])
         items, bodies = full['input']['items'], full['body_manifest']
-        self.assertEqual([a['url'] for a in items], [rows[1]['url'], saved['url'], rows[0]['url']])
-        self.assertEqual([b['body_status'] for b in bodies], ['verified', 'verified', 'missing'])
+        self.assertEqual([a['url'] for a in items], [rows[1]['url'], rows[0]['url']])
+        self.assertEqual([b['body_status'] for b in bodies], ['verified', 'missing'])
         self.assertEqual({a['article_id'] for a in items}, {b['article_id'] for b in bodies})
-        self.assertEqual(len(full['input']['raw_articles']), 3)
+        self.assertEqual(len(full['input']['raw_articles']), 2)
 
     def test_corrupt_pending_source_blocks_collection_instead_of_dropping_it(self):
         queue = self.seed()
@@ -547,6 +628,69 @@ class ReplayCollection(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, '영속 보류 원본'):
             self.collect(queue)
         self.assertNotIn('jobs/risk-production-hardening-test.json', queue.data)
+
+    def test_optional_exclusion_reuse_failure_does_not_block_new_round(self):
+        queue = self.seed()
+        with patch.object(bridge, 'reusable_exclusions', side_effect=RuntimeError('optional read failed')), \
+             patch.object(bridge, 'record_error'):
+            self.collect(queue)
+        job = queue.data['jobs/risk-production-hardening-test.json']
+        self.assertEqual(job['status'], 'pending')
+        self.assertEqual(job['receipts'], {})
+
+
+class ExclusionReuse(unittest.TestCase):
+    setUp = native_fixtures.Integration.setUp
+    tearDown = native_fixtures.Integration.tearDown
+    fixture = native_fixtures.Integration.fixture
+    excluded = native_fixtures.ExclusionEvidence.excluded
+
+    def pair(self):
+        queue = self.excluded()
+        old = queue.data['jobs/test.json']
+        old.update(status='completed', created_at=now().isoformat())
+        current = copy.deepcopy(old)
+        current.update(job_id='next', status='pending')
+        return queue, current
+
+    def test_validated_unchanged_exclusion_is_copied_without_dropping_input(self):
+        queue, current = self.pair()
+        original = copy.deepcopy(current)
+        rows = bridge.reusable_exclusions(queue, {'jobs': ['test']}, current)
+        self.assertEqual(rows, queue.data['results/test.json']['classifications'])
+        rows[0]['reason'] = 'local change'
+        self.assertNotEqual(rows, queue.data['results/test.json']['classifications'])
+        self.assertEqual(current, original)
+
+    def test_changed_context_source_body_and_age_cannot_reuse(self):
+        for mutation in ('policy', 'history', 'exposure', 'title', 'body', 'age'):
+            with self.subTest(mutation=mutation):
+                queue, current = self.pair()
+                if mutation == 'policy':
+                    current['policy_hash'] = 'different'
+                elif mutation in ('history', 'exposure'):
+                    current['input'][mutation+'_hash'] = 'different'
+                elif mutation == 'title':
+                    current['input']['items'][0]['title'] += ' 새로운 악화'
+                elif mutation == 'body':
+                    current['body_manifest'][0]['body'] += ' 새로운 악화'
+                else:
+                    queue.data['jobs/test.json']['created_at'] = (now()-timedelta(hours=12, seconds=1)).isoformat()
+                self.assertEqual(bridge.reusable_exclusions(queue, {'jobs': ['test']}, current), [])
+
+    def test_positive_or_pending_source_is_not_reused(self):
+        queue = self.fixture()
+        old = queue.data['jobs/test.json']
+        old.update(status='completed', created_at=now().isoformat())
+        self.assertEqual(bridge.reusable_exclusions(queue, {'jobs': ['test']}, copy.deepcopy(old)), [])
+        old['status'] = 'pending'
+        self.assertEqual(bridge.reusable_exclusions(queue, {'jobs': ['test']}, copy.deepcopy(old)), [])
+
+    def test_invalid_previous_exclusion_is_not_trusted(self):
+        queue, current = self.pair()
+        queue.data['results/test.json']['classifications'][0]['exclusion_review']['evidence']['source_hash'] = '0'*64
+        with self.assertRaisesRegex(ValueError, '해시'):
+            bridge.reusable_exclusions(queue, {'jobs': ['test']}, current)
 
 
 class SnapshotRules(unittest.TestCase):

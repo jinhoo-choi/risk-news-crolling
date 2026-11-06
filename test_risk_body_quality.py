@@ -78,8 +78,11 @@ class ExtractionQuality(unittest.TestCase):
 
 class CollectionQuality(unittest.TestCase):
     setUp = collection_cases.Collection.setUp
-    collect = collection_cases.Collection.collect
     seed = replay_cases.ReplayCollection.seed
+
+    def collect(self, queue):
+        # Extraction invariants now run in the post-delivery review route.
+        bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
 
     def test_older_snapshot_without_status_is_preserved_without_inventing_verified(self):
         queue = collection_cases.Memory()
@@ -90,9 +93,11 @@ class CollectionQuality(unittest.TestCase):
         self.assertEqual(values['review/held.json']['last_body_status'], 'unconfirmed')
 
     def test_saved_verified_failures_are_rechecked_without_losing_ids_or_originals(self):
-        queue = collection_cases.Memory()
+        queue = self.seed()
+        queue.data.pop('review/held.json')
+        queue.data['review/index.json']['pending'] = []
         items = [dict(article_id=r['article_id'], title=r['title'], url=r['url'],
-                      desc='', description='', pubDate='Mon, 26 Oct 2026 07:00:00 +0900') for r in CASES]
+                      desc='', description='', pubDate=(bridge.now()-bridge.timedelta(hours=1)).isoformat()) for r in CASES]
         bodies = [dict(article_id=r['article_id'], body=r['body'], body_status='verified',
                        source_url=r['url']) for r in CASES]
         old = {'job_id': 'old', 'input': {'items': items}, 'body_manifest': bodies}
