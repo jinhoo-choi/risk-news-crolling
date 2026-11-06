@@ -6549,6 +6549,12 @@ JSON만 출력:
                         _act_extra.append(_x)
         _act_entities_full = list(_act_entities) + _act_extra
         exp_rows = action_exposure_rows(_act_entities_full, exposure_data)
+        action_guard_rows = exp_rows
+        if (RISK_PROVIDER is not None and not _act_entities_full and is_market_news(article)
+                and RISK_PROVIDER.analysis(article).get('body_status') == 'verified'):
+            # A market-wide task refers to actual portfolio positions, not a
+            # fictitious company. Keep named-company attribution unchanged.
+            action_guard_rows = action_exposure_rows(list(exposure_data), exposure_data)
         # 해외주식 여부 — 익스포저 rows의 시장 컬럼 또는 keyword 패턴으로 판단
         is_overseas = any(r.get("시장","국내") == "해외" or r.get("종목유형","") in ("해외주식","해외대출") for r in exp_rows)
         def _fmt_exp(r):
@@ -6734,7 +6740,7 @@ JSON만 출력:
                     action_text = _strip_tainted_numbers(action_text, _bad)
                 # 익스포저에 없는 유형의 조치(OB 인계·고객 안내) 제거 — 프롬프트
                 # 규칙을 AI가 위반하는 경우가 있어 코드에서 결정론적으로 강제
-                action_text, _rm = strip_unsupported_action_clauses(action_text, exp_rows)
+                action_text, _rm = strip_unsupported_action_clauses(action_text, action_guard_rows)
                 if _rm:
                     print(f"  [미보유 유형 조치 제거] {article.get('title','')[:30]} — {_rm}")
                 action_text, _dup = dedup_action_phrases(action_text)
