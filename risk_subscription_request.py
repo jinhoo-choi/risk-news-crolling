@@ -1,5 +1,6 @@
 """Public wake file contains metadata only; fixed CLI operations and flags."""
 import json
+import os
 import re
 import subprocess
 import sys
@@ -26,7 +27,7 @@ def main():
     value = json.loads(Path('risk_subscription_request.json').read_text())
     if set(value) != {'operation','job_id','self_test','dry_run','request_id'}:
         raise RuntimeError('소비 메타데이터 필드 오류')
-    if value['operation'] not in {'consume', 'recover', 'collect-review'} or not JOB_ID.fullmatch(value['job_id']) or type(value['self_test']) is not bool or value['dry_run'] is not False:
+    if value['operation'] not in {'consume', 'recover', 'collect-review', 'close-partial'} or not JOB_ID.fullmatch(value['job_id']) or type(value['self_test']) is not bool or value['dry_run'] is not False:
         raise RuntimeError('허용되지 않은 소비 요청')
     if value['operation'] == 'collect-review' and (value['job_id'] != 'pending-review' or value['self_test']):
         raise RuntimeError('보류 재수집 요청 범위 오류')
@@ -34,6 +35,19 @@ def main():
         raise RuntimeError('복구는 운영 회차만 허용')
     if not JOB_ID.fullmatch(value['request_id']):
         raise RuntimeError('요청 ID 오류')
+    if value['operation'] == 'close-partial':
+        from risk_queue import Queue
+        from risk_partial_close import close_partial
+        if value['self_test'] or os.environ.get('GITHUB_REF') != 'refs/heads/main':
+            raise RuntimeError('운영 main의 별도 승인만 부분 종결 허용')
+        queue = Queue()
+        queue.preflight()
+        close_partial(queue, value['job_id'], value['request_id'])
+        if output := os.environ.get('GITHUB_OUTPUT'):
+            with open(output, 'a') as stream:
+                stream.write('job_id='+value['job_id']+'\nneeds_ack=false\n')
+        print('부분 발송 종결 확인. SMTP·운영 seen·전원 ACK 없음.')
+        return
     command = [sys.executable, 'risk_subscription.py', value['operation']]
     if value['operation'] != 'collect-review':
         command += ['--job-id', value['job_id']]
@@ -74,7 +88,7 @@ def main():
     if (summary.get('job_id') != value['job_id'] or summary.get('paid_ai_calls') != 0
             or summary.get('status') not in {'verified', 'completed', 'delivery_complete'}):
         raise RuntimeError('소비 결과 완료 상태 확인 실패')
-    if output := __import__('os').environ.get('GITHUB_OUTPUT'):
+    if output := os.environ.get('GITHUB_OUTPUT'):
         with open(output, 'a') as stream:
             stream.write('job_id='+value['job_id']+'\n')
             stream.write('self_test='+str(value['self_test']).lower()+'\n')

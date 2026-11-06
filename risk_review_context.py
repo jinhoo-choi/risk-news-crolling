@@ -15,7 +15,7 @@ from risk_result_validator import utc_time
 PAYLOAD_FIELDS = frozenset({'input', 'input_parts', 'body_manifest',
                             'raw_articles', 'seen_after_snapshot'})
 STATES = frozenset({'pending', 'sending', 'uncertain', 'delivery_complete',
-                    'completed', 'verified', 'expired', 'cancelled'})
+                    'completed', 'verified', 'expired', 'cancelled', 'closed_partial'})
 
 
 def canonical(value):

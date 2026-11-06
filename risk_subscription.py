@@ -23,6 +23,7 @@ from risk_queue import Queue, JOB_ID, now, digest
 from risk_result_validator import validate, utc_time
 from risk_body_quality import body_quality
 from risk_delivery import Delivery, address_key, report_headers
+from risk_partial_close import checked_closure, source_version
 from risk_provider import Provider
 from risk_outbox import make_packet, validate_packet, store_packet, legacy_packet
 from risk_shards import split_job, hydrate
@@ -83,13 +84,23 @@ def current_config(queue, verification=False, articles=(), document=''):
     return config
 
 
-def expire_and_check(queue):
+def expire_and_check(queue, suppressed_versions=None):
     index, sha = queue.get('index.json')
     index = index or {'jobs': []}
-    for jid in index['jobs']:
+    closures = index.get('partial_closures', {})
+    if not isinstance(closures, dict):
+        raise RuntimeError('부분 종결 색인 형식 오류')
+    for jid in dict.fromkeys([*index['jobs'], *closures]):
         job, old_sha = queue.get('jobs/'+jid+'.json')
         if not job:
             raise RuntimeError('색인 회차 읽기 실패')
+        if jid in closures or job.get('status') == 'closed_partial':
+            if job.get('job_id') != jid:
+                raise RuntimeError('부분 종결 색인 회차 불일치')
+            record = checked_closure(job, index)
+            if suppressed_versions is not None:
+                suppressed_versions.update(record['versions'])
+            continue
         observe_pending(queue, job)
         if job.get('status') in TERMINAL:
             continue
@@ -165,7 +176,8 @@ def collect(config, queue, verification=False, reviews_only=False):
     queue.preflight()
     if not verification:
         current_config(queue)
-    index, sha = expire_and_check(queue)
+    suppressed_versions = set()
+    index, sha = expire_and_check(queue, suppressed_versions)
     if not verification:
         current_config(queue)
         try:
@@ -285,8 +297,12 @@ def collect(config, queue, verification=False, reviews_only=False):
     data, _ = queue.source('seen_news.json')
     Path('seen_news.json').write_bytes(data)
     current_seen = bot.load_seen_urls()
-    raw = [a for a in raw if a['url'] not in current_seen or a['article_id'] in replay]
-    items = [a for a in items if a['url'] not in current_seen or a['article_id'] in replay]
+    suppressed_ids = {b['article_id'] for b in manifest if not verification and suppressed_versions
+                      and source_version(b) in suppressed_versions}
+    raw = [a for a in raw if a['article_id'] not in suppressed_ids
+           and (a['url'] not in current_seen or a['article_id'] in replay)]
+    items = [a for a in items if a['article_id'] not in suppressed_ids
+             and (a['url'] not in current_seen or a['article_id'] in replay)]
     allowed_ids = {a['article_id'] for a in items}
     manifest = [b for b in manifest if b['article_id'] in allowed_ids]
     # Put readable sources first without dropping IDs or changing their verdicts.
