@@ -92,10 +92,11 @@ class CollectionQuality(unittest.TestCase):
         self.assertEqual(values['review/held.json']['body'], body)
         self.assertEqual(values['review/held.json']['last_body_status'], 'unconfirmed')
 
-    def test_saved_verified_failures_are_rechecked_without_losing_ids_or_originals(self):
+    def test_failed_fetch_does_not_reanalyze_saved_failures_or_delete_originals(self):
         queue = self.seed()
         queue.data.pop('review/held.json')
         queue.data['review/index.json']['pending'] = []
+        queue.data['review/index.json']['sources'] = {}
         items = [dict(article_id=r['article_id'], title=r['title'], url=r['url'],
                       desc='', description='', pubDate=(bridge.now()-bridge.timedelta(hours=1)).isoformat()) for r in CASES]
         bodies = [dict(article_id=r['article_id'], body=r['body'], body_status='verified',
@@ -108,20 +109,12 @@ class CollectionQuality(unittest.TestCase):
         self.bot.fetch_article_body = lambda *a: ''
         with patch.object(bridge, 'policy', return_value={'action_quality_version': 1}):
             self.collect(queue)
-        job = hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])
-        actual = {b['article_id']: b for b in job['body_manifest']}
-        self.assertEqual(set(actual), {r['article_id'] for r in CASES})
-        for row in CASES:
-            self.assertEqual(actual[row['article_id']]['body_status'], row['expected_status'])
-            self.assertTrue(actual[row['article_id']]['body_quality_reason'])
-            self.assertEqual(actual[row['article_id']]['body'], row['body'])
+        self.assertNotIn('jobs/risk-production-hardening-test.json', queue.data)
         self.assertEqual({p: queue.data[p] for p in originals}, originals)
-        self.assertEqual(job['body_quality_version'], 1)
-        self.assertEqual(job['action_quality_version'], 1)
-        self.assertEqual(job['paid_ai_calls'], 0)
-        self.assertEqual(job['receipts'], {})
+        for row in CASES:
+            self.assertEqual(body_quality(row['body'])[0], row['expected_status'])
 
-    def test_verified_saved_prose_wins_over_new_menu_but_unreadable_saved_text_is_not_promoted(self):
+    def test_new_menu_does_not_resurrect_or_reanalyze_old_prose(self):
         for saved, expected_status in [('회사가 가동 중단 사실을 공시했다.', 'verified'),
                                        ('홍길동 기자', 'unreadable')]:
             queue = self.seed()
@@ -130,10 +123,8 @@ class CollectionQuality(unittest.TestCase):
             record['source_hash'] = digest({'item': record['item'], 'body': record['body']})
             self.bot.fetch_article_body = lambda *a: '관련기사 메뉴'
             self.collect(queue)
-            job = hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])
-            self.assertEqual(job['body_manifest'][0]['body_status'], expected_status)
-            if expected_status == 'verified':
-                self.assertEqual(job['body_manifest'][0]['body'], saved)
+            self.assertNotIn('jobs/risk-production-hardening-test.json', queue.data)
+            self.assertEqual(queue.data['review/held.json']['body']['body'], saved)
 
     def test_saved_unreadable_prose_is_not_promoted_without_a_new_verified_fetch(self):
         queue = self.seed()
@@ -141,9 +132,8 @@ class CollectionQuality(unittest.TestCase):
         record['body'].update(body='이 문단은 다른 사건에 관한 내용이라고 확인했다.', body_status='unreadable')
         record['source_hash'] = digest({'item': record['item'], 'body': record['body']})
         self.collect(queue)
-        body = hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])['body_manifest'][0]
-        self.assertEqual(body['body_status'], 'unreadable')
-        self.assertEqual(body['body_quality_reason'], 'saved_body_unverified')
+        self.assertNotIn('jobs/risk-production-hardening-test.json', queue.data)
+        self.assertEqual(queue.data['review/held.json']['body']['body_status'], 'unreadable')
 
 
 class NativeValidation(unittest.TestCase):

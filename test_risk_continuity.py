@@ -2,6 +2,7 @@
 import base64
 import copy
 import hashlib
+import io
 import json
 import threading
 from datetime import timedelta
@@ -47,6 +48,96 @@ class NativeContinuity(unittest.TestCase):
         job = queue.data['jobs/test.json']
         values, expected, _ = continuity.prepare_reviews(queue, job, {aid: None})
         queue.put_many(values, expected)
+
+    def streamlined(self):
+        queue = self.mixed()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        job.update(review_pass_version=2, action_quality_version=2, exclusion_review_version=2)
+        job['body_manifest'][1] = dict(job['body_manifest'][0], article_id='held')
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        result['classifications'][1]['relevant'] = True
+        result['analyses']['held'] = copy.deepcopy(result['analyses']['one'])
+        return queue
+
+    def test_v2_bad_fact_or_schema_holds_only_article_without_mutating_saved_answer(self):
+        for field, value in [('fact_summary', '손실 987654321원 발생.'),
+                             ('entity', '한국투자증권이 아닌 주체'), ('evidence', []),
+                             ('body_status', 'invalid'), ('analysis', None)]:
+            with self.subTest(field=field):
+                Path('seen_news.json').write_bytes(self.before)
+                queue, smtp = self.streamlined(), native_fixtures.SMTP()
+                result = queue.data['results/test.json']
+                if field == 'analysis':
+                    result['analyses']['held'] = value
+                else:
+                    result['analyses']['held'][field] = value
+                original = copy.deepcopy(result)
+                self.run_consume(queue, smtp)
+                state = queue.data['jobs/test.json']
+                self.assertEqual(state['deferred_ids'], ['held'])
+                self.assertEqual(len(smtp.calls), 3)
+                self.assertEqual(queue.data['results/test.json'], original)
+                self.assertNotIn('https://example.invalid/held', Path('seen_news.json').read_text())
+                self.assertIn('https://example.invalid/test/one', queue.data['previews/test.json']['html'])
+
+    def test_v2_optional_text_shape_omitted_and_missing_action_plan_does_not_block(self):
+        queue, smtp = self.streamlined(), native_fixtures.SMTP()
+        result = queue.data['results/test.json']
+        result['analyses']['held'].update(action=['bad format'], customer_notice='안내\n'*6,
+                                         action_plan={'incomplete': True})
+        original = copy.deepcopy(result)
+        self.run_consume(queue, smtp)
+        self.assertEqual(queue.data['jobs/test.json']['deferred_ids'], [])
+        self.assertEqual(set(queue.data['jobs/test.json']['omitted_fields']['held']), {'action', 'customer_notice'})
+        self.assertEqual(queue.data['results/test.json'], original)
+        self.assertEqual(len(smtp.calls), 3)
+
+    def test_v2_missing_optional_text_and_invalid_group_member_keep_valid_peer(self):
+        queue, smtp = self.streamlined(), native_fixtures.SMTP()
+        result = queue.data['results/test.json']
+        del result['analyses']['one']['action']
+        del result['analyses']['one']['customer_notice']
+        result['analyses']['held']['evidence'][0]['quote'] = '원문에 없는 근거 문장'
+        result['event_groups'] = [{'article_ids': ['one', 'held'], 'reason': '같은 장애 사건', 'reviewed': True}]
+        self.run_consume(queue, smtp)
+        self.assertEqual(queue.data['jobs/test.json']['deferred_ids'], ['held'])
+        self.assertEqual(len(smtp.calls), 3)
+
+    def test_v2_bad_classification_reason_is_individual_not_batch_failure(self):
+        queue, smtp = self.streamlined(), native_fixtures.SMTP()
+        queue.data['results/test.json']['classifications'][1]['reason'] = '긴 사유'*1000
+        self.run_consume(queue, smtp)
+        self.assertEqual(queue.data['jobs/test.json']['deferred_ids'], ['held'])
+        self.assertEqual(len(smtp.calls), 3)
+
+    def test_v2_input_corruption_still_prevents_every_smtp_call(self):
+        for mutation in ['hash', 'missing-id', 'duplicate-id']:
+            with self.subTest(mutation=mutation):
+                queue, smtp = self.streamlined(), native_fixtures.SMTP()
+                result = queue.data['results/test.json']
+                if mutation == 'hash':
+                    result['input_hash'] = '0'*64
+                elif mutation == 'missing-id':
+                    result['classifications'].pop()
+                else:
+                    result['classifications'].append(copy.deepcopy(result['classifications'][0]))
+                with self.assertRaises(ValueError):
+                    self.run_consume(queue, smtp)
+                self.assertEqual(smtp.calls, [])
+
+    def test_v2_risky_unreadable_exclusion_is_held_and_null_needs_no_recheck(self):
+        queue = self.streamlined()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        result['classifications'][0]['relevant'] = None
+        result['classifications'][1]['relevant'] = False
+        result['analyses'] = {}
+        job['input']['items'][1]['title'] = '횡령 발생 의혹'
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        job['body_manifest'][1].update(body='', body_status='missing')
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        info = bridge.validate(result, job, job['input'], job['body_manifest'])
+        self.assertEqual(set(info['held_articles']), {'held'})
+        self.assertEqual(info['needs_review'], 2)
 
     def test_review_aging_after_collection_is_held_before_smtp(self):
         queue = self.fixture()
@@ -548,10 +639,13 @@ class ReplayCollection(unittest.TestCase):
                 record = queue.data['review/held.json']
                 record['item']['pubDate'] = value
                 record['source_hash'] = digest({'item': record['item'], 'body': record['body']})
-                before = copy.deepcopy(queue.data)
+                queue.data['review/index.json'].pop('sources', None)  # Legacy catalog migration.
+                record.pop('last_source', None)
+                before = copy.deepcopy(record)
                 with self.assertRaisesRegex(RuntimeError, '재검토할 영속 보류 없음'):
                     bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
-                self.assertEqual(queue.data, before)
+                self.assertEqual(queue.data['review/held.json'], before)
+                self.assertEqual(queue.data['review/index.json']['pending'], [])
 
     def test_publication_age_boundary_and_timezones_do_not_use_first_seen(self):
         current = bridge.utc_time('2026-11-06T12:00:00Z')
@@ -564,6 +658,7 @@ class ReplayCollection(unittest.TestCase):
     def test_manual_review_collection_reads_only_backlog_without_new_search_or_smtp(self):
         queue = self.seed()
         self.bot.crawl_naver_news.side_effect = AssertionError('new search forbidden')
+        self.bot.fetch_article_body = lambda *a: '공식 발표에서 사건의 직접 행위 주체와 발생 시각을 새롭게 확인했다.'
         with patch.object(bridge, 'prune_terminal_inputs'):
             bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
         full = hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])
@@ -573,6 +668,48 @@ class ReplayCollection(unittest.TestCase):
         self.bot.crawl_naver_news.assert_not_called()
         self.assertEqual(queue.data['review/held.json']['status'], 'pending')
         self.assertEqual(queue.data['jobs/risk-production-hardening-test.json']['receipts'], {})
+
+    def test_unchanged_review_does_not_create_analysis_round(self):
+        for fetch in [lambda *a: '', lambda *a: '본문에 확인 가능한 사실을 보존한다.']:
+            queue = self.seed()
+            before = copy.deepcopy(queue.data)
+            self.bot.fetch_article_body = fetch
+            output = io.StringIO()
+            with patch.object(bridge, 'prune_terminal_inputs'), patch('sys.stdout', output):
+                bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
+            self.assertEqual(json.loads(output.getvalue())['status'], 'no_change')
+            self.assertEqual(queue.data, before)
+
+    def test_changed_source_keeps_original_publication_deadline(self):
+        queue = self.seed()
+        original = queue.data['review/held.json']['item']
+        self.bot.crawl_naver_news.return_value = [dict(original, title='수정된 제목', pubDate=now().isoformat())]
+        self.bot.fetch_article_body = lambda *a: '기업의 공식 발표에서 새로운 사건 단계와 직접 주체를 확인했다.'
+        self.collect(queue)
+        job = hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])
+        self.assertEqual(len(job['input']['items']), 1)
+        self.assertTrue(job['input']['items'][0]['_review_replay'])
+        self.assertEqual(job['input']['items'][0]['published_at'], original['pubDate'])
+
+    def test_same_url_changed_title_does_not_reanalyze_identical_body(self):
+        queue = self.seed()
+        item = dict(queue.data['review/held.json']['item'], title='수정된 제목')
+        self.bot.crawl_naver_news.return_value = [item]
+        self.bot.fetch_article_body = lambda *a: queue.data['review/held.json']['body']['body']
+        self.collect(queue)
+        job = hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])
+        self.assertEqual(job['input']['items'], [])
+        self.assertEqual(queue.data['review/index.json']['pending'], ['held'])
+
+    def test_normal_collection_reads_catalog_without_loading_originals(self):
+        queue = self.seed()
+        read = queue.get
+        def guarded(path):
+            if path == 'review/held.json':
+                self.fail('normal collection loaded held source')
+            return read(path)
+        queue.get = guarded
+        self.collect(queue)
 
     def test_review_requires_completed_regular_history_ack_and_only_one_followup(self):
         for mutation in ('no-parent', 'no-ack', 'no-history', 'uncertain', 'missing-receipt',
@@ -628,11 +765,31 @@ class ReplayCollection(unittest.TestCase):
         self.assertEqual({a['article_id'] for a in items}, {b['article_id'] for b in bodies})
         self.assertEqual(len(full['input']['raw_articles']), 2)
 
-    def test_corrupt_pending_source_blocks_collection_instead_of_dropping_it(self):
+    def test_one_body_fetch_error_does_not_interrupt_other_articles(self):
+        queue = self.seed()
+        item = queue.data['review/held.json']['item']
+        self.bot.crawl_naver_news.return_value = [dict(item, url='https://example.invalid/'+name, title=name)
+                                                 for name in ['error', 'ready']]
+        def fetch(url, diagnostics):
+            if url.endswith('/error'):
+                raise TimeoutError('isolated article timeout')
+            return '공식 발표로 확인한 기업의 실제 사건과 발생 시각을 전달한다.'
+        self.bot.fetch_article_body = fetch
+        with patch.object(bridge, 'record_errors'):
+            self.collect(queue)
+        job = hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])
+        self.assertEqual(len(job['input']['items']), 2)
+        self.assertEqual(sorted(b['body_status'] for b in job['body_manifest']), ['missing', 'verified'])
+
+    def test_corrupt_source_is_not_read_on_normal_collection_but_blocks_review(self):
+        queue = self.seed()
+        queue.data['review/held.json']['body']['body'] = 'tampered'
+        self.collect(queue)
+        self.assertEqual(queue.data['jobs/risk-production-hardening-test.json']['status'], 'pending')
         queue = self.seed()
         queue.data['review/held.json']['body']['body'] = 'tampered'
         with self.assertRaisesRegex(RuntimeError, '영속 보류 원본'):
-            self.collect(queue)
+            bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
         self.assertNotIn('jobs/risk-production-hardening-test.json', queue.data)
 
     def test_optional_exclusion_reuse_failure_does_not_block_new_round(self):

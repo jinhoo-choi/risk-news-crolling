@@ -81,7 +81,7 @@ def main():
     checkpoint('request_summary')
     summary = read_summary(process.stdout)
     if value['operation'] == 'collect-review':
-        if (summary.get('status') != 'pending' or summary.get('paid_ai_calls') != 0
+        if (summary.get('status') not in {'pending', 'no_change'} or summary.get('paid_ai_calls') != 0
                 or not JOB_ID.fullmatch(summary.get('job_id', ''))):
             raise RuntimeError('보류 재수집 결과 확인 실패')
         return

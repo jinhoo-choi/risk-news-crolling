@@ -1,4 +1,4 @@
-"""Read-only executor views. No classification, cache reuse, writes or delivery.
+"""Read-only status views and local checkpoint plans. No AI or delivery.
 
 Keep full private documents at their original paths. A status observation is not
 authorization to consume: the existing fresh preflight/lock/ACK checks still run.
@@ -101,6 +101,72 @@ def status_index(view):
             'full_metadata_required_for_decisions': True, 'jobs': jobs}
 
 
+def analysis_plan(job, checkpoints=(), max_bytes=12000):
+    """Local resume plan with lossless bounded pages; never writes a result or sends."""
+    if type(max_bytes) is not int or max_bytes < 1000:
+        raise ValueError('분석 출력 한도 오류')
+    if digest(job['input']) != job['input_hash'] or digest(job['body_manifest']) != job['body_manifest_hash']:
+        raise ValueError('분석 원본 해시 불일치')
+    items = {a['article_id']: a for a in job['input']['items']}
+    bodies = {b['article_id']: b for b in job['body_manifest']}
+    if (len(items) != len(job['input']['items']) or len(bodies) != len(job['body_manifest'])
+            or set(items) != set(bodies)):
+        raise ValueError('분석 입력 ID 누락·중복')
+    rows, analyses, groups, done = [], {}, [], set()
+    for checkpoint in checkpoints:
+        if any(checkpoint.get(k) != job[k] for k in ('job_id', 'input_hash', 'policy_hash', 'body_manifest_hash')):
+            raise ValueError('다른 회차·정책 체크포인트')
+        ids = checkpoint['covered_ids']
+        classified = checkpoint['classifications']
+        if (len(ids) != len(set(ids)) or not set(ids) <= items.keys() or done.intersection(ids)
+                or len(classified) != len(ids) or {r['article_id'] for r in classified} != set(ids)
+                or any(r.get('relevant') is not None and type(r.get('relevant')) is not bool for r in classified)
+                or set(checkpoint['analyses']) != {r['article_id'] for r in classified if r['relevant'] is True}):
+            raise ValueError('체크포인트 완료 ID·분석 누락·중복')
+        done.update(ids)
+        rows.extend(copy.deepcopy(classified))
+        analyses.update(copy.deepcopy(checkpoint['analyses']))
+        groups.extend(copy.deepcopy(checkpoint.get('event_groups', [])))
+    missing_body_ids = []
+    if job.get('review_pass_version') == 2:
+        for aid, body in bodies.items():
+            if aid not in done and body['body_status'] in {'missing', 'unreadable'}:
+                rows.append({'article_id': aid, 'relevant': None, 'reason': '유효 본문 미확보; 새 근거 확보 전 재분석하지 않음'})
+                missing_body_ids.append(aid)
+                done.add(aid)
+    pending = [aid for aid in items if aid not in done]
+    pages = []
+    for aid in pending:
+        article, body = items[aid], bodies[aid]
+        text = body['body']
+        base = {'article_id': aid, 'title': article['title'], 'description': article['description'],
+                'url': article['url'], 'published_at': article.get('published_at') or article.get('pubDate'),
+                'body_status': body['body_status'], 'body_sha256': hashlib.sha256(text.encode()).hexdigest()}
+        offset = 0
+        while True:
+            def page(end):
+                return dict(base, offset=offset, end=end, complete=end == len(text), body=text[offset:end])
+            if len(canonical(page(offset)).encode()) > max_bytes:
+                raise ValueError('기사 메타데이터가 출력 한도 초과; 한도를 늘려 해당 기사만 다시 읽기')
+            low, high = offset, len(text)
+            while low < high:
+                middle = (low+high+1)//2
+                if len(canonical(page(middle)).encode()) <= max_bytes:
+                    low = middle
+                else:
+                    high = middle-1
+            if low == offset and offset < len(text):
+                raise ValueError('본문 출력 한도 부족')
+            pages.append(page(low))
+            if low == len(text):
+                break
+            offset = low
+    return {'job_id': job['job_id'], 'input_hash': job['input_hash'], 'policy_hash': job['policy_hash'],
+            'classifications': rows, 'analyses': analyses, 'event_groups': groups, 'pending_ids': pending,
+            'missing_body_ids': missing_body_ids, 'pages': pages,
+            'scope': 'local_resume_only_final_validation_required'}
+
+
 def usage_observation(*, stage, engine, measurement_source, usage=None,
                       elapsed_ms=None, attempt_number=None, retry_reason=None):
     """Preserve absent counters as unknown. Never infer platform usage from API0.
@@ -140,6 +206,7 @@ if __name__ == '__main__':
     from risk_analysis_guard import strict_json
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('snapshot', help='private JSON: index, jobs, observed_at')
+    parser.add_argument('--analysis', action='store_true', help='snapshot contains job and checkpoints; prepare bounded source pages')
     parser.add_argument('--output', required=True, help='new private local status artifact (not an operational result)')
     args = parser.parse_args()
     snapshot = strict_json(Path(args.snapshot).read_text())
@@ -149,13 +216,16 @@ if __name__ == '__main__':
                 return snapshot['index'], snapshot.get('index_sha') or digest(snapshot['index'])
             record = snapshot['jobs'].get(path.removeprefix('jobs/').removesuffix('.json'))
             return (record['value'], record['blob_sha']) if record else (None, None)
-    view = queue_status(LocalSnapshot(), snapshot['observed_at'])
+    view = (analysis_plan(snapshot['job'], snapshot.get('checkpoints', [])) if args.analysis
+            else queue_status(LocalSnapshot(), snapshot['observed_at']))
     content = canonical(view)
     import os
     with Path(args.output).open('x', encoding='utf-8') as file:
         os.chmod(file.name, 0o600)
         file.write(content)
-    index = status_index(view)
+    index = ({'job_id': view['job_id'], 'completed_ids': len(view['classifications']),
+              'pending_ids': len(view['pending_ids']), 'missing_body_ids': len(view['missing_body_ids']),
+              'pages': len(view['pages']), 'scope': view['scope']} if args.analysis else status_index(view))
     index['artifact'] = str(Path(args.output).resolve())
     index['artifact_sha256'] = hashlib.sha256(content.encode()).hexdigest()
     print(canonical(index))

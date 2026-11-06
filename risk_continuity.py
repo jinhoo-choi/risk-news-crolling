@@ -94,6 +94,41 @@ def _review_snapshots(queue, article_ids):
     return dict(zip(article_ids, snapshots))
 
 
+def review_source(item, body):
+    """Small source identity; timestamps/attempts are not new evidence."""
+    return {'url': item.get('url', ''),
+            'published_at': item.get('published_at') or item.get('pubDate'),
+            'item_hash': digest({k: item.get(k, '') for k in ('url', 'title', 'description')}),
+            'body_hash': digest({'body': body.get('body', ''),
+                                 'body_status': body.get('body_status')}),
+            'body_status': body.get('body_status')}
+
+
+def review_catalog(queue):
+    """Migrate legacy entries once; expire only the active index, not originals."""
+    index, sha = review_index(queue)
+    before = copy.deepcopy(index)
+    catalog = index.setdefault('sources', {})
+    if not isinstance(catalog, dict):
+        raise RuntimeError('보류 원문 색인 형식 오류')
+    missing = [aid for aid in index['pending'] if aid not in catalog]
+    for aid, snapshot in _review_snapshots(queue, missing).items():
+        record, _ = _validated_review(aid, snapshot)
+        catalog[aid] = record.get('last_source') or review_source(record['item'], record['body'])
+    for aid, source in catalog.items():
+        if (not JOB_ID.fullmatch(aid) or not isinstance(source, dict)
+                or any(not isinstance(source.get(k), str) or len(source[k]) != 64
+                       for k in ('item_hash', 'body_hash'))
+                or source.get('body_status') not in {'verified', 'missing', 'unreadable', 'unconfirmed', None}):
+            raise RuntimeError('보류 원문 색인 형식 오류')
+    index['pending'] = [aid for aid in index['pending']
+                        if review_age(catalog[aid], now()) == 'eligible']
+    if index != before:
+        queue.put(REVIEW_INDEX, index, sha)
+        index, sha = review_index(queue)
+    return index, sha
+
+
 def pending_reviews(queue):
     index, _ = review_index(queue)
     snapshots = _review_snapshots(queue, index['pending'])
@@ -132,6 +167,7 @@ def prepare_reviews(queue, job, verdicts, reason='analysis_pending', reasons=Non
     snapshots = _review_snapshots(queue, [aid for aid, verdict in verdicts.items()
                                          if verdict is None or aid in pending])
     instant = now().isoformat()
+    catalog = index.setdefault('sources', {})
     for aid, verdict in verdicts.items():
         path = 'review/'+aid+'.json'
         if aid in pending:
@@ -143,7 +179,8 @@ def prepare_reviews(queue, job, verdicts, reason='analysis_pending', reasons=Non
             continue
         if aid not in pending:
             record, sha = snapshots[aid]
-            if record is not None and record.get('status') != 'resolved':
+            if (record is not None and record.get('status') != 'resolved'
+                    and not (aid in catalog and record.get('status') == 'pending')):
                 raise RuntimeError('보류 원본과 색인 불일치')
         if record and record.get('status') == 'resolved' and record.get('resolution_kind') == 'owner_excluded':
             continue  # Expiry/replay must not reopen an explicit owner no-send decision.
@@ -161,8 +198,16 @@ def prepare_reviews(queue, job, verdicts, reason='analysis_pending', reasons=Non
                   'last_body_quality_reason': bodies[aid].get('body_quality_reason'),
                   'item': copy.deepcopy(source['item']), 'body': copy.deepcopy(source['body'])}
         record['source_hash'] = digest({'item': record['item'], 'body': record['body']})
+        record['last_source'] = review_source(items[aid], bodies[aid])
+        # Original publication age cannot be reset by a later crawl.
+        record['last_source']['published_at'] = record['item'].get('published_at') or record['item'].get('pubDate')
+        catalog[aid] = record['last_source']
         values[path], expected[path] = record, sha
-        if aid not in pending:
+        if job.get('review_pass_version') == 2 and review_age(catalog[aid], now()) != 'eligible':
+            index['pending'] = [i for i in index['pending'] if i != aid]
+            pending.discard(aid)
+        if aid not in pending and (job.get('review_pass_version') != 2
+                                   or review_age(catalog[aid], now()) == 'eligible'):
             index['pending'].append(aid)
             pending.add(aid)
     if values or resolutions:
@@ -191,6 +236,8 @@ def finish_reviews(queue, resolutions, job_id):
         path = 'review/'+aid+'.json'
         values[path], expected[path] = record, sha
     index['pending'] = [aid for aid in index['pending'] if aid not in resolutions]
+    for aid in resolutions:
+        index.get('sources', {}).pop(aid, None)
     values[REVIEW_INDEX] = index
     return values, expected
 
@@ -200,6 +247,8 @@ def delivery_verdicts(job, result, excluded_ids=()):
     verdicts = {r['article_id']: r['relevant'] for r in result['classifications']}
     if job.get('continuity_version') == 1:
         for aid, analysis in result['analyses'].items():
+            if aid in job.get('_validation_holds', {}):
+                continue
             if analysis['body_status'] != 'verified':
                 verdicts[aid] = None
         for article in job['input']['items']:
@@ -207,6 +256,8 @@ def delivery_verdicts(job, result, excluded_ids=()):
             if (article.get('_review_replay') and verdicts[aid] is True
                     and review_age(article, now()) != 'eligible'):
                 verdicts[aid] = None  # Aging during analysis must not reopen eligibility.
+    for aid in job.get('_validation_holds', {}):
+        verdicts[aid] = None
     for aid in set(excluded_ids).intersection(verdicts):
         verdicts[aid] = False  # Owner delivery decision; saved analysis stays unchanged.
     return verdicts
@@ -221,4 +272,11 @@ def delivery_view(job, result, excluded_ids=()):
     view['body_manifest'] = [b for b in view['body_manifest'] if b['article_id'] not in deferred]
     answers['classifications'] = [r for r in answers['classifications'] if r['article_id'] not in deferred]
     answers['analyses'] = {aid: a for aid, a in answers['analyses'].items() if aid not in deferred}
+    answers['event_groups'] = [dict(g, article_ids=[aid for aid in g['article_ids'] if aid not in deferred])
+                              for g in answers.get('event_groups', [])
+                              if len(set(g['article_ids'])-deferred) >= 2]
+    for aid, fields in job.get('_validation_omissions', {}).items():
+        if aid in answers['analyses']:
+            for field in fields:
+                answers['analyses'][aid][field] = None if field == 'customer_notice' else ''
     return view, answers

@@ -38,7 +38,7 @@ class EvidenceTests(unittest.TestCase):
             ("금양, 과징금 여파", "지난 7일 과징금 76억원을 부과했다"),
             ("금양, 과징금 여파", "지난 7일 금융위, 금양 과징금 76억원을 부과했다"),
         ]:
-            self.assertFalse(material_facts(title, desc), (title, desc))
+            self.assertFalse(material_facts(title, desc, now=datetime(2026, 11, 10, tzinfo=KST)), (title, desc))
 
     def test_new_decision_in_lead_survives_separate_background(self):
         facts = material_facts("금양 관련 속보", "지난해 감사의견 거절을 받았다. 법원은 오늘 효력정지 가처분을 기각했다.")
