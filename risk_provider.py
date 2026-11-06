@@ -10,6 +10,7 @@ import re
 from datetime import timedelta, timezone
 from email.utils import parsedate_to_datetime
 from event_history import _amounts, _compact
+from risk_market_evidence import has_market_event_evidence, has_credit_policy_change
 
 
 def source_date(year, month, day, published):
@@ -195,6 +196,17 @@ class Provider:
         article.pop('_subscription_stat_date', None)
         article.pop('_subscription_stat_series', None)
         article.pop('_subscription_snapshot_key', None)
+        article.pop('_subscription_market_event', None)
+        article.pop('_subscription_credit_policy', None)
+        if (body and not a['entity'] and not a['entities'] and a['event_type'] == '기타리스크'
+                and a['judgment']['확정여부'] == '확정'):
+            quotes = [e['quote'] for e in a['evidence'] if e['source_segment'] == 'body']
+            if has_credit_policy_change(quotes):
+                article['_subscription_credit_policy'] = True
+            elif has_market_event_evidence(a['event_type'], quotes):
+                article['_subscription_market_event'] = True
+            if article.get('_subscription_credit_policy') or article.get('_subscription_market_event'):
+                article['fact_summary'] = a['fact_summary']
         article['_subscription_price_date'] = self.price_dates.get(article['article_id'], '')
         group = self.event_groups.get(article['article_id'])
         if group is None and self.job.get('event_grouping_version') == 1:

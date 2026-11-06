@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from event_history import HISTORY_KEY, _event_dates, _compact
-from risk_market_evidence import has_market_event_evidence
+from risk_market_evidence import has_market_event_evidence, has_credit_policy_change
 
 KST = timezone(timedelta(hours=9))
 
@@ -67,16 +67,20 @@ def validate_grade_map(grades, batch, offset=0):
             if not entry['entity'].strip():
                 article = batch[identifier - offset - 1]
                 segments = [article.get('title', ''), article.get('desc', '')]
+                policy_event = False
                 if article.get('_body_risk_confirmed') is True and not article.get('_body_failed'):
                     body = article.get('body') or ''
                     if article.get('_body_source_url') == article.get('url') and article.get('_body_source_hash') == hashlib.sha256(body.encode()).hexdigest():
                         segments.append(body)
+                        policy_event = (entry.get('event_type') == '기타리스크'
+                                        and has_credit_policy_change([body]))
                 market_event = (entry.get('event_type') == '반대매매' and any(
                     re.search(r'반대매매|강제\s*청산|마진콜', source) for source in segments))
                 market_event = market_event or (entry.get('event_type') == '기타리스크' and any(
                     re.search(r'서킷\s*브레이커|사이드\s*카|코스피.*(?:급락|폭락)|코스닥.*(?:급락|폭락)', source)
                     for source in segments))
                 market_event = market_event or has_market_event_evidence(entry.get('event_type'), segments)
+                market_event = market_event or policy_event
                 if not market_event or any(e.strip() for e in entities):
                     raise AnalysisIncompleteError('빈 주체의 시장 사건 원문 근거 없음')
             for field in ('reason', 'action', 'event_type'):

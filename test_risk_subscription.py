@@ -470,6 +470,102 @@ class Integration(unittest.TestCase):
         job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
         return queue
 
+    def market_policy_fixture(self):
+        queue = self.grouped_fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        sources = [
+            ('국내 시장 거래중단', '코스피가 8% 급락해 한국거래소가 서킷브레이커를 발동했다.', '주의'),
+            ('정부 신용거래 제도 변경', '정부는 증권사 신용융자 담보비율 유지의무를 9일부터 3개월간 면제하기로 했다.', '참고')]
+        for item, manifest, (title, body, grade) in zip(job['input']['items'], job['body_manifest'], sources):
+            item.update(title=title, desc='검색 요약 대신 검증된 본문을 사용한다.', description='검색 요약 대신 검증된 본문을 사용한다.')
+            manifest.update(body=body)
+            result['analyses'][item['article_id']].update(
+                entity='', entities=[], event_type='기타리스크', base_grade=grade,
+                fact_summary=body, confidence=0.9,
+                judgment={'핵심사건':title, '손실주체':'주주', '당사연관':'직접', '확정여부':'확정'},
+                action='공식 안내의 시행일과 적용 대상을 확인한다.', customer_notice=None,
+                evidence=[{'source_segment':'body', 'source_hash':hashlib.sha256(body.encode()).hexdigest(), 'quote':body}])
+        result['event_groups'] = []
+        job['input']['raw_articles'] = copy.deepcopy(job['input']['items'])
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        return queue
+
+    def test_crash_report_keeps_market_representative_and_separate_credit_policy(self):
+        queue, smtp = self.market_policy_fixture(), SMTP()
+        with patch.object(self.bot.build_price_alert_section, 'last_alerted_count', 51, create=True), \
+             patch.object(self.bot.build_price_alert_section, 'last_alerted_rbal', 431, create=True):
+            self.run_consume(queue, smtp)
+        final = queue.data['filter-logs/test.json']['final']
+        self.assertEqual({a['article_id'] for a in final}, {'one','two'})
+        self.assertTrue(all(a['grade'] == '참고' and a['entity'] == '' for a in final))
+        document = queue.data['previews/test.json']['html']
+        for a in queue.data['results/test.json']['analyses'].values():
+            self.assertIn(a['fact_summary'], document)
+        self.assertEqual(document.count('https://example.invalid/test/one'), 1)
+        self.assertEqual(document.count('https://example.invalid/test/two'), 1)
+        self.assertEqual(len(smtp.calls), 3)
+        self.assertEqual(queue.data['jobs/test.json']['paid_ai_calls'], 0)
+
+    def test_market_and_policy_do_not_open_new_full_send_gate(self):
+        from risk_provider import Provider
+        queue = self.market_policy_fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        provider = Provider(job, result)
+        rows = copy.deepcopy(job['input']['items'])
+        for a in rows:
+            provider.attach(a)
+            a.update(entity='', entities=[], event_type='기타리스크', grade='참고', _risk_score=4.0)
+        self.assertTrue(self.bot.decide_send_scope(rows, {})['self_only'])
+        # An unrelated full-send trigger does not turn an ordinary market note into a crisis.
+        self.assertEqual(self.bot.filter_articles_for_scope(rows, {}, False, False), [rows[1]])
+        unverified = dict(rows[0])
+        unverified.pop('_subscription_market_event')
+        self.assertEqual(self.bot.filter_articles_for_scope([unverified], {}, False, True), [])
+
+    def test_repeated_market_reports_cannot_displace_policy_before_final_grouping(self):
+        queue, smtp = self.market_policy_fixture(), SMTP()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        result['analyses']['one']['confidence'] = 0.70
+        result['analyses']['two']['confidence'] = 0.60
+        members = ['one']
+        for i in range(8):
+            aid = 'repeat'+str(i)
+            item = dict(job['input']['items'][0], article_id=aid, url='https://example.invalid/'+aid,
+                        title='당일 코스피 서킷브레이커 확인 '+aid)
+            job['input']['items'].append(item)
+            job['body_manifest'].append(dict(job['body_manifest'][0], article_id=aid, source_url=item['url']))
+            result['classifications'].append({'article_id':aid,'relevant':True,'reason':'검증된 동일 시장 사건 보도.'})
+            result['analyses'][aid] = copy.deepcopy(result['analyses']['one'])
+            result['analyses'][aid]['confidence'] = 0.72+i*0.03
+            members.append(aid)
+        result['event_groups'] = [{'article_ids':members, 'reason':'동일 거래일 코스피 서킷브레이커 반복 보도.', 'reviewed':True}]
+        job['input']['raw_articles'] = copy.deepcopy(job['input']['items'])
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        with patch.object(self.bot.build_price_alert_section, 'last_alerted_count', 51, create=True), \
+             patch.object(self.bot.build_price_alert_section, 'last_alerted_rbal', 431, create=True):
+            self.run_consume(queue, smtp)
+        final = queue.data['filter-logs/test.json']['final']
+        self.assertEqual({a['article_id'] for a in final}, {'repeat7','two'})
+        self.assertEqual(queue.data['metrics/test.json']['summary_source_ids'], ['repeat7','two'])
+
+    def test_policy_and_market_cannot_be_grouped_or_policy_upgraded_to_urgent(self):
+        from risk_result_validator import validate
+        for case in ('mixed_group','urgent','customer_notice'):
+            with self.subTest(case=case):
+                queue = self.market_policy_fixture()
+                job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+                if case == 'mixed_group':
+                    result['event_groups'] = [{'article_ids':['one','two'],
+                        'reason':'동일 사건으로 잘못 합친 검수 입력.', 'reviewed':True}]
+                elif case == 'urgent':
+                    result['analyses']['two']['base_grade'] = '긴급'
+                else:
+                    result['analyses']['two']['customer_notice'] = '모든 고객의 반대매매가 유예됩니다.'
+                with self.assertRaisesRegex(ValueError, '제도 변경'):
+                    validate(result, job, job['input'], job['body_manifest'])
+
     def test_cap_snapshot_native_mail_then_sibling_replay_is_suppressed(self):
         from event_history import EventHistory, HISTORY_KEY
         from risk_provider import Provider
@@ -1179,6 +1275,31 @@ class ExclusionEvidence(unittest.TestCase):
                 q.data['results/test.json']['classifications'][0]['relevant'] = True
             with self.assertRaisesRegex(ValueError, '적용 대상'):
                 self.verify(q)
+
+    def test_adopted_credit_policy_cannot_be_excluded_as_generic_easing(self):
+        from risk_result_validator import EXCLUSION_RULES
+        for text, blocked in (
+            ('정부는 증권사 신용융자 담보비율 유지의무를 9일부터 3개월간 면제하기로 했다.', True),
+            ('정부는 부동산PF 익스포저 한도 규제를 3개월간 완화하기로 했다.', False),
+            ('금융위원회는 신용융자 담보비율 면제를 검토한다.', False)):
+            with self.subTest(text=text):
+                q = self.excluded()
+                j, r = q.data['jobs/test.json'], q.data['results/test.json']
+                item = j['input']['items'][0]
+                item.update(title=text, desc=text, description=text)
+                j['body_manifest'][0].update(body=text)
+                evidence = {'source_segment':'body','source_hash':hashlib.sha256(text.encode()).hexdigest(),'quote':text}
+                review = r['classifications'][0]['exclusion_review']
+                review.update(rule_quote=next(x for x in EXCLUSION_RULES if x.startswith('규제 완화')),
+                              kind='not_eligible', evidence=evidence)
+                j['input']['raw_articles'] = copy.deepcopy(j['input']['items'])
+                j['input_hash'] = r['input_hash'] = digest(j['input'])
+                j['body_manifest_hash'] = r['body_manifest_hash'] = digest(j['body_manifest'])
+                if blocked:
+                    with self.assertRaisesRegex(ValueError, '제도 변경'):
+                        self.verify(q)
+                else:
+                    self.verify(q)
 
 
 if __name__ == '__main__':

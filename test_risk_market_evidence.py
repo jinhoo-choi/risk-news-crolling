@@ -2,6 +2,7 @@ import hashlib
 import unittest
 import risk_analysis_guard as guard
 from risk_market_evidence import has_market_event_evidence as evidence
+from risk_market_evidence import has_credit_policy_change
 
 class ContractTests(unittest.TestCase):
 
@@ -52,5 +53,29 @@ class ContractTests(unittest.TestCase):
 
     def test_forced_liquidation_unchanged(self):
         self.assertTrue(evidence('반대매매', ['미수금 반대매매 증가']))
+
+    def test_confirmed_credit_policy_requires_authority_terms_decision_and_period(self):
+        body = '정부는 증권사 신용융자 담보비율 유지의무를 9일부터 3개월간 면제하기로 했다.'
+        self.assertTrue(has_credit_policy_change([body]))
+        self.assertTrue(has_credit_policy_change(['금융위원회는 반대매매를 3일간 유예한다고 발표했다.']))
+        for text in (body.replace('정부는', '전문가는'), body.replace('9일부터 3개월간 ', ''),
+                     body.replace('면제하기로 했다', '면제를 검토한다'),
+                     body.replace('면제하기로 했다', '면제한다고 알려졌으나 사실이 아니다'),
+                     '정부는 시장 상황을 점검했다. 개별 증권사는 반대매매를 3일간 유예하기로 했다.',
+                     '금융당국은 증권사 담보비율을 3개월간 면제하지 않기로 했다.',
+                     '정부는 부동산PF 익스포저 한도 규제를 3개월간 완화하기로 했다.'):
+            with self.subTest(text=text):
+                self.assertFalse(has_credit_policy_change([text]))
+
+    def test_credit_policy_needs_authenticated_body_not_headline_or_summary(self):
+        body = '정부는 증권사 신용융자 담보비율 유지의무를 9일부터 3개월간 면제하기로 했다.'
+        self.check(body, False)
+        self.check('제도 변경', False, body=body)
+        kw = {'body': body, '_body_risk_confirmed': True,
+              '_body_source_hash': hashlib.sha256(body.encode()).hexdigest(),
+              '_body_source_url': 'https://example.invalid/source'}
+        self.check('제도 변경', True, **kw)
+        self.check('제도 변경', False, **{**kw, '_body_source_hash': 'bad'})
+        self.check('제도 변경', False, **{**kw, '_body_failed': True})
 if __name__ == '__main__':
     unittest.main(verbosity=2)
