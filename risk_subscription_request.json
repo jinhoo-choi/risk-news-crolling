@@ -1,7 +1,7 @@
 {
-  "operation": "close-partial",
-  "job_id": "risk-production-42117694859",
+  "operation": "consume",
+  "job_id": "risk-production-42165797622",
   "self_test": false,
   "dry_run": false,
-  "request_id": "noresend-42117694859-20261106-owner"
+  "request_id": "delivery-priority-42165797622-20261106T0646"
 }
