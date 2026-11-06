@@ -1,1 +1,7 @@
-{"operation":"consume","job_id":"risk-production-42117694859","self_test":false,"dry_run":false,"request_id":"risk42117694859-1863d026-consume"}
+{
+  "operation": "close-partial",
+  "job_id": "risk-production-42117694859",
+  "self_test": false,
+  "dry_run": false,
+  "request_id": "noresend-42117694859-20261106-owner"
+}
