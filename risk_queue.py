@@ -180,7 +180,7 @@ class Queue:
     def get_fresh(self, path):
         # Pin a commit: a cached Contents response for the moving main ref must
         # never erase a receipt written by the preceding SMTP recipient.
-        head = self.request('/git/ref/heads/main')['object']['sha']
+        head = self.request('/git/ref/heads/main?read_after_write='+str(time.time_ns()))['object']['sha']
         return self.get(path, ref=head)
 
     def put(self, path, value, sha=None):
