@@ -165,6 +165,7 @@ def validate(result, job, inputs, manifest):
     source = {item['article_id']: item for item in inputs['items']}
     bodies = {item['article_id']: item for item in manifest}
     verdicts = {item['article_id']: item['relevant'] for item in result['classifications']}
+    rechecks = {item['article_id']: item.get('recheck', {}) for item in result['classifications']}
     for row in result['classifications']:
         body = bodies[row['article_id']]
         if job.get('exclusion_review_version') == 1 and row['relevant'] is False:
@@ -205,7 +206,9 @@ def validate(result, job, inputs, manifest):
     for key, verdict in verdicts.items():
         if job.get('body_quality_version') == 1:
             status, reason = body_quality(bodies[key]['body'])
-            if bodies[key]['body_status'] == 'verified' and status != 'verified':
+            unusable_hold = (verdict is None and job.get('review_pass_version') == 1
+                             and rechecks[key].get('blocker') == 'body_unusable')
+            if bodies[key]['body_status'] == 'verified' and status != 'verified' and not unusable_hold:
                 raise ValueError('본문 품질 미검증: ' + key + ': ' + reason)
         visible = re.sub(r'\[(?:링크|URL)[^\]]*\]', '', bodies[key]['body'])
         if bodies[key]['body_status'] in ('verified', 'alternate_verified') and not any(c.isalnum() for c in visible):

@@ -5,7 +5,8 @@ import csv
 import hashlib
 import io
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 from risk_queue import JOB_ID, digest, now
 
@@ -99,6 +100,23 @@ def pending_reviews(queue):
     return [_validated_review(aid, snapshots[aid])[0] for aid in index['pending']]
 
 
+def review_age(item, current):
+    """Publication age, never collection/first-seen time or a guessed 'now'."""
+    value = item.get('published_at') or item.get('pubDate')
+    try:
+        if not isinstance(value, str):
+            return 'date_unconfirmed'
+        try:
+            published = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except ValueError:
+            published = parsedate_to_datetime(value)
+        if published.tzinfo is None or published > current:
+            return 'date_unconfirmed'
+        return 'eligible' if current-published <= timedelta(hours=12) else 'expired'
+    except (ValueError, TypeError, OverflowError):
+        return 'date_unconfirmed'
+
+
 def prepare_reviews(queue, job, verdicts, reason='analysis_pending', reasons=None):
     """Return one atomic batch; unresolved copies must persist BEFORE any SMTP."""
     index, index_sha = review_index(queue)
@@ -184,6 +202,11 @@ def delivery_verdicts(job, result, excluded_ids=()):
         for aid, analysis in result['analyses'].items():
             if analysis['body_status'] != 'verified':
                 verdicts[aid] = None
+        for article in job['input']['items']:
+            aid = article['article_id']
+            if (article.get('_review_replay') and verdicts[aid] is True
+                    and review_age(article, now()) != 'eligible'):
+                verdicts[aid] = None  # Aging during analysis must not reopen eligibility.
     for aid in set(excluded_ids).intersection(verdicts):
         verdicts[aid] = False  # Owner delivery decision; saved analysis stays unchanged.
     return verdicts
