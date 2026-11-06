@@ -17,6 +17,48 @@ OUTPUTS = json.loads((ROOT/'tests/fixtures/risk_care_generated.json').read_text(
 
 
 class Writing(unittest.TestCase):
+    def test_verified_market_action_uses_portfolio_credit_without_company_attribution(self):
+        for has_credit in (True, False):
+            with self.subTest(has_credit=has_credit):
+                Path('seen_news.json').write_bytes(self.integration.before)
+                queue=self.integration.fixture()
+                job,result=queue.data['jobs/test.json'],queue.data['results/test.json']
+                body='코스피가 급락하며 서킷브레이커가 발동했다.'
+                item=job['input']['items'][0]
+                item.update(title=body,description=body,desc=body,keyword='증시 급락')
+                job['input']['raw_articles']=[dict(item)]
+                job['body_manifest'][0]['body']=body
+                action=('시장 급락 관련 보유 여신종목의 종가와 담보평가 반영을 거래소 시세·당사 계좌기준으로 대조한다. '
+                        '추가 하락으로 담보부족이 발생하면 해당 계좌의 반대매매 예정 내역과 고객 안내를 확인한다.')
+                plan={'event_anchor':'급락','current_task':'보유 여신종목의 종가와 담보평가 반영',
+                      'check_source':'거래소 시세·당사 계좌기준','followup_condition':'추가 하락으로 담보부족이 발생하면',
+                      'followup_task':'해당 계좌의 반대매매 예정 내역과 고객 안내를 확인한다'}
+                analysis=result['analyses']['one']
+                analysis.update(entity='',entities=[],event_type='기타리스크',base_grade='긴급',
+                    fact_summary=body,action=action,action_plan=plan,customer_notice=None,
+                    judgment={'핵심사건':'국내 증시 급락','손실주체':'주주','당사연관':'직접','확정여부':'확정'},
+                    evidence=[{'source_segment':'body','source_hash':hashlib.sha256(body.encode()).hexdigest(),'quote':body}])
+                job['action_quality_version']=1
+                job['input_hash']=result['input_hash']=digest(job['input'])
+                job['body_manifest_hash']=result['body_manifest_hash']=digest(job['body_manifest'])
+                rows=[{'종목명':'가상기업','종목코드':'990001','종목유형':'주식','잔고(억)':'150','고객수':'1'}]
+                if has_credit:
+                    rows.append({**rows[0],'종목유형':'여신','잔고(억)':'40'})
+                smtp=integration_cases.SMTP()
+                with patch.object(self.bot,'load_exposure_data',return_value={'가상기업':rows}), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    if has_credit:
+                        self.integration.run_consume(queue,smtp)
+                    else:
+                        with self.assertRaisesRegex(ValueError,'최종 문구 불일치'):
+                            self.integration.run_consume(queue,smtp)
+                if has_credit:
+                    self.assertTrue(smtp.calls)
+                    self.assertIn(html.escape(action,quote=True),queue.data['previews/test.json']['html'])
+                    self.assertEqual(result['analyses']['one']['entity'],'')
+                else:
+                    self.assertEqual(smtp.calls,[])
+
     def action_plan_fixture(self):
         queue=self.integration.fixture()
         job,result=queue.data['jobs/test.json'],queue.data['results/test.json']
