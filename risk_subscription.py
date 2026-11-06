@@ -259,8 +259,12 @@ def collect(config, queue, verification=False, reviews_only=False):
             if parent['input'].get('snapshot_mode') == 'review_replay':
                 later_reviews = True
                 continue
+            expected = parent.get('expected_receipts', [])
+            receipts = parent.get('receipts', {})
             if (parent.get('status') != 'completed' or parent.get('ack') is not True
-                    or parent.get('history_saved') is not True):
+                    or parent.get('history_saved') is not True or not expected
+                    or set(receipts) != set(expected)
+                    or any(receipts[key] != 'accepted' for key in expected)):
                 raise RuntimeError('정규 발송·이력·ACK 완료 전 보류 후속 수집 금지')
             if later_reviews:
                 raise RuntimeError('해당 정규 회차의 보류 후속 회차 이미 존재')

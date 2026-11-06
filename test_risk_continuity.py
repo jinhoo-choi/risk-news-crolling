@@ -479,7 +479,8 @@ class ReplayCollection(unittest.TestCase):
         queue = memory_fixtures.Memory()
         parent = memory_fixtures.job('regular', status='completed')
         parent.update(ack=True, history_saved=True, policy_hash='previous-policy',
-                      created_at=now().isoformat())
+                      created_at=now().isoformat(), expected_receipts=['recipient'],
+                      receipts={'recipient':'accepted'})
         parent['input']['snapshot_mode'] = 'natural_collection'
         queue.data['jobs/regular.json'] = parent
         queue.data['index.json']['jobs'] = ['regular']
@@ -574,7 +575,8 @@ class ReplayCollection(unittest.TestCase):
         self.assertEqual(queue.data['jobs/risk-production-hardening-test.json']['receipts'], {})
 
     def test_review_requires_completed_regular_history_ack_and_only_one_followup(self):
-        for mutation in ('no-parent', 'no-ack', 'no-history', 'expired', 'already-collected'):
+        for mutation in ('no-parent', 'no-ack', 'no-history', 'uncertain', 'missing-receipt',
+                         'expired', 'already-collected'):
             with self.subTest(mutation=mutation):
                 queue = self.seed()
                 parent = queue.data['jobs/regular.json']
@@ -584,6 +586,10 @@ class ReplayCollection(unittest.TestCase):
                     parent['ack'] = False
                 elif mutation == 'no-history':
                     parent['history_saved'] = False
+                elif mutation == 'uncertain':
+                    parent['receipts']['recipient'] = 'uncertain'
+                elif mutation == 'missing-receipt':
+                    parent['receipts'] = {}
                 elif mutation == 'expired':
                     parent['status'] = 'expired'
                 else:
