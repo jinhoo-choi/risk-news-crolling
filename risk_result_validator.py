@@ -144,10 +144,114 @@ def validate_exclusion(row, article, body):
         check(counter['evidence'])
 
 
+def _validate_body(key, verdict, job, bodies, rechecks):
+    if verdict is None and job.get('review_pass_version') == 2:
+        return
+    if job.get('body_quality_version') == 1:
+        status, reason = body_quality(bodies[key]['body'])
+        unusable_hold = (verdict is None and job.get('review_pass_version') == 1
+                         and rechecks[key].get('blocker') == 'body_unusable')
+        if bodies[key]['body_status'] == 'verified' and status != 'verified' and not unusable_hold:
+            raise ValueError('본문 품질 미검증: ' + key + ': ' + reason)
+    visible = re.sub(r'\[(?:링크|URL)[^\]]*\]', '', bodies[key]['body'])
+    if bodies[key]['body_status'] in ('verified', 'alternate_verified') and not any(c.isalnum() for c in visible):
+        raise ValueError('본문 내용 없이 확보 완료 표시')
+    if bodies[key]['body_status'] == 'alternate_verified':
+        raise ValueError('대체 본문의 독립 출처 검수 미구현 — 발송 보류')
+
+
+def _validate_analysis(analysis, article, body, job):
+    segments = {'title': article['title'], 'description': article['description'], 'body': body['body']}
+    if analysis['body_status'] != body['body_status'] and not (
+            body['body_status'] == 'verified' and analysis['body_status'] in ('missing','unreadable')):
+        raise ValueError('본문 상태 위조')
+    if analysis['body_status'] in ('missing', 'unreadable'):
+        if analysis['base_grade'] != '참고' or analysis['confidence'] > 0.6 or analysis['customer_notice']:
+            raise ValueError('본문 미수집은 참고·낮은 확신도·고객 안내 없음')
+        if '[본문 미수집]' not in analysis['fact_summary']:
+            raise ValueError('본문 미수집 표시 누락')
+        if any(e['source_segment'] == 'body' for e in analysis['evidence']):
+            raise ValueError('미수집 본문을 근거로 삼음')
+    if not math.isfinite(analysis['confidence']):
+        raise ValueError('confidence 비유한 값')
+    if not analysis['entity']:
+        source_text = '\n'.join(segments.values())
+        market = (analysis['event_type'] == '반대매매' and re.search(r'반대매매|강제\s*청산|마진콜', source_text))
+        # Match within a sentence and allow line breaks/ordinary decline verbs.
+        # A company's fall in another sentence must not turn a rising index into a market event.
+        clauses = [clause for segment in segments.values()
+                   for clause in re.split(r'(?<!\d)[.!?。,;](?!\d)|지만|으나|반면|한편|와 달리',
+                                          re.sub(r'\s+', ' ', segment))]
+        market = market or (analysis['event_type'] == '기타리스크' and any(
+            re.search(r'서킷\s*브레이커|사이드\s*카|'
+                      r'(?:코스피|코스닥).{0,100}(?:급락|폭락|하락|내렸|내린|내려|붕괴)|'
+                      r'(?:급락|폭락|하락)(?:한|하는|세의)?\s*(?:코스피|코스닥)', clause)
+            for clause in clauses))
+        policy_event = (analysis['event_type'] == '기타리스크'
+                        and analysis['body_status'] == 'verified'
+                        and analysis['judgment']['확정여부'] == '확정'
+                        and has_credit_policy_change([e['quote'] for e in analysis['evidence']
+                                                    if e['source_segment'] == 'body']))
+        if policy_event and (analysis['base_grade'] != '참고' or analysis['customer_notice']):
+            raise ValueError('제도 변경은 참고·고객 개별 유예 안내 없음')
+        if not (market or policy_event) or analysis['entities']:
+            raise ValueError('빈 주체를 허용한 시장 사건 아님')
+    if analysis['entity'] == '한국투자증권':
+        if not re.search(r'한국투자증권|(?<![가-힣])한투증권', '\n'.join(segments.values())):
+            raise ValueError('당사 이름 근거 없음')
+    if analysis['judgment']['당사연관'] == '당사이슈' and analysis['entity'] != '한국투자증권':
+        raise ValueError('당사 사건의 행위 주체 불일치')
+    for evidence in analysis['evidence']:
+        segment = segments[evidence['source_segment']]
+        if evidence['source_hash'] != text_digest(segment) or evidence['quote'] not in segment:
+            raise ValueError('원문 해시·연속 인용 불일치')
+    direct = analysis.get('direct_event_entities', [])
+    if not set(direct) <= set(analysis['entities']):
+        raise ValueError('직접 사건 주체는 entities에 포함되어야 함')
+    if direct and analysis['body_status'] != 'verified':
+        raise ValueError('직접 복수 주체 원문 미확인')
+    for entity in direct:
+        if not any(e['source_segment'] == 'body' and entity in e['quote']
+                   for e in analysis['evidence']):
+            raise ValueError('직접 사건 주체의 본문 인용 누락')
+    allowed_numbers = numbers('\n'.join(segments.values()))
+    for field in ('fact_summary', 'action', 'customer_notice'):
+        text = analysis[field] or ''
+        if numbers(text) - allowed_numbers:
+            raise ValueError('원문에 없는 수치: ' + field)
+    if (job.get('action_quality_version') == 1 and analysis['body_status'] == 'verified'
+            and analysis['base_grade'] in ('긴급','주의')):
+        validate_action_plan(analysis, '\n'.join(segments.values()))
+    if len((analysis['customer_notice'] or '').splitlines()) > 5:
+        raise ValueError('고객 안내 줄 수 초과')
+
+
 def validate(result, job, inputs, manifest):
     # 비유한 수와 bool을 숫자로 받지 않는다. bool은 JSON Schema도 거부한다.
     json.dumps(result, allow_nan=False)
-    VALIDATOR.validate(result)
+    streamlined = (job.get('review_pass_version') == 2 and job.get('continuity_version') == 1
+                   and job.get('mode') == 'production')
+    held, omissions = {}, {}
+    for error in VALIDATOR.iter_errors(result):
+        path = list(error.absolute_path)
+        if (streamlined and len(path) >= 3 and path[0] == 'classifications'
+                and path[2] not in {'article_id', 'relevant'}):
+            aid = result['classifications'][path[1]].get('article_id')
+            held[aid] = '분류 사유 형식 오류'
+        elif streamlined and len(path) >= 2 and path[0] == 'analyses':
+            aid = path[1]
+            if error.validator == 'required' and len(path) == 2:
+                missing = set(error.validator_value)-set(error.instance)
+                if missing <= {'action', 'customer_notice'}:
+                    omissions.setdefault(aid, []).extend(missing)
+                    continue
+            if len(path) >= 3 and path[2] in {'action', 'customer_notice', 'action_plan'}:
+                if path[2] != 'action_plan':
+                    omissions.setdefault(aid, []).append(path[2])
+                continue
+            held[aid] = '분석 필수 항목 형식 오류: '+str(path[-1])
+        else:
+            raise error
     for field, expected in [('job_id', job['job_id']), ('input_hash', digest(inputs)),
                             ('policy_hash', job['policy_hash']),
                             ('body_manifest_hash', digest(manifest))]:
@@ -168,121 +272,85 @@ def validate(result, job, inputs, manifest):
     rechecks = {item['article_id']: item.get('recheck', {}) for item in result['classifications']}
     for row in result['classifications']:
         body = bodies[row['article_id']]
-        if job.get('exclusion_review_version') == 1 and row['relevant'] is False:
-            validate_exclusion(row, source[row['article_id']], body)
-        elif row.get('exclusion_review'):
-            raise ValueError('제외 검토 적용 대상·버전 불일치')
-        recheck = row.get('recheck')
-        needs_recheck = (job.get('review_pass_version') == 1 and row['relevant'] is None
-                         and body['body_status'] == 'verified')
-        if needs_recheck:
-            quote = recheck['quote'] if recheck else ''
-            whole_short_body = (recheck and recheck['blocker'] == 'body_unusable'
-                                and quote == body['body'].strip())
-            if not quote.strip() or quote not in body['body'] or len(quote) < 8 and not whole_short_body:
-                raise ValueError('본문 확인 보류 재판정 근거 누락·인용 불일치: ' + row['article_id'])
-        elif recheck:
-            raise ValueError('재판정 보류 근거 적용 대상 불일치')
+        try:
+            if job.get('exclusion_review_version') == 2:
+                if row['relevant'] is False:
+                    article = source[row['article_id']]
+                    risky = EXCLUSION_RISK.search(article['title']+' '+article['description'])
+                    if risky and (body['body_status'] != 'verified' or body_quality(body['body'])[0] != 'verified'):
+                        raise ValueError('위험 신호의 본문 미확보 — 비위험 확정 금지')
+                continue
+            if job.get('exclusion_review_version') == 1 and row['relevant'] is False:
+                validate_exclusion(row, source[row['article_id']], body)
+            elif row.get('exclusion_review'):
+                raise ValueError('제외 검토 적용 대상·버전 불일치')
+            recheck = row.get('recheck')
+            needs_recheck = (job.get('review_pass_version') == 1 and row['relevant'] is None
+                             and body['body_status'] == 'verified')
+            if needs_recheck:
+                quote = recheck['quote'] if recheck else ''
+                whole_short_body = (recheck and recheck['blocker'] == 'body_unusable'
+                                    and quote == body['body'].strip())
+                if not quote.strip() or quote not in body['body'] or len(quote) < 8 and not whole_short_body:
+                    raise ValueError('본문 확인 보류 재판정 근거 누락·인용 불일치: ' + row['article_id'])
+            elif recheck:
+                raise ValueError('재판정 보류 근거 적용 대상 불일치')
+        except ValueError as error:
+            if not streamlined:
+                raise
+            held[row['article_id']] = str(error)
     true_ids = {key for key, verdict in verdicts.items() if verdict is True}
     if set(result['analyses']) != true_ids:
         raise ValueError('확정 후보 분석 누락·추가')
     if job.get('event_grouping_version') == 1 and 'event_groups' not in result:
         raise ValueError('동일 사건 전건 비교 결과 누락')
+    for key, verdict in verdicts.items():
+        if key in held:
+            continue
+        try:
+            _validate_body(key, verdict, job, bodies, rechecks)
+            if key in result['analyses']:
+                analysis = dict(result['analyses'][key])
+                for field in omissions.get(key, []):
+                    analysis[field] = None if field == 'customer_notice' else ''
+                if streamlined and len((analysis.get('customer_notice') or '').splitlines()) > 5:
+                    omissions.setdefault(key, []).append('customer_notice')
+                    analysis['customer_notice'] = None
+                _validate_analysis(analysis, source[key], bodies[key], job)
+        except ValueError as error:
+            if not streamlined:
+                raise
+            held[key] = str(error)
     grouped = set()
     for group in result.get('event_groups', []):
         members = set(group['article_ids'])
         if not members <= true_ids or members & grouped:
             raise ValueError('동일 사건 그룹의 미분석·중복 ID')
-        analyses = [result['analyses'][aid] for aid in members]
-        if any(a['body_status'] != 'verified' for a in analyses):
-            raise ValueError('동일 사건 그룹 본문 미검증')
-        if len({a['event_type'] for a in analyses}) != 1:
-            raise ValueError('서로 다른 위험 유형의 동일 사건 병합 금지')
-        policy_members = [has_credit_policy_change([e['quote'] for e in a['evidence']
-                          if e['source_segment'] == 'body']) for a in analyses]
-        if any(policy_members) and not all(policy_members):
-            raise ValueError('제도 변경과 시장 급락의 동일 사건 병합 금지')
         grouped.update(members)
-    for key, verdict in verdicts.items():
-        if job.get('body_quality_version') == 1:
-            status, reason = body_quality(bodies[key]['body'])
-            unusable_hold = (verdict is None and job.get('review_pass_version') == 1
-                             and rechecks[key].get('blocker') == 'body_unusable')
-            if bodies[key]['body_status'] == 'verified' and status != 'verified' and not unusable_hold:
-                raise ValueError('본문 품질 미검증: ' + key + ': ' + reason)
-        visible = re.sub(r'\[(?:링크|URL)[^\]]*\]', '', bodies[key]['body'])
-        if bodies[key]['body_status'] in ('verified', 'alternate_verified') and not any(c.isalnum() for c in visible):
-            raise ValueError('본문 내용 없이 확보 완료 표시')
-        if bodies[key]['body_status'] == 'alternate_verified':
-            raise ValueError('대체 본문의 독립 출처 검수 미구현 — 발송 보류')
-    for key, analysis in result['analyses'].items():
-        article, body = source[key], bodies[key]
-        segments = {'title': article['title'], 'description': article['description'], 'body': body['body']}
-        if analysis['body_status'] != body['body_status'] and not (
-                body['body_status'] == 'verified' and analysis['body_status'] in ('missing','unreadable')):
-            raise ValueError('본문 상태 위조')
-        if analysis['body_status'] in ('missing', 'unreadable'):
-            if analysis['base_grade'] != '참고' or analysis['confidence'] > 0.6 or analysis['customer_notice']:
-                raise ValueError('본문 미수집은 참고·낮은 확신도·고객 안내 없음')
-            if '[본문 미수집]' not in analysis['fact_summary']:
-                raise ValueError('본문 미수집 표시 누락')
-            if any(e['source_segment'] == 'body' for e in analysis['evidence']):
-                raise ValueError('미수집 본문을 근거로 삼음')
-        if not math.isfinite(analysis['confidence']):
-            raise ValueError('confidence 비유한 값')
-        if not analysis['entity']:
-            source_text = '\n'.join(segments.values())
-            market = (analysis['event_type'] == '반대매매' and re.search(r'반대매매|강제\s*청산|마진콜', source_text))
-            # Match within a sentence and allow line breaks/ordinary decline verbs.
-            # A company's fall in another sentence must not turn a rising index into a market event.
-            clauses = [clause for segment in segments.values()
-                       for clause in re.split(r'(?<!\d)[.!?。,;](?!\d)|지만|으나|반면|한편|와 달리',
-                                              re.sub(r'\s+', ' ', segment))]
-            market = market or (analysis['event_type'] == '기타리스크' and any(
-                re.search(r'서킷\s*브레이커|사이드\s*카|'
-                          r'(?:코스피|코스닥).{0,100}(?:급락|폭락|하락|내렸|내린|내려|붕괴)|'
-                          r'(?:급락|폭락|하락)(?:한|하는|세의)?\s*(?:코스피|코스닥)', clause)
-                for clause in clauses))
-            policy_event = (analysis['event_type'] == '기타리스크'
-                            and analysis['body_status'] == 'verified'
-                            and analysis['judgment']['확정여부'] == '확정'
-                            and has_credit_policy_change([e['quote'] for e in analysis['evidence']
-                                                        if e['source_segment'] == 'body']))
-            if policy_event and (analysis['base_grade'] != '참고' or analysis['customer_notice']):
-                raise ValueError('제도 변경은 참고·고객 개별 유예 안내 없음')
-            if not (market or policy_event) or analysis['entities']:
-                raise ValueError('빈 주체를 허용한 시장 사건 아님')
-        if analysis['entity'] == '한국투자증권':
-            if not re.search(r'한국투자증권|(?<![가-힣])한투증권', '\n'.join(segments.values())):
-                raise ValueError('당사 이름 근거 없음')
-        if analysis['judgment']['당사연관'] == '당사이슈' and analysis['entity'] != '한국투자증권':
-            raise ValueError('당사 사건의 행위 주체 불일치')
-        for evidence in analysis['evidence']:
-            segment = segments[evidence['source_segment']]
-            if evidence['source_hash'] != text_digest(segment) or evidence['quote'] not in segment:
-                raise ValueError('원문 해시·연속 인용 불일치')
-        direct = analysis.get('direct_event_entities', [])
-        if not set(direct) <= set(analysis['entities']):
-            raise ValueError('직접 사건 주체는 entities에 포함되어야 함')
-        if direct and analysis['body_status'] != 'verified':
-            raise ValueError('직접 복수 주체 원문 미확인')
-        for entity in direct:
-            if not any(e['source_segment'] == 'body' and entity in e['quote']
-                       for e in analysis['evidence']):
-                raise ValueError('직접 사건 주체의 본문 인용 누락')
-        allowed_numbers = numbers('\n'.join(segments.values()))
-        for field in ('fact_summary', 'action', 'customer_notice'):
-            text = analysis[field] or ''
-            if numbers(text) - allowed_numbers:
-                raise ValueError('원문에 없는 수치: ' + field)
-        if (job.get('action_quality_version') == 1 and analysis['body_status'] == 'verified'
-                and analysis['base_grade'] in ('긴급','주의')):
-            validate_action_plan(analysis, '\n'.join(segments.values()))
-        if len((analysis['customer_notice'] or '').splitlines()) > 5:
-            raise ValueError('고객 안내 줄 수 초과')
-    return {'classifications': len(ids), 'analyses': len(true_ids),
-            'needs_review': sum(value is None for value in verdicts.values()),
-            'consume_ready': not any(value is None for value in verdicts.values())}
+        active = members-set(held)
+        if len(active) < 2:
+            continue
+        analyses = [result['analyses'][aid] for aid in active]
+        try:
+            if any(a['body_status'] != 'verified' for a in analyses):
+                raise ValueError('동일 사건 그룹 본문 미검증')
+            if len({a['event_type'] for a in analyses}) != 1:
+                raise ValueError('서로 다른 위험 유형의 동일 사건 병합 금지')
+            policy_members = [has_credit_policy_change([e['quote'] for e in a['evidence']
+                              if e['source_segment'] == 'body']) for a in analyses]
+            if any(policy_members) and not all(policy_members):
+                raise ValueError('제도 변경과 시장 급락의 동일 사건 병합 금지')
+        except ValueError as error:
+            if not streamlined:
+                raise
+            for aid in active:
+                held[aid] = str(error)
+    summary = {'classifications': len(ids), 'analyses': len(true_ids),
+               'needs_review': len({aid for aid, value in verdicts.items() if value is None} | set(held)),
+               'consume_ready': not held and not any(value is None for value in verdicts.values())}
+    if streamlined:
+        summary.update(held_articles=held, omitted_fields=omissions)
+    return summary
 
 
 def assert_consume_ready(result, job, inputs, manifest, config, current):

@@ -202,7 +202,8 @@
             }
           }
         }
-      }
+      },
+      "description": "v2는 article_id/relevant/reason만 필요하다. exclusion_review/recheck는 구형 v1 결과 호환용이며 새로 작성하지 않는다."
     },
     "evidence": {
       "type": "object",
@@ -437,7 +438,7 @@
               "maxLength": 120
             }
           },
-          "description": "action_quality_version=1 회차의 검증된 긴급·주의에 필수. 원문 사건 표현과 최종 action의 실제 부분 문자열로 검수한다. 의미 판단을 자동 증명하지 않는다."
+          "description": "구형 action_quality_version=1 호환용. v2는 작성하지 않으며 표현 형식으로 전체 발송을 차단하지 않는다."
         }
       }
     }

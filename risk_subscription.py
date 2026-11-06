@@ -29,7 +29,7 @@ from risk_provider import Provider
 from risk_outbox import make_packet, validate_packet, store_packet, legacy_packet
 from risk_shards import split_job, hydrate, chunks
 from risk_audit import checkpoint, record_error, record_errors, run_audited, observe_pending, persist_unhandled
-from risk_continuity import (freeze_exposure, read_exposure, pending_reviews,
+from risk_continuity import (review_catalog, review_source, freeze_exposure, read_exposure, pending_reviews,
                              prepare_reviews, finish_reviews, delivery_view, delivery_verdicts, read_review,
                              review_age)
 
@@ -286,10 +286,12 @@ def collect(config, queue, verification=False, reviews_only=False):
         Path(state_file).write_bytes(data)
     exposure_raw = Path('exposure_data.csv').read_bytes()
     captured_at = now().isoformat()
-    backlog = [] if verification else pending_reviews(queue)
+    catalog = {} if verification else review_catalog(queue)[0].get('sources', {})
     excluded = set(current_config(queue, verification).get('excluded_article_ids', []))
-    backlog = [r for r in backlog if r['article_id'] not in excluded]
-    ages = {r['article_id']: review_age(r['item'], now()) for r in backlog}
+    catalog = {aid: source for aid, source in catalog.items() if aid not in excluded}
+    ages = {aid: review_age(source, now()) for aid, source in catalog.items()}
+    backlog = [read_review(queue, aid)[0] for aid in catalog
+               if reviews_only and ages[aid] == 'eligible']
     # Keep immutable pending originals; dispatch them only after the regular
     # delivery, via the existing collect-review route. No implicit age reset.
     reviews = [r for r in backlog if ages[r['article_id']] == 'eligible'] if reviews_only else []
@@ -332,16 +334,28 @@ def collect(config, queue, verification=False, reviews_only=False):
             unique.append(article)
     raw = unique
     items = []
+    by_url = {s['url']: s for s in catalog.values() if s.get('url')}
+    previous_sources = dict(catalog)
     for article in raw:
         article['article_id'] = hashlib.sha256((article['url']+'\0'+article['title']).encode()).hexdigest()[:24]
         article['description'] = article.get('desc', '')
         article['published_at'] = article.get('pubDate', '')
-        if article['article_id'] in excluded or not reviews_only and article['article_id'] in ages:
+        previous = catalog.get(article['article_id']) or by_url.get(article['url'])
+        if previous:
+            previous_sources[article['article_id']] = previous
+            article['_review_replay'] = True
+            article['published_at'] = previous['published_at']
+        if (article['article_id'] in excluded or previous and not reviews_only
+                and (review_age(previous, now()) != 'eligible'
+                     or review_source(article, {})['item_hash'] == previous['item_hash'])):
             continue
         if not bot.is_hard_excluded(article['title'], article.get('desc', ''), article['url'])[0]:
             items.append(article)
+    held_unchanged = {a['article_id'] for a in raw if a['article_id'] in previous_sources
+                      and (review_age(previous_sources[a['article_id']], now()) != 'eligible' or
+                           review_source(a, {})['item_hash'] == previous_sources[a['article_id']]['item_hash'])}
     raw = [a for a in raw if a['article_id'] not in excluded
-           and (reviews_only or a['article_id'] not in ages)]
+           and (reviews_only or a['article_id'] not in held_unchanged)]
     item_ids = {a['article_id'] for a in items}
     raw_ids = {a['article_id'] for a in raw}
     for record in reviews:
@@ -357,25 +371,16 @@ def collect(config, queue, verification=False, reviews_only=False):
     body_errors = []
     def body(article):
         diagnostics = {}
-        text = bot.fetch_article_body(article['url'], diagnostics) or ''
+        try:
+            text = bot.fetch_article_body(article['url'], diagnostics) or ''
+        except Exception as error:
+            text = ''
+            diagnostics.update(code='body_fetch_failed', error=error)
         truncated = diagnostics.pop('truncated', False) or len(text) > 12000
         if diagnostics:
             with lock:
                 body_errors.append((article['article_id'], diagnostics))
         status, quality_reason = body_quality(text[:12000])
-        if status != 'verified' and article['article_id'] in replay:
-            saved = replay[article['article_id']]['body']
-            saved_status, saved_reason = body_quality(saved['body'])
-            if saved_status == 'verified' and saved.get('body_status') != 'verified':
-                saved_status, saved_reason = 'unreadable', 'saved_body_unverified'
-            if saved_status == 'verified':
-                kept = copy.deepcopy(saved)
-                kept.update(body_status=saved_status, body_quality_reason=saved_reason)
-                return kept
-            if status == 'missing':
-                text = saved['body']
-                status, quality_reason = saved_status, saved_reason
-                truncated = saved.get('truncated', False)
         # Preserve failed extraction text as evidence; never promote menus to verified.
         return {'article_id': article['article_id'], 'body': text[:12000],
                 'body_status': status, 'body_quality_reason': quality_reason,
@@ -391,6 +396,16 @@ def collect(config, queue, verification=False, reviews_only=False):
         diagnostics_batch.append({'code': code, 'error': error or RuntimeError(code),
                                   'facts': {'article_id': aid, **detail}})
     record_errors('body', diagnostics_batch)
+    # A fetch is not a new analysis: only changed, usable evidence can reopen a hold.
+    unchanged = {b['article_id'] for b in manifest if b['article_id'] in previous_sources
+                 and (b['body_status'] != 'verified' or
+                      review_source({}, b)['body_hash'] == previous_sources[b['article_id']]['body_hash'])}
+    items = [a for a in items if a['article_id'] not in unchanged]
+    raw = [a for a in raw if a['article_id'] not in unchanged]
+    manifest = [b for b in manifest if b['article_id'] not in unchanged]
+    if reviews_only and not items:
+        print(json.dumps({'job_id': 'pending-review', 'status': 'no_change', 'inputs': 0, 'paid_ai_calls': 0}))
+        return
     # The live main can finish a prior run while collection is in progress.
     # Refresh delivery history; keep the exposure used to collect/filter this job.
     data, _ = queue.source('seen_news.json')
@@ -422,21 +437,21 @@ def collect(config, queue, verification=False, reviews_only=False):
            'body_manifest_hash': digest(manifest), 'policy_version': 'risk-subscription-v1',
            'policy_hash': digest(rules), 'receipts': {}, 'paid_ai_calls': 0,
            'body_quality_version': 1}
-    if rules.get('exclusion_review_version') == 1:
-        job['exclusion_review_version'] = 1
+    if rules.get('exclusion_review_version') in (1, 2):
+        job['exclusion_review_version'] = rules['exclusion_review_version']
     if rules.get('event_grouping_version') == 1:
         job['event_grouping_version'] = 1
-    if rules.get('action_quality_version') == 1:
-        job['action_quality_version'] = 1
+    if rules.get('action_quality_version') in (1, 2):
+        job['action_quality_version'] = rules['action_quality_version']
     if not verification:
         job['review_dispatch'] = {'version': 1, 'max_publication_age_hours': 12,
                                  'phase': 'post_delivery' if reviews_only else 'regular',
                                  'after_job_id': after_job_id,
-                                 'pending_total': len(backlog),
+                                 'pending_total': len(catalog),
                                  'eligible_count': sum(v == 'eligible' for v in ages.values()),
                                  'expired_count': sum(v == 'expired' for v in ages.values()),
                                  'date_unconfirmed_count': sum(v == 'date_unconfirmed' for v in ages.values())}
-        job['review_pass_version'] = 1
+        job['review_pass_version'] = rules.get('review_pass_version', 1)
         job['report_layout_version'] = 1
         job['smtp_evidence_version'] = 1
         current_config(queue)
@@ -482,6 +497,9 @@ def verify_job(queue, jid, self_test=False):
     if not result:
         raise RuntimeError('구독 분석 결과 없음')
     info = validate(result, job, job['input'], job['body_manifest'])
+    if 'held_articles' in info:
+        job['_validation_holds'] = info['held_articles']
+        job['_validation_omissions'] = info['omitted_fields']
     if job.get('continuity_version') == 1 and policy().get('continuity', {}).get('version') != 1:
         raise RuntimeError('연속 운영 정책 미승인 — 발송 보류')
     if not info['consume_ready'] and (self_test or job.get('continuity_version') != 1):
@@ -564,20 +582,25 @@ def consume(queue, jid, self_test=False):
     bodies = {b['article_id']: b for b in job['body_manifest']}
     body_deferred_ids = {aid for aid in deferred_ids
                          if bodies[aid]['body_status'] in {'missing', 'unreadable'}
-                         or result['analyses'].get(aid, {}).get('body_status') in {'missing', 'unreadable'}}
+                         or (isinstance(result['analyses'].get(aid), dict) and
+                             result['analyses'][aid].get('body_status') in {'missing', 'unreadable'})}
     body_deferred_ids.update(row['article_id'] for row in result['classifications']
-                             if row.get('recheck', {}).get('blocker') == 'body_unusable')
+                             if isinstance(row.get('recheck'), dict) and row['recheck'].get('blocker') == 'body_unusable')
     alert_deferred_ids = [aid for aid in deferred_ids if aid not in body_deferred_ids]
     reasons = {row['article_id']: row['reason'] for row in result['classifications']}
+    reasons.update(job.get('_validation_holds', {}))
     values, expected, resolutions = ({}, {}, {}) if self_test else prepare_reviews(queue, job, verdicts, reasons=reasons)
     overdue_count = sum(utc_time(values['review/'+aid+'.json']['first_seen_at']) <= now()-timedelta(hours=24)
-                        for aid in deferred_ids)
+                        for aid in deferred_ids if 'review/'+aid+'.json' in values)
     alert_overdue_count = sum(utc_time(values['review/'+aid+'.json']['first_seen_at']) <= now()-timedelta(hours=24)
-                              for aid in alert_deferred_ids)
+                              for aid in alert_deferred_ids if 'review/'+aid+'.json' in values)
     metadata.update(status='sending', self_test=self_test, sending_at=now().isoformat())
     metadata.update(deferred_ids=deferred_ids, review_resolutions=resolutions,
                     analysis_complete=not deferred_ids, overdue_review_count=overdue_count)
     metadata['body_deferred_ids'] = sorted(body_deferred_ids)
+    if job.get('review_pass_version') == 2:
+        metadata['validation_holds'] = job['_validation_holds']
+        metadata['omitted_fields'] = job['_validation_omissions']
     metadata['owner_excluded_ids'] = sorted(excluded_ids.intersection(verdicts))
     if values or resolutions:
         values['jobs/'+jid+'.json'], expected['jobs/'+jid+'.json'] = metadata, sha
@@ -829,6 +852,9 @@ def recover(queue, jid):
     if digest(job['input']) != job['input_hash'] or digest(job['body_manifest']) != job['body_manifest_hash']:
         raise RuntimeError('복구 원본 입력·본문 해시 변경')
     info = validate(result, job, job['input'], job['body_manifest'])
+    if 'held_articles' in info:
+        job['_validation_holds'] = info['held_articles']
+        job['_validation_omissions'] = info['omitted_fields']
     if (not info['consume_ready'] and job.get('continuity_version') != 1
             or job.get('continuity_version') == 1 and policy().get('continuity', {}).get('version') != 1):
         raise RuntimeError('복구 연속 처리 정책 미승인')

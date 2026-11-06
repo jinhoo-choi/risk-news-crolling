@@ -3,7 +3,7 @@ import json
 import unittest
 
 from risk_queue import digest
-from risk_review_context import queue_status, status_view, status_index, usage_observation
+from risk_review_context import queue_status, status_view, status_index, usage_observation, analysis_plan, canonical
 
 
 class ReadOnlyQueue:
@@ -122,6 +122,55 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(index['jobs'][0]['deferred_count'], 1)
         self.assertTrue(index['full_metadata_required_for_decisions'])
         self.assertTrue(all(entry['ack'] is None for entry in index['jobs']))
+
+
+class AnalysisPlanTests(unittest.TestCase):
+    def fixture(self):
+        items = [dict(article_id=i, title='기사', description='사건 설명', url='https://example.invalid/'+i)
+                 for i in ['done', 'unread', 'missing']]
+        manifest = [dict(article_id=i, body='원문과 숫자 123. '*2000 if i != 'missing' else '',
+                         body_status='verified' if i != 'missing' else 'missing')
+                    for i in ['done', 'unread', 'missing']]
+        inputs = {'items': items, 'raw_articles': items}
+        job = dict(job_id='test', input=inputs, input_hash=digest(inputs), policy_hash='policy',
+                   body_manifest=manifest, body_manifest_hash=digest(manifest), review_pass_version=2)
+        checkpoint = {k: job[k] for k in ['job_id', 'input_hash', 'policy_hash', 'body_manifest_hash']}
+        checkpoint.update(covered_ids=['done'], classifications=[dict(article_id='done', relevant=False, reason='기존 판정')], analyses={})
+        return job, checkpoint
+
+    def test_resume_never_rereads_completed_and_preserves_every_source_character(self):
+        job, checkpoint = self.fixture()
+        original = copy.deepcopy(job)
+        plan = analysis_plan(job, [checkpoint], max_bytes=1000)
+        self.assertEqual(plan['pending_ids'], ['unread'])
+        self.assertEqual(plan['missing_body_ids'], ['missing'])
+        self.assertEqual(plan['classifications'][0], checkpoint['classifications'][0])
+        self.assertIsNone(plan['classifications'][1]['relevant'])
+        self.assertTrue(all(len(canonical(p).encode()) <= 1000 for p in plan['pages']))
+        self.assertEqual(''.join(p['body'] for p in plan['pages']), job['body_manifest'][1]['body'])
+        self.assertTrue(plan['pages'][-1]['complete'])
+        self.assertFalse(any(p['complete'] for p in plan['pages'][:-1]))
+        self.assertEqual(job, original)
+
+    def test_checkpoint_corruption_or_changed_body_never_reuses(self):
+        job, checkpoint = self.fixture()
+        for field in ['job_id', 'input_hash', 'policy_hash', 'body_manifest_hash']:
+            bad = copy.deepcopy(checkpoint)
+            bad[field] = 'changed'
+            with self.assertRaises(ValueError):
+                analysis_plan(job, [bad])
+        with self.assertRaises(ValueError):
+            analysis_plan(job, [checkpoint, checkpoint])
+        job['body_manifest'][0]['body'] += 'altered'
+        with self.assertRaises(ValueError):
+            analysis_plan(job, [checkpoint])
+
+    def test_legacy_contract_is_not_silently_converted(self):
+        job, checkpoint = self.fixture()
+        job['review_pass_version'] = 1
+        plan = analysis_plan(job, [checkpoint])
+        self.assertEqual(plan['missing_body_ids'], [])
+        self.assertEqual(plan['pending_ids'], ['unread', 'missing'])
 
 
 if __name__ == '__main__':
