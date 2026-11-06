@@ -201,6 +201,39 @@ class NativeValidation(unittest.TestCase):
         self.assertEqual(smtp.calls, [])
         self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
 
+    def test_menu_recorded_as_verified_can_be_held_without_blocking_verified_peer(self):
+        queue, smtp = self.fixture(), native_cases.SMTP()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        job.update(body_quality_version=1, review_pass_version=1)
+        item = copy.deepcopy(job['input']['items'][0])
+        item.update(article_id='menu', url='https://example.invalid/menu')
+        job['input']['items'].append(item)
+        job['input']['raw_articles'] = copy.deepcopy(job['input']['items'])
+        menu = '관련기사 메뉴 홍길동 기자'
+        job['body_manifest'].append({'article_id':'menu', 'body':menu,
+                                    'body_status':'verified', 'source_url':item['url']})
+        result['classifications'].append({'article_id':'menu', 'relevant':None,
+            'reason':'수집된 텍스트가 실제 기사 본문이 아닌 메뉴임을 확인했다.',
+            'recheck':{'blocker':'body_unusable', 'quote':menu}})
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        queue.data.update(continuity.freeze_exposure(job, Path('exposure_data.csv').read_bytes(), bridge.now().isoformat()))
+        original_body = copy.deepcopy(job['body_manifest'])
+        hold = result['classifications'][-1]
+        for recheck in ({'blocker':'entity', 'quote':menu},
+                        {'blocker':'body_unusable', 'quote':'다른 기사에서 가져온 인용문'}):
+            hold['recheck'] = recheck
+            with self.assertRaises(ValueError):
+                validate(result, job, job['input'], job['body_manifest'])
+        hold['recheck'] = {'blocker':'body_unusable', 'quote':menu}
+        self.run_consume(queue, smtp)
+        self.assertEqual(queue.data['jobs/test.json']['deferred_ids'], ['menu'])
+        document = queue.data['previews/test.json']['html']
+        self.assertIn(job['input']['items'][0]['url'], document)
+        self.assertNotIn(item['url'], document)
+        self.assertNotIn(item['url'], self.bot.load_seen_urls())
+        self.assertEqual(queue.data['review/menu.json']['body'], original_body[1])
+
     def test_date_conflict_remains_pending_and_records_specific_reason_without_seen(self):
         queue, smtp = self.fixture(), native_cases.SMTP()
         job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
