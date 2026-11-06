@@ -917,5 +917,306 @@ class Request(unittest.TestCase):
             self.assertIn('needs_ack=false', path.read_text())
 
 
+class ExplicitRejections(unittest.TestCase):
+    setUp = fixtures.Integration.setUp
+    tearDown = fixtures.Integration.tearDown
+    run_consume = fixtures.Integration.run_consume
+    fixture = fixtures.Integration.fixture
+
+    def grouped(self):
+        q, smtp, to, cc = fixtures.Integration.executive_fixture(self)
+        q.data['jobs/test.json'].update(created_at=now().isoformat(),
+            expires_at=(now()+bridge.timedelta(hours=2)).isoformat(), paid_ai_calls=0)
+        return q, smtp, to, cc
+
+    def retry(self, q, smtp):
+        import risk_delivery
+        later = now()+bridge.timedelta(minutes=31)
+        with patch.object(risk_delivery, 'now', return_value=later), patch.object(bridge, 'now', return_value=later), \
+                patch.object(smtplib, 'SMTP_SSL', lambda *a, **k: smtp):
+            bridge.recover(q, 'test')
+
+    def test_mail_421_reconnects_once_and_records_both_attempts(self):
+        q, smtp, to, cc = self.grouped()
+        smtp.mail.side_effect = [(421, b'temporary'), (250, b'OK')]
+        self.run_consume(q, smtp)
+        self.assertEqual(smtp.login.call_count, 2)
+        smtp.data.assert_called_once()
+        self.assertEqual(len(q.data['jobs/test.json']['smtp_evidence']['attempts']), 2)
+        self.assertEqual(set(q.data['jobs/test.json']['receipts'].values()), {'accepted'})
+
+    def test_data_451_waits_then_recovers_same_packet_and_ack(self):
+        q, smtp, to, cc = self.grouped()
+        smtp.data.side_effect = [(451, b'temporary'), (250, b'OK')]
+        with self.assertRaises(RuntimeError):
+            self.run_consume(q, smtp)
+        packet = copy.deepcopy(q.data['outbox/test.json'])
+        with self.assertRaisesRegex(RuntimeError, '대기'):
+            bridge.recover(q, 'test')
+        self.assertEqual(smtp.data.call_count, 1)
+        self.retry(q, smtp)
+        self.assertEqual(smtp.data.call_count, 2)
+        self.assertEqual(q.data['outbox/test.json'], packet)
+        q.remote_seen = Path('seen_news.json').read_bytes()
+        bridge.acknowledge(q, 'test')
+        self.assertTrue(q.data['jobs/test.json']['ack'])
+        self.retry(q, smtp)
+        self.assertEqual(smtp.data.call_count, 2)
+
+    def test_partial_451_retries_only_rejected_recipient(self):
+        q, smtp, to, cc = self.grouped()
+        smtp.rcpt.side_effect = [(451 if a == to[1] else 250, b'answer') for a in to+cc]+[(250, b'OK')]
+        with self.assertRaises(RuntimeError):
+            self.run_consume(q, smtp)
+        self.assertEqual(list(q.data['jobs/test.json']['receipts'].values()).count('accepted'), 4)
+        self.retry(q, smtp)
+        self.assertEqual([c.args[0] for c in smtp.rcpt.call_args_list], to+cc+[to[1]])
+        self.assertEqual(smtp.data.call_count, 2)
+        self.assertEqual(q.data['jobs/test.json']['status'], 'delivery_complete')
+
+    def test_all_550_closes_failure_and_carries_every_input_without_ack(self):
+        q, smtp, _, _ = self.grouped()
+        smtp.data.return_value = (550, b'permanent')
+        with self.assertRaises(RuntimeError):
+            self.run_consume(q, smtp)
+        j = q.data['jobs/test.json']
+        self.assertEqual(j['status'], 'delivery_failed')
+        self.assertEqual(j['delivery_failure']['carried_ids'], ['one'])
+        self.assertEqual(q.data['review/index.json']['pending'], ['one'])
+        self.assertEqual(q.data['review/one.json']['item'], j['input']['items'][0])
+        self.assertFalse(j.get('ack') or j.get('history_saved'))
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+        bridge.expire_and_check(q)
+        with self.assertRaises(RuntimeError):
+            bridge.acknowledge(q, 'test')
+        smtp.data.assert_called_once()
+
+    def test_two_pre_data_rejections_exhaust_budget_across_invocations(self):
+        q, smtp, _, _ = self.grouped()
+        smtp.mail.return_value = (421, b'temporary')
+        with self.assertRaises(RuntimeError):
+            self.run_consume(q, smtp)
+        self.assertEqual(smtp.login.call_count, 2)
+        smtp.data.assert_not_called()
+        self.assertEqual(q.data['jobs/test.json']['status'], 'delivery_failed')
+        with self.assertRaises(RuntimeError):
+            self.retry(q, smtp)
+        self.assertEqual(smtp.login.call_count, 2)
+
+    def test_two_data_451s_close_failure_without_an_unbounded_third_attempt(self):
+        q, smtp, _, _ = self.grouped()
+        smtp.data.return_value = (451, b'temporary')
+        with self.assertRaises(RuntimeError):
+            self.run_consume(q, smtp)
+        with self.assertRaises(RuntimeError):
+            self.retry(q, smtp)
+        self.assertEqual(q.data['jobs/test.json']['status'], 'delivery_failed')
+        with self.assertRaises(RuntimeError):
+            self.retry(q, smtp)
+        self.assertEqual(smtp.data.call_count, 2)
+        bridge.expire_and_check(q)
+
+    def test_partial_permanent_refusal_cannot_release_collection_or_retry_accepted(self):
+        q, smtp, to, cc = self.grouped()
+        smtp.rcpt.side_effect = [(550 if a == to[1] else 250, b'answer') for a in to+cc]
+        with self.assertRaises(RuntimeError):
+            self.run_consume(q, smtp)
+        self.assertEqual(q.data['jobs/test.json']['status'], 'delivery_rejected')
+        with self.assertRaises(RuntimeError):
+            self.retry(q, smtp)
+        with self.assertRaises(RuntimeError):
+            bridge.expire_and_check(q)
+        smtp.data.assert_called_once()
+
+    def test_grouped_partial_refusal_can_use_explicit_no_resend_closure(self):
+        q, smtp, to, cc = self.grouped()
+        smtp.rcpt.side_effect = [(550 if a == to[1] else 250, b'answer') for a in to+cc]
+        with self.assertRaises(RuntimeError):
+            self.run_consume(q, smtp)
+        j, job_sha = q.get('jobs/test.json')
+        packet, packet_sha = q.get('outbox/test.json')
+        q.data['partial-close-requests/test.json'] = {
+            'operation':'close_without_resend','job_id':'test','request_id':'approved',
+            'job_sha':job_sha,'outbox_sha':packet_sha,'result_sha':q.get('results/test.json')[1],
+            'sent_html_hash':sha(packet['html']),'reported_article_ids':['one'],
+            'accepted_sent_messages':{k:'abc012345678' for k,v in j['receipts'].items() if v == 'accepted'}}
+        with patch.object(smtplib, 'SMTP_SSL', side_effect=AssertionError('resend forbidden')):
+            close_partial(q, 'test', 'approved')
+        closed = q.data['jobs/test.json']
+        self.assertEqual(closed['status'], 'closed_partial')
+        self.assertEqual(closed['receipts'], j['receipts'])
+        self.assertFalse(closed.get('ack') or closed.get('history_saved'))
+        bridge.expire_and_check(q)
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+        smtp.data.assert_called_once()
+
+    def test_data_reply_loss_never_acquires_rejection_recovery(self):
+        q, smtp, _, _ = self.grouped()
+        smtp.data.side_effect = TimeoutError('reply lost')
+        with self.assertRaises(RuntimeError):
+            self.run_consume(q, smtp)
+        self.assertEqual(q.data['jobs/test.json']['status'], 'uncertain')
+        with self.assertRaises(RuntimeError):
+            self.retry(q, smtp)
+        with self.assertRaises(RuntimeError):
+            bridge.expire_and_check(q)
+        smtp.data.assert_called_once()
+
+    def test_receipt_write_failure_cannot_be_inferred_from_smtp_return(self):
+        q, smtp, _, _ = self.grouped()
+        put = q.put
+        def fail_receipt(path, value, sha=None):
+            if path == 'jobs/test.json' and 'accepted' in value.get('receipts', {}).values():
+                raise QueueConflict()
+            put(path, value, sha)
+        with patch.object(q, 'put', fail_receipt), self.assertRaises(RuntimeError):
+            self.run_consume(q, smtp)
+        with self.assertRaises(RuntimeError):
+            self.retry(q, smtp)
+        smtp.data.assert_called_once()
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+
+    def test_missing_proof_and_modified_packet_never_recover(self):
+        for mutation in ('missing', 'packet'):
+            q, smtp, _, _ = self.grouped()
+            smtp.data.return_value = (451, b'temporary')
+            with self.assertRaises(RuntimeError):
+                self.run_consume(q, smtp)
+            if mutation == 'missing':
+                q.data['jobs/test.json'].pop('smtp_evidence')
+            else:
+                q.data['jobs/test.json']['smtp_evidence']['packet_hash'] = '0'*64
+            with self.assertRaises(RuntimeError):
+                self.retry(q, smtp)
+            smtp.data.assert_called_once()
+
+    def test_failed_carry_commit_keeps_collection_blocked(self):
+        q, smtp, _, _ = self.grouped()
+        smtp.data.return_value = (550, b'permanent')
+        put_many = q.put_many
+        def conflict(values, expected, **kwargs):
+            if values.get('jobs/test.json', {}).get('status') == 'delivery_failed':
+                raise QueueConflict()
+            return put_many(values, expected, **kwargs)
+        with patch.object(q, 'put_many', conflict):
+            with self.assertRaises(RuntimeError):
+                self.run_consume(q, smtp)
+            self.assertEqual(q.data['jobs/test.json']['status'], 'delivery_rejected')
+            with self.assertRaises(RuntimeError):
+                bridge.expire_and_check(q)
+            self.assertNotIn('review/one.json', q.data)
+        bridge.expire_and_check(q)
+        self.assertEqual(q.data['jobs/test.json']['status'], 'delivery_failed')
+        smtp.data.assert_called_once()
+
+    def test_expired_rejection_carries_without_retry(self):
+        q, smtp, _, _ = self.grouped()
+        smtp.data.return_value = (451, b'temporary')
+        with self.assertRaises(RuntimeError):
+            self.run_consume(q, smtp)
+        q.data['jobs/test.json']['expires_at'] = (now()-bridge.timedelta(seconds=1)).isoformat()
+        with self.assertRaises(RuntimeError):
+            self.retry(q, smtp)
+        self.assertEqual(q.data['jobs/test.json']['status'], 'delivery_failed')
+        smtp.data.assert_called_once()
+
+    def test_new_owner_only_route_uses_rejection_evidence_without_company_recipients(self):
+        q, smtp, _, _ = self.grouped()
+        q.data['jobs/test.json']['smtp_evidence_version'] = 1
+        r = q.data['results/test.json']
+        r['analyses'] = {}
+        r['classifications'][0].update(relevant=False, reason='검수용 제외 사례')
+        smtp.data.side_effect = [(451, b'temporary'), (250, b'OK')]
+        with self.assertRaises(RuntimeError):
+            self.run_consume(q, smtp)
+        packet = q.data['outbox/test.json']
+        self.assertTrue(packet['self_only'])
+        self.assertEqual(len(packet['expected_receipts']), 1)
+        self.retry(q, smtp)
+        self.assertEqual(len(smtp.rcpt.call_args_list), 2)
+        self.assertEqual(smtp.rcpt.call_args_list[0], smtp.rcpt.call_args_list[1])
+        self.assertEqual(q.data['jobs/test.json']['status'], 'delivery_complete')
+
+    def test_unknown_data_reply_cannot_be_promoted_to_definite_rejection(self):
+        q, smtp, _, _ = self.grouped()
+        smtp.data.return_value = (354, b'invalid final reply')
+        with self.assertRaises(RuntimeError):
+            self.run_consume(q, smtp)
+        self.assertEqual(q.data['jobs/test.json']['status'], 'uncertain')
+        with self.assertRaises(RuntimeError):
+            self.retry(q, smtp)
+        smtp.data.assert_called_once()
+
+    def test_receipt_is_durable_before_quit_or_diagnostics(self):
+        q, smtp, _, _ = self.grouped()
+        observed = []
+        def quit_after_reply():
+            observed.append(copy.deepcopy(q.data['jobs/test.json']))
+            raise smtplib.SMTPServerDisconnected('QUIT failed after acceptance')
+        smtp.quit.side_effect = quit_after_reply
+        self.run_consume(q, smtp)
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(set(observed[0]['receipts'].values()), {'accepted'})
+        self.assertTrue(observed[0]['smtp_evidence']['attempts'][-1]['finished_at'])
+        self.assertEqual(q.data['jobs/test.json']['status'], 'delivery_complete')
+        smtp.data.assert_called_once()
+
+    def test_connection_greeting_421_has_same_one_retry_budget(self):
+        q, smtp, _, _ = self.grouped()
+        with patch.object(smtplib, 'SMTP_SSL', side_effect=[smtplib.SMTPConnectError(421, b'busy'), smtp]):
+            bridge.consume(q, 'test')
+        self.assertEqual(len(q.data['jobs/test.json']['smtp_evidence']['attempts']), 2)
+        smtp.data.assert_called_once()
+
+    def test_concurrent_change_before_data_sends_nothing_and_blocks_recovery(self):
+        q, smtp, _, _ = self.grouped()
+        def recipient(address):
+            q.data['jobs/test.json']['delivery_revision'] = 'other-worker'
+            return 250, b'OK'
+        smtp.rcpt.side_effect = recipient
+        with self.assertRaisesRegex(RuntimeError, '소유권'):
+            self.run_consume(q, smtp)
+        with self.assertRaises(RuntimeError):
+            self.retry(q, smtp)
+        smtp.data.assert_not_called()
+
+    def test_all_current_contracts_keep_held_ids_after_recovery_and_ack(self):
+        from risk_continuity import freeze_exposure
+        from risk_shards import split_job
+        q, smtp, _, _ = self.grouped()
+        j, r = q.data['jobs/test.json'], q.data['results/test.json']
+        j.update(review_pass_version=1, body_quality_version=1, event_grouping_version=1,
+                 action_quality_version=1, exclusion_review_version=1, smtp_evidence_version=1)
+        plan = {'event_anchor':'잔고 조회', 'current_task':'잔고 조회 장애 접수 고객과 주문 처리에 영향이 있는 고객을 구분',
+                'check_source':'장애 공지', 'followup_condition':'복구 완료 공지가 나오면',
+                'followup_task':'잔고 조회 재시도 결과와 미해결 고객을 담당 부서에 인계'}
+        r['analyses']['one'].update(action_plan=plan, action=' → '.join(plan.values()))
+        r['event_groups'] = []
+        held = dict(j['input']['items'][0], article_id='held', url='https://example.invalid/held')
+        j['input']['items'].append(held)
+        j['input']['raw_articles'].append(copy.deepcopy(held))
+        j['body_manifest'].append({'article_id':'held','source_url':held['url'],'body_status':'missing','body':''})
+        r['classifications'].append({'article_id':'held','relevant':None,'reason':'실제 사건 본문 미확보로 보류'})
+        j['input_hash'] = r['input_hash'] = digest(j['input'])
+        j['body_manifest_hash'] = r['body_manifest_hash'] = digest(j['body_manifest'])
+        q.data.update(freeze_exposure(j, Path('exposure_data.csv').read_bytes(), now().isoformat()))
+        small, shards = split_job(j)
+        q.data.update(shards)
+        q.data['jobs/test.json'] = small
+        original = copy.deepcopy(r)
+        smtp.data.side_effect = [(451, b'temporary'), (250, b'OK')]
+        with self.assertRaises(RuntimeError):
+            self.run_consume(q, smtp)
+        self.retry(q, smtp)
+        q.remote_seen = Path('seen_news.json').read_bytes()
+        bridge.acknowledge(q, 'test')
+        self.assertEqual(q.data['jobs/test.json']['status'], 'completed')
+        self.assertFalse(q.data['jobs/test.json']['analysis_complete'])
+        self.assertEqual(q.data['review/index.json']['pending'], ['held'])
+        self.assertNotIn(held['url'], q.remote_seen.decode())
+        self.assertEqual(q.data['results/test.json'], original)
+        self.assertEqual(smtp.data.call_count, 2)
+
+
 if __name__ == '__main__':
     unittest.main()

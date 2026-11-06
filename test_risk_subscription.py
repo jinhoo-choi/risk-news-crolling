@@ -153,6 +153,29 @@ class Integration(unittest.TestCase):
         self.assertTrue(queue.data['jobs/test.json']['ack'])
         self.assertEqual(queue.data['jobs/test.json']['paid_ai_calls'], 0)
 
+    def test_explicit_data_rejection_has_recoverable_evidence(self):
+        queue, smtp, to, cc = self.executive_fixture()
+        smtp.data.return_value = (451, b'temporary refusal')
+        with self.assertRaises(RuntimeError):
+            self.run_consume(queue, smtp)
+        job = queue.data['jobs/test.json']
+        self.assertEqual(job['status'], 'delivery_rejected')
+        self.assertEqual(job['receipts'], dict.fromkeys(map(address_key, to + cc), 'rejected'))
+        self.assertEqual(job['smtp_evidence']['attempts'][0]['outcomes'][address_key(to[0])]['code'], 451)
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+
+    def test_missing_mts_body_cannot_be_excluded_without_source_evidence(self):
+        from risk_result_validator import validate
+        queue = self.fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        job['exclusion_review_version'] = 1
+        job['body_manifest'][0].update(body='', body_status='missing')
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        result['classifications'][0].update(relevant=False, reason='일반 홍보로 판정해 제외합니다.')
+        result['analyses'] = {}
+        with self.assertRaisesRegex(ValueError, '제외'):
+            validate(result, job, job['input'], job['body_manifest'])
+
     def executive_fixture(self):
         queue = self.fixture()
         queue.data['jobs/test.json']['report_layout_version'] = 1
@@ -1051,6 +1074,111 @@ class BodyExtraction(unittest.TestCase):
                 self.assertGreater(len(body), 600)
             with patch.dict(os.environ, RISK_ENGINE='api'), patch.object(bot.requests.Session, 'get', return_value=response):
                 self.assertEqual(len(bot.fetch_article_body('https://example.invalid/article')), 600)
+
+
+class ExclusionEvidence(unittest.TestCase):
+    setUp = Integration.setUp
+    tearDown = Integration.tearDown
+    fixture = Integration.fixture
+    run_consume = Integration.run_consume
+
+    def excluded(self, risky=False, body_missing=False):
+        from risk_result_validator import EXCLUSION_RULES
+        q = self.fixture()
+        j, r = q.data['jobs/test.json'], q.data['results/test.json']
+        j['exclusion_review_version'] = 1
+        a, b = j['input']['items'][0], j['body_manifest'][0]
+        title = ('타 증권사 일부 MTS 잔고 조회 장애 발생' if risky else '한국투자증권 신규 상품 출시 기념 이벤트 안내')
+        a.update(title=title, description=title, desc=title)
+        b.update(body='' if body_missing else title+' 관련 공식 안내 내용이다.',
+                 body_status='missing' if body_missing else 'verified')
+        evidence = {'source_segment':'title','source_hash':hashlib.sha256(title.encode()).hexdigest(),'quote':title}
+        review = {'rule_quote':next(rule for rule in EXCLUSION_RULES if rule.startswith('타 증권사' if risky else '주간·월간')),
+                  'kind':'other_entity' if risky else 'non_risk', 'evidence':evidence,'reviewed':True}
+        if risky and not body_missing:
+            review['countercheck'] = {'reason':'직접 장애 주체가 타 증권사이며 당사의 직접 사건은 아니라는 원문을 재검토했다.',
+                'reviewed':True,'evidence':{'source_segment':'body','source_hash':hashlib.sha256(b['body'].encode()).hexdigest(),'quote':b['body']}}
+        r['classifications'][0].update(relevant=False, reason='기존 제외 규칙과 실제 주체를 확인했다.', exclusion_review=review)
+        r['analyses'] = {}
+        j['input']['raw_articles'] = copy.deepcopy(j['input']['items'])
+        j['input_hash'] = r['input_hash'] = digest(j['input'])
+        j['body_manifest_hash'] = r['body_manifest_hash'] = digest(j['body_manifest'])
+        return q
+
+    def verify(self, q):
+        from risk_result_validator import validate
+        j = q.data['jobs/test.json']
+        return validate(q.data['results/test.json'], j, j['input'], j['body_manifest'])
+
+    def test_clear_marketing_with_missing_body_can_still_be_excluded(self):
+        self.verify(self.excluded(body_missing=True))
+
+    def test_critical_missing_body_cannot_be_excluded_even_with_title_quote(self):
+        with self.assertRaisesRegex(ValueError, '위험 후보 제외'):
+            self.verify(self.excluded(risky=True, body_missing=True))
+
+    def test_verified_other_entity_requires_second_body_review(self):
+        q = self.excluded(risky=True)
+        self.verify(q)
+        q.data['results/test.json']['classifications'][0]['exclusion_review'].pop('countercheck')
+        with self.assertRaisesRegex(ValueError, '재심사'):
+            self.verify(q)
+
+    def test_critical_article_cannot_be_called_generic_marketing(self):
+        q = self.excluded(risky=True)
+        q.data['results/test.json']['classifications'][0]['exclusion_review']['kind'] = 'non_risk'
+        with self.assertRaisesRegex(ValueError, '위험 후보 제외'):
+            self.verify(q)
+
+    def test_forged_quote_hash_rule_and_positive_criterion_are_rejected(self):
+        for mutation in ('quote','hash','rule','positive_rule'):
+            q = self.excluded()
+            review = q.data['results/test.json']['classifications'][0]['exclusion_review']
+            if mutation == 'quote':
+                review['evidence']['quote'] = '이 문장은 원문에 없는 조작된 인용문이다.'
+            elif mutation == 'hash':
+                review['evidence']['source_hash'] = '0'*64
+            else:
+                review['rule_quote'] = ('확신 없으면 일반 홍보로 자동 제외한다.' if mutation == 'rule'
+                    else '한국투자증권 MTS·HTS 시스템 직접 장애·보안사고·오류')
+            with self.assertRaises(ValueError):
+                self.verify(q)
+
+    def test_unrelated_body_quote_cannot_satisfy_critical_countercheck(self):
+        q = self.excluded(risky=True)
+        j, r = q.data['jobs/test.json'], q.data['results/test.json']
+        body = j['body_manifest'][0]['body']+' 일반 상품 출시 홍보 문장이다.'
+        j['body_manifest'][0]['body'] = body
+        j['body_manifest_hash'] = r['body_manifest_hash'] = digest(j['body_manifest'])
+        e = r['classifications'][0]['exclusion_review']['countercheck']['evidence']
+        e.update(source_hash=hashlib.sha256(body.encode()).hexdigest(), quote='일반 상품 출시 홍보 문장이다.')
+        with self.assertRaisesRegex(ValueError, '사건 본문'):
+            self.verify(q)
+
+    def test_invalid_false_does_not_resolve_prior_hold_or_send_anything(self):
+        from risk_continuity import prepare_reviews
+        q = self.excluded(risky=True, body_missing=True)
+        j = q.data['jobs/test.json']
+        values, expected, _ = prepare_reviews(q, j, {'one':None})
+        q.put_many(values, expected)
+        before = copy.deepcopy(q.data['review/one.json'])
+        smtp = SMTP()
+        with self.assertRaisesRegex(ValueError, '위험 후보 제외'):
+            self.run_consume(q, smtp)
+        self.assertEqual(q.data['review/one.json'], before)
+        self.assertEqual(q.data['review/index.json']['pending'], ['one'])
+        self.assertEqual(smtp.calls, [])
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+
+    def test_new_metadata_cannot_be_added_to_old_results_or_non_false_rows(self):
+        for mutation in ('old', 'true'):
+            q = self.excluded()
+            if mutation == 'old':
+                q.data['jobs/test.json'].pop('exclusion_review_version')
+            else:
+                q.data['results/test.json']['classifications'][0]['relevant'] = True
+            with self.assertRaisesRegex(ValueError, '적용 대상'):
+                self.verify(q)
 
 
 if __name__ == '__main__':

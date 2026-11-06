@@ -22,7 +22,8 @@ from unittest.mock import patch
 from risk_queue import Queue, JOB_ID, now, digest
 from risk_result_validator import validate, utc_time
 from risk_body_quality import body_quality
-from risk_delivery import Delivery, address_key, report_headers
+from risk_delivery import (Delivery, address_key, report_headers, rejection_evidence,
+                           retry_targets, checked_delivery_failure)
 from risk_partial_close import checked_closure, source_version
 from risk_provider import Provider
 from risk_outbox import make_packet, validate_packet, store_packet, legacy_packet
@@ -94,6 +95,12 @@ def expire_and_check(queue, suppressed_versions=None):
         job, old_sha = queue.get('jobs/'+jid+'.json')
         if not job:
             raise RuntimeError('색인 회차 읽기 실패')
+        if job.get('status') == 'delivery_rejected':
+            close_rejected(queue, jid)
+            job, old_sha = queue.get('jobs/'+jid+'.json')
+        if job.get('status') == 'delivery_failed':
+            checked_delivery_failure(job)
+            continue
         if jid in closures or job.get('status') == 'closed_partial':
             if job.get('job_id') != jid:
                 raise RuntimeError('부분 종결 색인 회차 불일치')
@@ -125,6 +132,34 @@ def expire_and_check(queue, suppressed_versions=None):
             continue
         raise RuntimeError('미종결 구독 회차 존재 — 새 회차·재전송 금지')
     return index, sha
+
+
+def close_rejected(queue, jid):
+    """Atomically carry every input before releasing a proven zero-delivery run."""
+    path = 'jobs/'+jid+'.json'
+    small, old_sha = getattr(queue, 'get_fresh', queue.get)(path)
+    if not small or small.get('status') != 'delivery_rejected':
+        return False
+    outcomes = rejection_evidence(small)
+    if any(v['state'] == 'accepted' for v in outcomes.values()) or retry_targets(small, ready=False):
+        return False
+    job = hydrate(queue, small)
+    if digest(job['input']) != job['input_hash'] or digest(job['body_manifest']) != job['body_manifest_hash']:
+        raise RuntimeError('미접수 실패 원본 해시 오류 — 이월 전 종결 금지')
+    packet, _ = queue.get('outbox/'+jid+'.json')
+    result, _ = queue.get('results/'+jid+'.json')
+    validate_packet(packet, job, result)
+    rejection_evidence(small, packet['packet_hash'])
+    ids = [a['article_id'] for a in job['input']['items']]
+    values, expected, _ = prepare_reviews(queue, job, dict.fromkeys(ids), reason='delivery_failed_unprocessed')
+    small.update(status='delivery_failed', delivery_failed_at=now().isoformat(),
+                 delivery_failure={'evidence_hash': digest(small['smtp_evidence']),
+                    'input_hash': job['input_hash'], 'body_manifest_hash': job['body_manifest_hash'],
+                    'carried_ids': ids})
+    checked_delivery_failure(small)
+    values[path], expected[path] = small, old_sha
+    queue.put_many(values, expected)
+    return True
 
 
 def prune_terminal_inputs(queue, retention_days=7):
@@ -323,6 +358,8 @@ def collect(config, queue, verification=False, reviews_only=False):
            'body_manifest_hash': digest(manifest), 'policy_version': 'risk-subscription-v1',
            'policy_hash': digest(rules), 'receipts': {}, 'paid_ai_calls': 0,
            'body_quality_version': 1}
+    if rules.get('exclusion_review_version') == 1:
+        job['exclusion_review_version'] = 1
     if rules.get('event_grouping_version') == 1:
         job['event_grouping_version'] = 1
     if rules.get('action_quality_version') == 1:
@@ -330,6 +367,7 @@ def collect(config, queue, verification=False, reviews_only=False):
     if not verification:
         job['review_pass_version'] = 1
         job['report_layout_version'] = 1
+        job['smtp_evidence_version'] = 1
         current_config(queue)
     frozen = freeze_exposure(job, exposure_raw, captured_at)
     if job['exposure_snapshot']['sha256'] != job['input']['exposure_hash']:
@@ -389,6 +427,8 @@ def consume(queue, jid, self_test=False):
     # Terminal receipts are evidence of completion, never a reason to resend.
     current_config(queue, self_test)
     existing, _ = queue.get('jobs/'+jid+'.json')
+    if not self_test and existing and existing.get('status') == 'delivery_rejected':
+        return recover(queue, jid)
     if existing and existing.get('status') in {'verified', 'completed'}:
         expected_mode = 'verification' if self_test else 'production'
         if existing.get('mode') != expected_mode:
@@ -580,10 +620,12 @@ def consume(queue, jid, self_test=False):
         record_error(None, error)
         # An authenticated connection failure before any DATA is safely retryable.
         def failed(j):
-            if j.get('status') not in {'completed', 'verified', 'delivery_complete'}:
+            if j.get('status') not in {'completed', 'verified', 'delivery_complete', 'delivery_rejected', 'delivery_failed'}:
                 j['status'] = 'uncertain' if j.get('receipts') or j.get('attempted_count', 0) else 'pending'
         try:
             guard.change(failed)
+            if not self_test:
+                close_rejected(queue, jid)
         except Exception as cleanup:
             record_error('cleanup', cleanup, 'cleanup_failed')
             # The cleanup PUT can itself conflict. Keep the original exception
@@ -607,6 +649,7 @@ def finish_packet(queue, job, result, packet, bot, guard, native_send):
     validate_packet(packet, job, result)
     self_test = packet['self_test']
     grouped = packet.get('recipient_route') == 'executives_to_groups_cc'
+    modern_owner = job.get('smtp_evidence_version') == 1 and packet['self_only'] and len(packet['expected_receipts']) == 1
     def confirm_config():
         config = current_config(queue, self_test, job['input']['items'], packet['html'])
         if grouped:
@@ -634,12 +677,14 @@ def finish_packet(queue, job, result, packet, bot, guard, native_send):
     checkpoint('smtp_prepare')
     guard.prepare(targets)
     current, _ = guard.read()
-    if set(current.get('receipts', {})) != set(packet['expected_receipts']):
-        if grouped:
-            message = bot._build_msg(packet['subject'], packet['html'], to[0])
-            message.replace_header('To', ', '.join(to))
-            message['Cc'] = ', '.join(cc)
-            guard.send_report(bot.EMAIL_SENDER, bot.EMAIL_PASSWORD, message)
+    if (set(current.get('receipts', {})) != set(packet['expected_receipts'])
+            or any(v != 'accepted' for v in current.get('receipts', {}).values())):
+        if grouped or modern_owner:
+            message = bot._build_msg(packet['subject'], packet['html'], targets[0])
+            if grouped:
+                message.replace_header('To', ', '.join(to))
+                message['Cc'] = ', '.join(cc)
+            guard.send_report(bot.EMAIL_SENDER, bot.EMAIL_PASSWORD, message, packet['packet_hash'])
         else:
             with contextlib.redirect_stdout(io.StringIO()), patch.object(bot.smtplib, 'SMTP_SSL', guard.factory):
                 native_send(packet['subject'], packet['html'], self_only=packet['self_only'],
@@ -674,16 +719,22 @@ def recover(queue, jid):
         raise RuntimeError('운영 복구는 유효한 회차·main만 허용')
     config = current_config(queue)
     small, original_sha = getattr(queue, 'get_fresh', queue.get)('jobs/'+jid+'.json')
+    rejected = bool(small and small.get('status') == 'delivery_rejected')
+    if rejected:
+        if close_rejected(queue, jid):
+            raise RuntimeError('SMTP 미접수 실패 종결 — 원문 이월 완료, 재발송 없음')
+        if not retry_targets(small):
+            raise RuntimeError('SMTP 거부 재시도 대기·상한·만료 또는 영구 거부')
     if small and small.get('status') == 'completed':
         notify_reviews(queue, small)
         print(json.dumps({'job_id': jid, 'status': 'completed', 'noop': True, 'smtp_calls': 0, 'paid_ai_calls': 0}))
         return
     if (not small or small.get('mode') != 'production'
-            or small.get('status') not in {'pending', 'sending', 'uncertain', 'delivery_complete'}
+            or small.get('status') not in {'pending', 'sending', 'uncertain', 'delivery_complete', 'delivery_rejected'}
             or (not small.get('expected_receipts') and small.get('status') != 'pending')
             or len(set(small.get('expected_receipts', []))) != len(small.get('expected_receipts', []))
             or not set(small.get('receipts', {})) <= set(small.get('expected_receipts', []))
-            or any(v != 'accepted' for v in small.get('receipts', {}).values())
+            or not rejected and any(v != 'accepted' for v in small.get('receipts', {}).values())
             or small.get('attempted_count', 0) != len(small.get('receipts', {}))):
         raise RuntimeError('SMTP 시도·접수 불확실 또는 복구 대상 아님 — 재발송 금지')
     if now()-utc_time(small['created_at']) > timedelta(hours=24):
@@ -711,6 +762,12 @@ def recover(queue, jid):
         packet = legacy_packet(queue, job, result, bot, targets)
         store_packet(queue, packet)
     validate_packet(packet, job, result)
+    if rejected:
+        if (packet.get('recipient_route') != 'executives_to_groups_cc'
+                and not (job.get('smtp_evidence_version') == 1 and packet['self_only']
+                         and len(packet['expected_receipts']) == 1)):
+            raise RuntimeError('구형 SMTP 경로 거부 자동 복구 금지')
+        rejection_evidence(small, packet['packet_hash'])
     before, _ = queue.source('seen_news.json')
     if hashlib.sha256(before).hexdigest() not in {packet['source_history_hash'], packet['seen_after_hash']}:
         raise RuntimeError('복구 전 main 이력 변경 — 자동 합치기 금지')
@@ -727,6 +784,7 @@ def recover(queue, jid):
         record_error(None, error)
         try:
             guard.change(lambda j: j.update(status='uncertain') if j.get('status') == 'sending' else None)
+            close_rejected(queue, jid)
         except Exception as cleanup:
             record_error('cleanup', cleanup, 'cleanup_failed')
             print('RISK_DELIVERY_CLEANUP outcome=failed')

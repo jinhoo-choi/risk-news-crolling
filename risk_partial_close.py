@@ -53,7 +53,7 @@ def close_partial(queue, jid, request_id):
             or auth.get('job_id') != jid or auth.get('request_id') != request_id
             or auth.get('job_sha') != job_sha or index['jobs'][-1:] != [jid]
             or jid in index.get('partial_closures', {}) or small.get('mode') != 'production'
-            or small.get('status') != 'uncertain' or small.get('self_test') is not False
+            or small.get('status') not in {'uncertain', 'delivery_rejected'} or small.get('self_test') is not False
             or small.get('history_saved') or small.get('ack') or small.get('paid_ai_calls') != 0):
         raise RuntimeError('부분 종결 승인·회차 상태 불일치')
     receipts = small['receipts']
@@ -62,7 +62,7 @@ def close_partial(queue, jid, request_id):
     proofs = auth.get('accepted_sent_messages', {})
     if (not accepted or not isinstance(proofs, dict) or set(proofs) != accepted
             or not all(isinstance(v, str) and re.fullmatch(r'[0-9a-f]{10,40}', v) for v in proofs.values())
-            or len(set(proofs.values())) != len(accepted) or len(accepted) >= len(expected)
+            or len(accepted) >= len(expected)
             or not set(receipts) <= set(expected) or len(expected) != len(set(expected))
             or not set(receipts.values()) <= {'accepted', 'uncertain', 'rejected'}
             or small['attempted_count'] != len(receipts)):
@@ -80,6 +80,13 @@ def close_partial(queue, jid, request_id):
             or digest(policy()) != job['policy_hash']):
         raise RuntimeError('부분 종결 입력·본문·정책 변경')
     validate_packet(packet, job, result)
+    # A grouped SMTP transaction has one sent message ID for several recipients.
+    # Legacy per-recipient packets still require distinct sent-message evidence.
+    if packet.get('recipient_route') != 'executives_to_groups_cc' and len(set(proofs.values())) != len(accepted):
+        raise RuntimeError('개별 발신본 중복 증거')
+    if small['status'] == 'delivery_rejected':
+        from risk_delivery import rejection_evidence
+        rejection_evidence(small, packet['packet_hash'])
     hrefs = {a.get('href') for a in BeautifulSoup(packet['html'], 'html.parser').find_all('a')}
     reported = {a['article_id'] for a in job['input']['items'] if a['url'] in hrefs}
     if not reported or sorted(reported) != auth.get('reported_article_ids'):
