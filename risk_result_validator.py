@@ -12,6 +12,7 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 from risk_body_quality import body_quality
+from risk_market_evidence import has_credit_policy_change
 
 SCHEMA = json.loads(Path(__file__).with_name('risk_result_schema.json').read_text())
 Draft202012Validator.check_schema(SCHEMA)
@@ -128,6 +129,9 @@ def validate_exclusion(row, article, body):
                 or evidence['source_segment'] == 'body' and body['body_status'] != 'verified'):
             raise ValueError('제외 원문 해시·인용·본문 상태 불일치')
     check(review['evidence'])
+    if (body['body_status'] == 'verified' and '규제 완화' in rule
+            and has_credit_policy_change([body['body']])):
+        raise ValueError('담보·반대매매 제도 변경은 일반 규제 완화로 제외 금지 — 재검토 필요')
     risky = any(EXCLUSION_RISK.search(re.sub(r'\s+', '', segment)) for segment in segments.values())
     counter = review.get('countercheck')
     if risky:
@@ -193,6 +197,10 @@ def validate(result, job, inputs, manifest):
             raise ValueError('동일 사건 그룹 본문 미검증')
         if len({a['event_type'] for a in analyses}) != 1:
             raise ValueError('서로 다른 위험 유형의 동일 사건 병합 금지')
+        policy_members = [has_credit_policy_change([e['quote'] for e in a['evidence']
+                          if e['source_segment'] == 'body']) for a in analyses]
+        if any(policy_members) and not all(policy_members):
+            raise ValueError('제도 변경과 시장 급락의 동일 사건 병합 금지')
         grouped.update(members)
     for key, verdict in verdicts.items():
         if job.get('body_quality_version') == 1:
@@ -232,7 +240,14 @@ def validate(result, job, inputs, manifest):
                           r'(?:코스피|코스닥).{0,100}(?:급락|폭락|하락|내렸|내린|내려|붕괴)|'
                           r'(?:급락|폭락|하락)(?:한|하는|세의)?\s*(?:코스피|코스닥)', clause)
                 for clause in clauses))
-            if not market or analysis['entities']:
+            policy_event = (analysis['event_type'] == '기타리스크'
+                            and analysis['body_status'] == 'verified'
+                            and analysis['judgment']['확정여부'] == '확정'
+                            and has_credit_policy_change([e['quote'] for e in analysis['evidence']
+                                                        if e['source_segment'] == 'body']))
+            if policy_event and (analysis['base_grade'] != '참고' or analysis['customer_notice']):
+                raise ValueError('제도 변경은 참고·고객 개별 유예 안내 없음')
+            if not (market or policy_event) or analysis['entities']:
                 raise ValueError('빈 주체를 허용한 시장 사건 아님')
         if analysis['entity'] == '한국투자증권':
             if not re.search(r'한국투자증권|(?<![가-힣])한투증권', '\n'.join(segments.values())):

@@ -3836,7 +3836,8 @@ def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> li
             ref.append(a)
             print(f"  [강등] 주의→참고: {a['title'][:35]}")
 
-    ref_sorted = sorted(ref, key=lambda x: x.get("_risk_score") or 0, reverse=True)
+    ref_sorted = sorted(ref, key=lambda x: (bool(x.get('_subscription_credit_policy')
+                        or x.get('_subscription_market_event')), x.get("_risk_score") or 0), reverse=True)
     for i, a in event_slots(ref_sorted):
         if i < GRADE_LIMITS["참고"]:
             result.append(a)
@@ -4948,6 +4949,10 @@ def filter_articles_for_scope(filtered: list, exposure_data: dict, self_only: bo
     def _keep(a):
         if a.get('_subscription_stat_series'):
             return market_crash
+        if a.get('_subscription_credit_policy'):
+            return True  # Verified rule change accompanies an already-authorized full report.
+        if market_crash and a.get('_subscription_market_event'):
+            return True  # Preserve the reviewed representative without inventing issuer exposure.
         if a.get("grade") != "참고":
             return True
         _e = (a.get("entity") or "").strip()
@@ -5038,6 +5043,8 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                               f"{[e for e in a_entities if e not in _kept]}")
                         a_entities = _kept
             if grade == "참고":
+                reference_summary = (a.get('fact_summary') if
+                    a.get('_subscription_market_event') or a.get('_subscription_credit_policy') else '')
                 r_risk = display_risk_score(a)
                 if r_risk:
                     r_filled = min(int(r_risk), 10)
@@ -5051,6 +5058,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
             <td style="padding:6px 16px;font-size:13px;word-break:keep-all;color:#7a9abf;">
               · <a href="{_esc(a['url'])}" style="color:#7a9abf;text-decoration:none;">{_esc(a['title'][:45])}{"..." if len(a['title'])>45 else ""}</a>
               <span style="font-size:10px;color:#94a3b8;margin-left:4px;">{a.get("pub_str","").split("(")[0].strip() if a.get("pub_str") else ""}</span>
+              {f'<p style="margin:6px 0 2px;font-size:12px;line-height:1.6;color:#475569;">{_esc(reference_summary)}</p>' if reference_summary else ""}
             </td>
             <td align="right" valign="middle" style="padding:6px 16px 6px 4px;white-space:nowrap;">{r_score_html}</td>
           </tr>
@@ -6057,8 +6065,17 @@ def main():
     # 강등 후 참고 GRADE_LIMITS 재체크 (최대 5건)
     ref_after_demote = [a for a in filtered if a.get("grade") == "참고"]
     if len(ref_after_demote) > GRADE_LIMITS["참고"]:
-        ref_sorted = sorted(ref_after_demote, key=lambda x: x.get("_risk_score", 0), reverse=True)
-        keep_ids = {id(a) for a in ref_sorted[:GRADE_LIMITS["참고"]]}
+        ref_sorted = sorted(ref_after_demote, key=lambda x: (bool(x.get('_subscription_credit_policy')
+                            or x.get('_subscription_market_event')), x.get("_risk_score", 0)), reverse=True)
+        # Count reviewed events, not their repeated articles. Keep candidates
+        # until final body verification and highest-score representative selection.
+        keep_ids, groups = set(), set()
+        for a in ref_sorted:
+            group = a.get('_subscription_event_group')
+            key = ('group', group) if group is not None else ('article', id(a))
+            if key in groups or len(groups) < GRADE_LIMITS['참고']:
+                groups.add(key)
+                keep_ids.add(id(a))
         excess = [a for a in ref_after_demote if id(a) not in keep_ids]
         for a in excess:
             print(f"  [참고 초과 제거] {a['title'][:40]}")

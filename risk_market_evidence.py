@@ -18,6 +18,30 @@ _INDEX_DECLINE = re.compile(
 _NEGATED = re.compile(r'않|아니|없|할\s*수|가능|전망|예상|우려')
 
 
+def has_credit_policy_change(segments):
+    """Source-backed adopted credit/collateral rules, never generic easing.
+
+    This is a review/routing guard. Relevance, dates and applicability still
+    require source review; it does not establish a customer's liquidation stay.
+    """
+    for segment in segments:
+        text = re.sub(r'\s+', ' ', segment)
+        if not re.search(r'정부|금융당국|금융위원회|금융위|금융감독원|금감원', text):
+            continue
+        if not re.search(r'\d+\s*(?:개월|달|일|주)\s*(?:간|동안)|\d+일\s*부터|시행일|적용일', text):
+            continue
+        for clause in re.split(r'(?<!\d)[.!?。;](?!\d)', text):
+            if not re.search(r'정부|금융당국|금융위원회|금융위|금융감독원|금감원', clause):
+                continue
+            if not re.search(r'반대\s*매매|(?:신용(?:거래)?\s*융자|증권사).{0,60}담보\s*(?:비율|유지)', clause):
+                continue
+            if re.search(r'검토|건의|요구|제안|가능성|가정|예시|아니|않|철회|취소|잘못|오보|부인', clause):
+                continue
+            if re.search(r'(?:면제|유예|완화|중단|재개|변경|조정)(?:하기로|키로|한다고|한다|했다)', clause):
+                return True
+    return False
+
+
 def has_market_event_evidence(event_type, segments):
     """Require an index's own movement; callers authenticate body segments."""
     segments = tuple(segments)
