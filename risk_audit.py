@@ -180,13 +180,15 @@ def observe_pending(queue, job):
     if job.get('status') != 'pending' or job.get('mode') != 'production':
         return
     jid = job['job_id']
-    if queue.get('results/'+jid+'.json')[0] is not None:
-        return
+    result_present = queue.get('results/'+jid+'.json')[0] is not None
     attempt, _ = queue.get('analysis-attempts/'+jid+'.json')
-    updated = (attempt or {}).get('updated_at', job['created_at'])
+    updated = (attempt or {}).get('updated_at', job.get('created_at'))
     state = (attempt or {}).get('state')
     code = 'analysis_'+state if state in {'blocked', 'failed'} else (
            'analysis_stalled' if attempt else 'analysis_evidence_missing')
+    if result_present:
+        code = 'delivery_pending_after_result'
+        updated = job.get('result_saved_at', updated)
     try:
         try:
             instant = datetime.fromisoformat(updated.replace('Z', '+00:00'))
@@ -209,7 +211,7 @@ def observe_pending(queue, job):
                     'cause_confirmed': False, 'last_updated_at': updated,
                     'last_stage': (attempt or {}).get('stage', 'unknown'),
                     'processed_count': (attempt or {}).get('processed_count'),
-                    'input_count': job.get('input_count'), 'result_present': False,
+                    'input_count': job.get('input_count'), 'result_present': result_present,
                     'receipts_count': len(job.get('receipts', {}))})
 
 

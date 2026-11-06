@@ -59,6 +59,97 @@ class NativeContinuity(unittest.TestCase):
         result['analyses']['held'] = copy.deepcopy(result['analyses']['one'])
         return queue
 
+    def test_missing_reason_isolated_but_missing_identity_still_blocks(self):
+        queue, smtp = self.streamlined(), native_fixtures.SMTP()
+        del queue.data['results/test.json']['classifications'][1]['reason']
+        self.run_consume(queue, smtp)
+        self.assertEqual(queue.data['jobs/test.json']['deferred_ids'], ['held'])
+        self.assertEqual(len(smtp.calls), 3)
+
+    def test_explicit_unprocessed_partition_delivers_ready_without_seen_for_unread(self):
+        queue, smtp = self.streamlined(), native_fixtures.SMTP()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        job['delivery_focus_version'] = 1
+        result['classifications'].pop()
+        result['analyses'].pop('held')
+        result['unprocessed_ids'] = ['held']
+        original = copy.deepcopy(result)
+        self.run_consume(queue, smtp)
+        state = queue.data['jobs/test.json']
+        self.assertEqual(state['unprocessed_ids'], ['held'])
+        self.assertFalse(state['analysis_complete'])
+        self.assertEqual(queue.data['review/held.json']['analysis_state'], 'unprocessed')
+        self.assertEqual(queue.data['results/test.json'], original)
+        self.assertNotIn('https://example.invalid/held', Path('seen_news.json').read_text())
+        self.assertEqual(len(smtp.calls), 3)
+
+    def test_unprocessed_partition_rejects_overlap_missing_ids_and_no_ready_candidate(self):
+        from risk_result_validator import validate
+        for mutation in ('overlap', 'missing', 'no-ready', 'legacy'):
+            queue = self.streamlined()
+            job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+            job['delivery_focus_version'] = 1
+            result['classifications'].pop()
+            result['analyses'].pop('held')
+            result['unprocessed_ids'] = ['held']
+            if mutation == 'overlap':
+                result['unprocessed_ids'].append('one')
+            elif mutation == 'missing':
+                result['unprocessed_ids'] = []
+            elif mutation == 'legacy':
+                job.pop('delivery_focus_version')
+            else:
+                result['classifications'] = []
+                result['analyses'] = {}
+                result['unprocessed_ids'].append('one')
+            with self.assertRaises(ValueError):
+                validate(result, job, job['input'], job['body_manifest'])
+
+    def test_saved_subscription_adapter_error_never_retries_identical_data(self):
+        queue = self.streamlined()
+        article = queue.data['jobs/test.json']['input']['raw_articles'][0]
+        with patch.object(self.bot, 'RISK_PROVIDER', object()), \
+                patch.object(self.bot, '_ai_post', side_effect=RuntimeError('adapter shape')) as request, \
+                patch.object(self.bot.time, 'sleep') as wait:
+            with self.assertRaises(self.bot.AnalysisIncompleteError):
+                self.bot.ai_filter_batch([article])
+        self.assertEqual(request.call_count, 1)
+        wait.assert_not_called()
+
+    def test_native_no_cards_with_unprocessed_never_sends_a_digest(self):
+        queue, smtp = self.streamlined(), native_fixtures.SMTP()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        job['delivery_focus_version'] = 1
+        result['classifications'].pop()
+        result['analyses'].pop('held')
+        result['unprocessed_ids'] = ['held']
+        with patch.object(self.bot, 'filter_articles_for_scope', return_value=[]), \
+                patch.object(self.bot, 'build_price_alert_section', self.crash_digest()):
+            with self.assertRaisesRegex(RuntimeError, '미처리 분석'):
+                self.run_consume(queue, smtp)
+        self.assertEqual(smtp.calls, [])
+        self.assertEqual(queue.data['jobs/test.json']['status'], 'pending')
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+
+    def test_native_narrative_targets_stop_before_generation_and_do_not_write(self):
+        from risk_review_context import narrative_targets, ready_result
+        queue = self.streamlined()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        job['delivery_focus_version'] = 1
+        result['event_groups'] = [{'article_ids': ['one', 'held'], 'reason': '동일 당사 장애', 'reviewed': True}]
+        job['event_grouping_version'] = 1
+        result['analyses']['held']['confidence'] = 0.8
+        before = Path('seen_news.json').read_bytes()
+        targets = narrative_targets(job, result, self.bot)
+        self.assertEqual(targets, ['one'])
+        self.assertEqual(Path('seen_news.json').read_bytes(), before)
+        checkpoint = {key: job[key] for key in ('job_id', 'input_hash', 'policy_hash', 'body_manifest_hash')}
+        checkpoint.update(covered_ids=['one'], classifications=result['classifications'][:1],
+                          analyses={'one': result['analyses']['one']})
+        partial = ready_result(job, [checkpoint])
+        self.assertEqual(partial['unprocessed_ids'], ['held'])
+        self.assertEqual(partial['analyses'], {'one': result['analyses']['one']})
+
     def test_v2_bad_fact_or_schema_holds_only_article_without_mutating_saved_answer(self):
         for field, value in [('fact_summary', '손실 987654321원 발생.'),
                              ('entity', '한국투자증권이 아닌 주체'), ('evidence', []),
@@ -599,8 +690,8 @@ class ReplayCollection(unittest.TestCase):
             return raw, sha
         queue.source = excluded_source
         with patch.object(bridge, 'prune_terminal_inputs'):
-            with self.assertRaisesRegex(RuntimeError, '재검토할 영속 보류 없음'):
-                bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
+            with patch('sys.stdout', io.StringIO()):
+                bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True, review_ids=['held'])
         self.assertNotIn('jobs/risk-production-hardening-test.json', queue.data)
 
     def test_regular_collection_leaves_backlog_for_post_delivery_without_mutation(self):
@@ -642,7 +733,8 @@ class ReplayCollection(unittest.TestCase):
                 queue.data['review/index.json'].pop('sources', None)  # Legacy catalog migration.
                 record.pop('last_source', None)
                 before = copy.deepcopy(record)
-                with self.assertRaisesRegex(RuntimeError, '재검토할 영속 보류 없음'):
+                continuity.review_catalog(queue, migrate=True)
+                with patch('sys.stdout', io.StringIO()):
                     bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
                 self.assertEqual(queue.data['review/held.json'], before)
                 self.assertEqual(queue.data['review/index.json']['pending'], [])
@@ -660,7 +752,7 @@ class ReplayCollection(unittest.TestCase):
         self.bot.crawl_naver_news.side_effect = AssertionError('new search forbidden')
         self.bot.fetch_article_body = lambda *a: '공식 발표에서 사건의 직접 행위 주체와 발생 시각을 새롭게 확인했다.'
         with patch.object(bridge, 'prune_terminal_inputs'):
-            bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
+            bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True, review_ids=['held'])
         full = hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])
         self.assertEqual([a['article_id'] for a in full['input']['items']], ['held'])
         self.assertEqual(full['input']['snapshot_mode'], 'review_replay')
@@ -676,7 +768,7 @@ class ReplayCollection(unittest.TestCase):
             self.bot.fetch_article_body = fetch
             output = io.StringIO()
             with patch.object(bridge, 'prune_terminal_inputs'), patch('sys.stdout', output):
-                bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
+                bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True, review_ids=['held'])
             self.assertEqual(json.loads(output.getvalue())['status'], 'no_change')
             self.assertEqual(queue.data, before)
 
@@ -711,6 +803,31 @@ class ReplayCollection(unittest.TestCase):
         queue.get = guarded
         self.collect(queue)
 
+    def test_cold_catalog_does_not_read_legacy_originals_during_regular_collection(self):
+        queue = self.seed()
+        queue.data['review/index.json'].pop('sources', None)
+        read = queue.get
+        def guarded(path):
+            if path == 'review/held.json':
+                self.fail('cold collection loaded legacy source')
+            return read(path)
+        queue.get = guarded
+        self.collect(queue)
+
+    def test_default_followup_only_resumes_unprocessed_and_reuses_saved_body(self):
+        queue = self.seed()
+        with patch.object(bridge, 'prune_terminal_inputs'), patch('sys.stdout', io.StringIO()):
+            bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
+        self.assertNotIn('jobs/risk-production-hardening-test.json', queue.data)
+        queue.data['review/index.json']['sources']['held']['analysis_state'] = 'unprocessed'
+        queue.data['review/held.json']['analysis_state'] = 'unprocessed'
+        self.bot.fetch_article_body = lambda *a: self.fail('first analysis refetched body')
+        with patch.object(bridge, 'prune_terminal_inputs'):
+            bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
+        job = hydrate(queue, queue.data['jobs/risk-production-hardening-test.json'])
+        self.assertEqual([a['article_id'] for a in job['input']['items']], ['held'])
+        self.assertEqual(job['body_manifest'][0], queue.data['review/held.json']['body'])
+
     def test_review_requires_completed_regular_history_ack_and_only_one_followup(self):
         for mutation in ('no-parent', 'no-ack', 'no-history', 'uncertain', 'missing-receipt',
                          'expired', 'already-collected'):
@@ -736,7 +853,7 @@ class ReplayCollection(unittest.TestCase):
                     queue.data['jobs/review-previous.json'] = previous
                     queue.data['index.json']['jobs'].append('review-previous')
                 with self.assertRaisesRegex(RuntimeError, '보류 후속'):
-                    bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
+                    bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True, review_ids=['held'])
                 self.assertNotIn('jobs/risk-production-hardening-test.json', queue.data)
 
     def test_exposure_is_captured_once_and_not_refreshed_after_filter(self):
@@ -789,7 +906,7 @@ class ReplayCollection(unittest.TestCase):
         queue = self.seed()
         queue.data['review/held.json']['body']['body'] = 'tampered'
         with self.assertRaisesRegex(RuntimeError, '영속 보류 원본'):
-            bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True)
+            bridge.collect({'job_ttl_minutes': 180}, queue, reviews_only=True, review_ids=['held'])
         self.assertNotIn('jobs/risk-production-hardening-test.json', queue.data)
 
     def test_optional_exclusion_reuse_failure_does_not_block_new_round(self):
@@ -824,6 +941,16 @@ class ExclusionReuse(unittest.TestCase):
         rows[0]['reason'] = 'local change'
         self.assertNotEqual(rows, queue.data['results/test.json']['classifications'])
         self.assertEqual(current, original)
+
+    def test_v2_exclusion_reuse_does_not_require_removed_review_metadata(self):
+        queue, current = self.pair()
+        old = queue.data['jobs/test.json']
+        old.update(review_pass_version=2, exclusion_review_version=2, action_quality_version=2)
+        row = queue.data['results/test.json']['classifications'][0]
+        row.pop('exclusion_review', None)
+        row.pop('countercheck', None)
+        rows = bridge.reusable_exclusions(queue, {'jobs': ['test']}, current)
+        self.assertEqual(rows, [row])
 
     def test_changed_context_source_body_and_age_cannot_reuse(self):
         for mutation in ('policy', 'history', 'exposure', 'title', 'body', 'age'):

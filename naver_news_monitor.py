@@ -3132,6 +3132,8 @@ def ai_filter_batch(batch: list, offset: int = 0) -> list:
                 print(f"API 응답 원문: {res.text[:300]}")
             except:
                 pass
+            if RISK_PROVIDER is not None:
+                raise AnalysisIncompleteError('고정 구독 결과 변환 오류 — 동일 결과 재시도 금지') from e
             if attempt < 2:
                 time.sleep(random.uniform(20, 45))
                 continue
@@ -6104,6 +6106,8 @@ def main():
     total_count = len(raw_articles) + len(hard_excluded_articles)
 
     if not filtered:
+        if RISK_PROVIDER is not None and RISK_PROVIDER.job.get('_unprocessed_ids'):
+            raise RuntimeError('미처리 분석이 남아 정상 0건 소비 금지')
         now = datetime.now(timezone(timedelta(hours=9)))
         # 여신잔고 위험고객 여부 확인 — 있으면 전체 발송
         # [설계 참고] 이 분기(뉴스 0건)는 위험고객 보유 급락 종목이 1개만 있어도
@@ -6527,6 +6531,12 @@ JSON만 출력:
             new_combos_this_run.add((_ent, _kw))
     # ──────────────────────────────────────────────────────────────────────────
 
+    # Final verified grades/scores must be fixed before representative selection,
+    # scope, summary and rendered counts; late score changes cannot select a loser.
+    for a in filtered:
+        a["_risk_score"] = calc_risk_score(a, exposure_data)
+    filtered = dedup_same_mail_events(filtered)
+
     print("  대응방안·고객안내 생성 중... (긴급·주의)")
 
     def generate_action_and_notice(article):
@@ -6802,12 +6812,6 @@ JSON만 출력:
 
     subject = f"❗ [리스크 탐지] {now_str_full} 기준"
 
-    # Final verified grades/scores must be fixed before representative selection,
-    # scope, summary and rendered counts; late score changes cannot select a loser.
-    for a in filtered:
-        a["_risk_score"] = calc_risk_score(a, exposure_data)
-    filtered = dedup_same_mail_events(filtered)
-
     # Sanitizers may remove an unsupported clause. Do not send an action whose
     # source-linked task/method/trigger disappeared during post-processing.
     if RISK_PROVIDER is not None and RISK_PROVIDER.job.get('action_quality_version') == 1:
@@ -6947,6 +6951,8 @@ JSON만 출력:
     # 뉴스가 0건이면 제목·요약을 상황에 맞게 바꾼다 — '리스크 탐지'라는
     # 제목에 본문이 비어 있으면 수신자가 발송 의도를 오해한다.
     if not _mail_articles:
+        if RISK_PROVIDER is not None and RISK_PROVIDER.job.get('_unprocessed_ids'):
+            raise RuntimeError('미처리 분석이 남아 뉴스 없는 소비 금지')
         subject = f"❗ [리스크 탐지] {now_str_full} 기준 — 여신잔고 위험고객 현황"
         ai_summary = "금일 리스크 뉴스 없음 — 여신잔고 위험고객 하락 현황 확인 필요"
 
