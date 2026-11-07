@@ -3,3 +3,5 @@ sim_pipeline_output.html
 broker_notices_status.json
 risk_audit_spool.jsonl
 risk_history_error.log
+risk_diagnostic_artifacts.json
+private-*.json

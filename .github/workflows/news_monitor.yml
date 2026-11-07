@@ -1,12 +1,7 @@
 name: 네이버 뉴스 리스크 모니터링
 
 on:
-  workflow_dispatch:  # cron-job.org 및 수동 실행 (cron-job.org가 매시 7분 트리거)
-
-# 동시 실행 방지 — 이전 실행 완료 후 다음 실행 시작 (race condition 방지)
-concurrency:
-  group: risk-monitor
-  cancel-in-progress: false
+  workflow_dispatch:  # 외부 수집 트리거. 실제 시각은 Actions created_at으로 관측한다.
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -14,6 +9,9 @@ env:
 jobs:
 
   crawl-broker-notices:
+    concurrency:
+      group: risk-broker-notices
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -55,10 +53,14 @@ jobs:
         continue-on-error: true  # 경쟁사 공지는 부가기능 — 실패해도 본 모니터링 무관
 
   crawl-and-notify:
+    # Same repository-wide group as consume; supplementary notices do not hold it.
+    concurrency:
+      group: risk-monitor
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    needs: crawl-broker-notices
-    if: always()   # broker 실패·스킵돼도 메인 탐지는 반드시 실행
+    # Supplementary broker notices run independently. A slow broker must not
+    # delay publication of the risk input that the subscription reviews.
     permissions:
       contents: read
 

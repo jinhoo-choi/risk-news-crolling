@@ -155,7 +155,8 @@ class Integration(unittest.TestCase):
 
     def test_retention_runs_only_after_ack_and_failure_preserves_delivery(self):
         queue, smtp = self.fixture(), SMTP()
-        def maintenance(actual_queue):
+        def maintenance(actual_queue, max_batches=None):
+            self.assertEqual(max_batches, 1)
             self.assertIs(actual_queue, queue)
             state = queue.data['jobs/test.json']
             self.assertEqual(state['status'], 'completed')

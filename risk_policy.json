@@ -27,7 +27,9 @@
   "market_news_rules": "2026-10-23 사용자 승인: 시장·시황 기사는 소비 코드에서 한 등급 강등한다(긴급→주의, 주의→참고, 참고→참고). base_grade는 기존 기준의 강등 전 등급을 제출하며 모델이 미리 낮춰 이중 강등하지 않는다. 원문으로 확인된 시장 전체 사건은 entity=\"\", entities=[]를 유지하고 기업을 임의 귀속하지 않는다. 검증된 빈 주체의 반대매매·기타리스크뿐 아니라 종목명이 추출된 기타리스크 중 시장·섹터 동반 등락·수급·지수 마감 중심의 단순 시황에도 적용한다. 기업명을 추출했다는 이유만으로 시장·시황 강등을 면제하지 않는다. 개별 기업의 부도·제재·상폐·반대매매·실적/가이던스 쇼크·화재·영업 중단 등 직접 사건과 당사 직접 사건은 제외한다. 등급별 상한 산정 전에 적용·잠금하고 표시 점수는 기존 등급 대역을 따른다. 사실 확신도·내부 원점수는 보존해 동일사건 최고점 대표 선정 기준을 유지한다. 기존 제외·본문 확보·중복·발송 게이트 및 실제 보유 여신종목 시세로 확인하는 시장급락 안전장치는 유지한다.",
   "action_quality_version": 2,
   "exclusion_review_version": 2,
-  "exclusion_review": "exclusion_review_version=2는 false/null에 간결하고 구체적인 reason만 요구한다. 모호함·본문 미확보는 비위험 확정 근거가 아니다. 제목·description에 위험 신호가 있으나 검증 본문이 없으면 null로 보존한다. 본문이 있는 기사는 실제 주체·단계·기존 제외 조건으로 한 번 판단하며 위험 키워드만으로 별도 countercheck나 긴 원문·규칙 인용을 요구하지 않는다. 점수·등급·제외 대상 자체는 변경하지 않는다. 구형 version=1 계약은 유지한다.",
+  "exclusion_review": "exclusion_review_version=2는 false/null에 간결하고 구체적인 reason을 사용한다. review_evidence_version=1인 새 회차는 짧은 decision_basis도 함께 저장하며 해시 계산은 helper가 담당한다. 모호함·본문 미확보는 비위험 확정 근거가 아니다. 제목·description에 위험 신호가 있으나 검증 본문이 없으면 null로 보존한다. 본문이 있는 기사는 실제 주체·단계·기존 제외 조건으로 한 번 판단하며 위험 키워드만으로 별도 countercheck나 긴 원문·규칙 인용을 요구하지 않는다. 점수·등급·제외 대상 자체는 변경하지 않는다. 구형 version=1 계약은 유지한다.",
   "review_pass_version": 2,
-  "delivery_focus_version": 2
+  "delivery_focus_version": 2,
+  "review_evidence_version": 1,
+  "review_evidence": "새 production 회차는 review_evidence_version=1을 고정한다. false/null은 decision_basis로 실제 본문 인용·해시, 기존 결정론적 제외 규칙, 또는 확인된 본문 미확보 상태를 남긴다. true도 기존 분석의 유효 본문 인용 또는 짧은 body decision_basis로 실제 시도를 남긴다. 미시도·미열람을 null/false/빈 true로 가장하지 않는다. risk_review_session으로 소유권·완료 체크포인트·결과를 CAS로 저장하며 소비는 ready 소유자와 입력 전수·원본 해시를 검증한다. 구형 회차는 당시 계약을 보존한다."
 }

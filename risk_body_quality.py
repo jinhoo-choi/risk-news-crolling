@@ -7,6 +7,11 @@ def body_quality(text):
     """Keep the source unchanged and return (status, diagnostic reason)."""
     if not any(c.isalnum() for c in text):
         return 'missing', 'body_text_missing'
+    # Observed publisher tip-board extraction: its prose is not the article.
+    # Match the table header and repeated statuses, not an article mentioning it.
+    if (re.search(r'^\s*단박제보(?:\s+단박제보)?\s+제목\s+작성자\s+날짜\s+결과', text)
+            and len(re.findall(r'단박접수|추가자료요청|게시완료', text)) >= 3):
+        return 'unreadable', 'body_tip_board_listing'
     # UTF-8/CP949 decoded as Latin-1, or replacement characters, are not prose.
     latin = len(re.findall(r'[\u0080-\u00ff]', text))
     hangul = len(re.findall(r'[가-힣]', text))

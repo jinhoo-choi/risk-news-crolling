@@ -232,6 +232,11 @@ def validate(result, job, inputs, manifest):
     streamlined = (job.get('review_pass_version') == 2 and job.get('continuity_version') == 1
                    and job.get('mode') == 'production')
     first_pass = streamlined and job.get('delivery_focus_version') == 2
+    if job.get('review_evidence_version') == 1:
+        if not first_pass or not isinstance(result.get('review_attempt_id'), str) or not result['review_attempt_id']:
+            raise ValueError('새 전수 판단 계약의 분석 소유자 누락')
+    elif 'review_attempt_id' in result:
+        raise ValueError('구형 회차에 새 소유권 계약 추가 금지')
     held, omissions, warnings = {}, {}, {}
     for error in VALIDATOR.iter_errors(result):
         path = list(error.absolute_path)
@@ -282,6 +287,14 @@ def validate(result, job, inputs, manifest):
         raise ValueError('본문 manifest ID 계약 위반')
     source = {item['article_id']: item for item in inputs['items']}
     bodies = {item['article_id']: item for item in manifest}
+    if job.get('review_evidence_version') == 1:
+        from risk_review_evidence import validate_decision
+        for row in result['classifications']:
+            # Missing proof is unattempted work, not an individual factual hold.
+            validate_decision(row, source[row['article_id']], bodies[row['article_id']],
+                              result['analyses'].get(row['article_id']))
+    elif any('decision_basis' in row for row in result['classifications']):
+        raise ValueError('구형 회차에 새 판단 계약 추가 금지')
     verdicts = {item['article_id']: item['relevant'] for item in result['classifications']}
     rechecks = {item['article_id']: item.get('recheck', {}) for item in result['classifications']}
     for row in result['classifications']:

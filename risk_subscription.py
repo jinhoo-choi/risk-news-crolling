@@ -163,7 +163,7 @@ def close_rejected(queue, jid):
     return True
 
 
-def prune_terminal_inputs(queue, retention_hours=12):
+def prune_terminal_inputs(queue, retention_hours=12, max_batches=None):
     """Prune terminal payloads after the recovery window; keep receipts and hashes."""
     if type(retention_hours) is not int or retention_hours < 1:
         raise ValueError('입력 보존기간은 1시간 이상 정수')
@@ -171,7 +171,7 @@ def prune_terminal_inputs(queue, retention_hours=12):
     directories = ('results', 'outbox', 'previews', 'logs')
     blobs = {directory+'/'+e['path']: e['sha'] for directory in directories
              for e in queue.list_entries(directory) if e['type'] == 'blob'}
-    pruned_rounds, pruned_files = 0, 0
+    pruned_rounds, pruned_files, batches = 0, 0, 0
     for entry in queue.list_entries('jobs'):
         name = entry['path']
         if entry['type'] != 'blob' or not name.endswith('.json') or not JOB_ID.fullmatch(name[:-5]):
@@ -217,18 +217,47 @@ def prune_terminal_inputs(queue, retention_hours=12):
         original = job.get('input') or {}
         if not deletions and not (original.get('items') or original.get('raw_articles') or job.get('body_manifest')):
             continue
-        original.pop('items', None)
-        original.pop('raw_articles', None)
-        job.pop('body_manifest', None)
-        job.update(inputs_pruned_at=now().isoformat(), input_retention_hours=retention_hours,
-                   inputs_pruned_files=len(deletions), inputs_pruned_bytes=sum(s.get('size', 0) for s in shards))
-        queue.put_many({path: job}, expected, deletions=deletions)
-        pruned_rounds += 1
-        pruned_files += len(deletions)
+        # Shards precede the four payload files. The final batch alone publishes
+        # inputs_pruned_at and removes embedded input. Each prior batch keeps a
+        # durable counter and every receipt/hash/ACK for safe interrupted resume.
+        progress = job.get('inputs_pruning', {'files': 0, 'bytes': 0})
+        sizes = {'inputs/'+jid+'/'+s['path']: s.get('size', 0) for s in shards}
+        # Keep all non-input payloads in the final transaction. The Queue adapter
+        # intentionally permits deleting them only with inputs_pruned_at.
+        chunks = [deletions[i:min(i+250, len(shards))] for i in range(0, len(shards), 250)]
+        payloads = deletions[len(shards):]
+        if chunks and len(chunks[-1])+len(payloads) <= 250:
+            chunks[-1].extend(payloads)
+        elif payloads or not chunks:
+            chunks.append(payloads)
+        for position, batch in enumerate(chunks):
+            if max_batches is not None and batches >= max_batches:
+                return {'pruned_rounds': pruned_rounds, 'pruned_payload_files': pruned_files}
+            final = position == len(chunks)-1
+            progress = {'files': progress['files']+len(batch),
+                        'bytes': progress['bytes']+sum(sizes.get(p, 0) for p in batch)}
+            if final:
+                original.pop('items', None)
+                original.pop('raw_articles', None)
+                job.pop('body_manifest', None)
+                job.pop('inputs_pruning', None)
+                job.update(inputs_pruned_at=now().isoformat(), input_retention_hours=retention_hours,
+                           inputs_pruned_files=progress['files'], inputs_pruned_bytes=progress['bytes'])
+            else:
+                job['inputs_pruning'] = progress
+            leases = {path: sha, **{p: expected[p] for p in batch}}
+            queue.put_many({path: job}, leases, deletions=batch)
+            batches += 1
+            pruned_files += len(batch)
+            observed, sha = getattr(queue, 'get_fresh', queue.get)(path)
+            if observed != job or not sha:
+                raise RuntimeError('기사 정리 진행 원장 재확인 실패')
+            if final:
+                pruned_rounds += 1
     return {'pruned_rounds': pruned_rounds, 'pruned_payload_files': pruned_files}
 
 
-def prune_articles(queue):
+def prune_articles(queue, max_batches=None):
     """Maintenance only. No expiry, collection, analysis, SMTP, seen write or ACK."""
     index, sha = queue.get('index.json')
     if not index or not isinstance(index.get('jobs'), list) or not isinstance(index.get('partial_closures', {}), dict):
@@ -245,9 +274,9 @@ def prune_articles(queue):
         elif job['status'] == 'delivery_failed':
             checked_delivery_failure(job)
         leases['jobs/'+jid+'.json'] = job_sha
-    count = prune_expired_reviews(queue, leases)
+    count = prune_expired_reviews(queue, leases, max_batches=max_batches)
     return {'status': 'pruned', 'pruned_reviews': count, 'paid_ai_calls': 0, 'smtp_calls': 0,
-            **prune_terminal_inputs(queue)}
+            **prune_terminal_inputs(queue, max_batches=max_batches)}
 
 
 def reusable_exclusions(queue, index, job):
@@ -288,6 +317,7 @@ def reusable_exclusions(queue, index, job):
 
 
 def collect(config, queue, verification=False, reviews_only=False, review_ids=None):
+    collection_started_at = now()
     checkpoint('collect')
     if reviews_only and verification:
         raise RuntimeError("보류 재수집은 운영 회차만 허용")
@@ -500,6 +530,9 @@ def collect(config, queue, verification=False, reviews_only=False, review_ids=No
            'body_manifest_hash': digest(manifest), 'policy_version': 'risk-subscription-v1',
            'policy_hash': digest(rules), 'receipts': {}, 'paid_ai_calls': 0,
            'body_quality_version': 1}
+    job['collection_timing'] = {'started_at': collection_started_at.isoformat(),
+                                'input_ready_at': created.isoformat(),
+                                'input_ready_elapsed_seconds': (created-collection_started_at).total_seconds()}
     if rules.get('exclusion_review_version') in (1, 2):
         job['exclusion_review_version'] = rules['exclusion_review_version']
     if rules.get('event_grouping_version') == 1:
@@ -517,6 +550,8 @@ def collect(config, queue, verification=False, reviews_only=False, review_ids=No
         job['review_pass_version'] = rules.get('review_pass_version', 1)
         if rules.get('delivery_focus_version') in (1, 2):
             job['delivery_focus_version'] = rules['delivery_focus_version']
+        if rules.get('review_evidence_version') == 1:
+            job['review_evidence_version'] = 1
         job['report_layout_version'] = 1
         job['smtp_evidence_version'] = 1
         current_config(queue)
@@ -562,6 +597,9 @@ def verify_job(queue, jid, self_test=False):
     if not result:
         raise RuntimeError('구독 분석 결과 없음')
     info = validate(result, job, job['input'], job['body_manifest'])
+    if job.get('review_evidence_version') == 1:
+        from risk_review_session import verify_ready
+        job['_review_leases'] = verify_ready(queue, job, result)
     if 'held_articles' in info:
         job['_validation_holds'] = info['held_articles']
         job['_validation_omissions'] = info['omitted_fields']
@@ -653,6 +691,9 @@ def consume(queue, jid, self_test=False):
                              result['analyses'][aid].get('body_status') in {'missing', 'unreadable'})}
     body_deferred_ids.update(row['article_id'] for row in result['classifications']
                              if isinstance(row.get('recheck'), dict) and row['recheck'].get('blocker') == 'body_unusable')
+    if job.get('review_evidence_version') == 1:
+        body_deferred_ids.update(row['article_id'] for row in result['classifications']
+                                 if row.get('decision_basis', {}).get('kind') == 'unavailable')
     unprocessed_ids = set(job.get('_unprocessed_ids', []))
     alert_deferred_ids = [aid for aid in deferred_ids if aid not in body_deferred_ids | unprocessed_ids]
     reasons = {row['article_id']: row.get('reason') if isinstance(row.get('reason'), str) else '분류 사유 형식 경고'
@@ -675,7 +716,13 @@ def consume(queue, jid, self_test=False):
         metadata['unprocessed_ids'] = job.get('_unprocessed_ids', [])
         metadata['validation_warnings'] = job.get('_validation_warnings', {})
     metadata['owner_excluded_ids'] = sorted(excluded_ids.intersection(verdicts))
-    if values or resolutions:
+    if job.get('_review_leases'):
+        expected.update(job['_review_leases'])
+        metadata['review_receipt'] = {'attempt_id': result['review_attempt_id'],
+                                      'result_hash': digest(result)}
+        metadata['first_pass_complete'] = not unprocessed_ids
+        metadata['first_pass_count'] = len(result['classifications'])
+    if values or resolutions or job.get('_review_leases'):
         values['jobs/'+jid+'.json'], expected['jobs/'+jid+'.json'] = metadata, sha
         queue.put_many(values, expected)
     else:
@@ -683,8 +730,12 @@ def consume(queue, jid, self_test=False):
     guard = Delivery(queue, jid, smtplib.SMTP_SSL,
                      lambda: current_config(queue, self_test))
     staged = {}
+    diagnostics = {}
     native_send, native_empty, native_save = bot.send_email, bot.send_email_no_result, bot.save_seen_urls
     def artifact(path, value):
+        if not self_test and job.get('delivery_focus_version') == 2:
+            diagnostics[path] = value
+            return
         # A zero-SMTP staging failure may have left diagnostics from that attempt.
         # Only diagnostics are replaceable; saved results/outbox remain immutable.
         previous, old_sha = queue.get(path)
@@ -819,6 +870,9 @@ def consume(queue, jid, self_test=False):
         raise
     finally:
         bot.RISK_PROVIDER = None
+        if diagnostics:
+            from risk_diagnostics import finish
+            finish(queue, jid, diagnostics)
         # SMTP guard has been restored: diagnostics must not become delivery receipts.
         primary = sys.exception()
         try:
@@ -928,6 +982,9 @@ def recover(queue, jid):
         raise RuntimeError('미발송 만료 회차는 복구 발송 금지 — 원문 이월 필요')
     job = hydrate(queue, small)
     result, _ = queue.get('results/'+jid+'.json')
+    if job.get('review_evidence_version') == 1 and job.get('review_receipt') != {
+            'attempt_id': result.get('review_attempt_id'), 'result_hash': digest(result)}:
+        raise RuntimeError('복구 분석 소유권 확정 증거 불일치')
     if digest(job['input']) != job['input_hash'] or digest(job['body_manifest']) != job['body_manifest_hash']:
         raise RuntimeError('복구 원본 입력·본문 해시 변경')
     info = validate(result, job, job['input'], job['body_manifest'])
@@ -1004,7 +1061,7 @@ def acknowledge(queue, jid):
     # Cleanup follows durable ACK and the notice that reads the review records.
     if job.get('mode') == 'production' and not job.get('self_test'):
         try:
-            retention = prune_articles(queue)
+            retention = prune_articles(queue, max_batches=1)
             print('RISK_ARTICLE_RETENTION '+json.dumps(retention))
         except Exception as error:
             record_error('cleanup', error, 'input_prune_failed')

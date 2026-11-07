@@ -186,6 +186,17 @@ class Queue:
         head = self.request('/git/ref/heads/main?read_after_write='+str(time.time_ns()))['object']['sha']
         return self.get(path, ref=head)
 
+    def get_many_fresh(self, paths):
+        """Read immutable checkpoints at one commit, under the shared pacing budget."""
+        from concurrent.futures import ThreadPoolExecutor
+        paths = list(dict.fromkeys(paths))
+        if not paths:
+            return {}
+        head = self.request('/git/ref/heads/main?read_after_write='+str(time.time_ns()))['object']['sha']
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            values = list(pool.map(lambda path: self.get(path, ref=head), paths))
+        return dict(zip(paths, values))
+
     def put(self, path, value, sha=None):
         if '..' in path or path.startswith('/'):
             raise ValueError('큐 경로 오류')
