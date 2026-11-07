@@ -42,6 +42,7 @@ def main():
             raise RuntimeError('기사 정리는 운영 main의 고정 메타데이터만 허용')
         queue = Queue()
         queue.preflight()
+        checkpoint('cleanup')
         print(json.dumps(prune_articles(queue)))
         if output := os.environ.get('GITHUB_OUTPUT'):
             with open(output, 'a') as stream:

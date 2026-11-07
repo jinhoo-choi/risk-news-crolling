@@ -360,9 +360,10 @@ class Retention(unittest.TestCase):
                 'item': item, 'body': body, 'source_hash': digest({'item': item, 'body': body})}
         queue.data['review/excluded.json'].update(status='resolved', resolution_kind='owner_excluded')
         queue.data['notifications/review-record.json'] = {'status': 'accepted'}
-        with patch('risk_continuity.now', return_value=instant):
+        with patch('risk_continuity.now', return_value=instant), patch('risk_continuity.REVIEW_PRUNE_BATCH', 2):
             self.assertEqual(bridge.prune_articles(queue)['pruned_reviews'], 3)
             self.assertEqual(bridge.prune_articles(queue)['pruned_reviews'], 0)
+        self.assertEqual(len(queue.commits), 2)
         for aid in ('expired', 'orphan'):
             self.assertNotIn('review/'+aid+'.json', queue.data)
         self.assertNotIn('body', queue.data['review/excluded.json'])

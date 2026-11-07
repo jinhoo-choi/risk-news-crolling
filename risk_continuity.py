@@ -11,6 +11,7 @@ from email.utils import parsedate_to_datetime
 from risk_queue import JOB_ID, digest, now
 
 REVIEW_INDEX = 'review/index.json'
+REVIEW_PRUNE_BATCH = 250
 
 
 def exposure_date(raw):
@@ -155,7 +156,6 @@ def review_age(item, current):
 def prune_expired_reviews(queue, leases):
     """Delete expired source copies, retaining small identities to prevent replay."""
     index, index_sha = review_index(queue)
-    values, expected, deletions = {}, {**leases, REVIEW_INDEX: index_sha}, []
     catalog = index.setdefault('sources', {})
     instant = now()
     candidates = []
@@ -170,6 +170,7 @@ def prune_expired_reviews(queue, leases):
             candidates.append(entry)
     snapshots = queue.read_review_batch(candidates)
     pending = set(index['pending'])
+    expired = []
     for entry in candidates:
         name = entry['path']
         aid, path = name[:-5], 'review/'+name
@@ -178,26 +179,35 @@ def prune_expired_reviews(queue, leases):
             raise RuntimeError('보류 정리 원본 변경')
         if record.get('data_pruned_at') or review_age(record.get('item', {}), instant) != 'expired':
             continue  # Unknown publication dates never become guessed expirations.
+        source, replacement = None, None
         if aid in catalog or aid in pending:
             source = record.get('last_source') or review_source(record['item'], record.get('body', {}))
             source = {key: source.get(key) for key in ('url', 'item_hash', 'body_hash', 'body_status')}
             source['published_at'] = record['item'].get('published_at') or record['item'].get('pubDate')
-            catalog[aid] = source
-        pending.discard(aid)
-        expected[path] = sha
         if record.get('resolution_kind') == 'owner_excluded':
             # Keep the explicit no-send decision, without its article/body copy.
-            values[path] = {k: record[k] for k in ('schema_version', 'article_id', 'status',
+            replacement = {k: record[k] for k in ('schema_version', 'article_id', 'status',
                            'resolution_kind', 'resolved_at', 'resolved_by_job', 'source_hash') if k in record}
-            values[path]['data_pruned_at'] = instant.isoformat()
-        else:
-            deletions.append(path)
-    count = len(deletions)+len(values)
-    if count:
+            replacement['data_pruned_at'] = instant.isoformat()
+        expired.append((aid, path, sha, source, replacement))
+    for offset in range(0, len(expired), REVIEW_PRUNE_BATCH):
+        values, expected, deletions = {}, {**leases, REVIEW_INDEX: index_sha}, []
+        for aid, path, sha, source, replacement in expired[offset:offset+REVIEW_PRUNE_BATCH]:
+            pending.discard(aid)
+            if source is not None:
+                catalog[aid] = source
+            expected[path] = sha
+            if replacement is None:
+                deletions.append(path)
+            else:
+                values[path] = replacement
         index['pending'] = [aid for aid in index['pending'] if aid in pending]
         values[REVIEW_INDEX] = index
         queue.put_many(values, expected, deletions=deletions)
-    return count
+        observed, index_sha = getattr(queue, 'get_fresh', queue.get)(REVIEW_INDEX)
+        if not index_sha or observed != index:
+            raise RuntimeError('보류 정리 색인 재확인 실패')
+    return len(expired)
 
 
 def prepare_reviews(queue, job, verdicts, reason='analysis_pending', reasons=None):
