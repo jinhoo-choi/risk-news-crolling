@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import math
+from pathlib import Path
 
 from risk_queue import JOB_ID, digest
 from risk_result_validator import utc_time
@@ -22,6 +23,39 @@ STATES = frozenset({'pending', 'sending', 'uncertain', 'delivery_complete',
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True,
                       separators=(',', ':'), allow_nan=False)
+
+
+def instruction_context():
+    """Select current subscription instructions without changing stored contracts.
+
+    Run from the pinned checkout. Whole prompt hashes are verified even though
+    legacy API text is omitted from the model's context. No queue/network access.
+    """
+    from risk_subscription import policy
+    rules = policy()
+    if any(rules.get(k) != 2 for k in ('delivery_focus_version', 'review_pass_version',
+                                      'action_quality_version', 'exclusion_review_version')):
+        raise ValueError('현재 구독 v2 지침 추출 전용 — 구형 회차는 고정 계약 사용')
+    selected, sources = {}, {}
+    for key, name, start, end in (
+            ('filter', 'filter_prompt.txt', '[구독 모드 적용 범위]', '[기존 API 전용 중복 기사 처리]'),
+            ('action', 'action_prompt.txt', '[구독 action_quality_version=2]', '[아래는 기존 API 및 action_quality_version=1 전용]'),
+            ('operations', 'RUNBOOK.md', '<!-- subscription-operations:start -->', '<!-- subscription-operations:end -->')):
+        raw = Path(name).read_bytes()
+        if key in ('filter', 'action') and hashlib.sha256(raw).hexdigest() != rules[key+'_rules']['sha256']:
+            raise ValueError('지침 추출 중 원본 변경: '+name)
+        text = raw.decode('utf-8')
+        if text.count(start) != 1 or text.count(end) != 1 or text.index(start) >= text.index(end):
+            raise ValueError('적용 지침 경계 오류: '+name)
+        selected[key] = text[text.index(start)+len(start):text.index(end)].strip()
+        if not selected[key]:
+            raise ValueError('빈 적용 지침: '+name)
+        sources[name] = {'sha256': hashlib.sha256(raw).hexdigest(),
+                         'source_chars': len(text), 'selected_chars': len(selected[key])}
+    schema = Path('risk_result_schema.json').read_bytes()
+    sources['risk_result_schema.json'] = {'sha256': hashlib.sha256(schema).hexdigest()}
+    return dict(selected, policy=rules, policy_hash=digest(rules),
+                schema=json.loads(schema), sources=sources, scope='new_production_v2_only')
 
 
 def status_view(job, blob_sha):
@@ -280,28 +314,33 @@ def usage_observation(*, stage, engine, measurement_source, usage=None,
 if __name__ == '__main__':
     # Only an already downloaded local snapshot; no implicit live credentials.
     import argparse
-    from pathlib import Path
     from risk_analysis_guard import strict_json
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('snapshot', help='private JSON: index, jobs, observed_at')
-    parser.add_argument('--analysis', action='store_true', help='snapshot contains job and checkpoints; prepare bounded source pages')
+    parser.add_argument('snapshot', nargs='?', help='private JSON: index, jobs, observed_at')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--analysis', action='store_true', help='snapshot contains job and checkpoints; prepare bounded source pages')
+    mode.add_argument('--instructions', action='store_true', help='select current instructions from this pinned checkout; no snapshot')
     parser.add_argument('--output', required=True, help='new private local status artifact (not an operational result)')
     args = parser.parse_args()
-    snapshot = strict_json(Path(args.snapshot).read_text())
+    if args.instructions and args.snapshot or not args.instructions and not args.snapshot:
+        parser.error('--instructions takes no snapshot; other modes require one')
+    snapshot = {} if args.instructions else strict_json(Path(args.snapshot).read_text())
     class LocalSnapshot:
         def get(self, path):
             if path == 'index.json':
                 return snapshot['index'], snapshot.get('index_sha') or digest(snapshot['index'])
             record = snapshot['jobs'].get(path.removeprefix('jobs/').removesuffix('.json'))
             return (record['value'], record['blob_sha']) if record else (None, None)
-    view = (analysis_plan(snapshot['job'], snapshot.get('checkpoints', [])) if args.analysis
+    view = (instruction_context() if args.instructions else
+            analysis_plan(snapshot['job'], snapshot.get('checkpoints', [])) if args.analysis
             else queue_status(LocalSnapshot(), snapshot['observed_at']))
     content = canonical(view)
     import os
     with Path(args.output).open('x', encoding='utf-8') as file:
         os.chmod(file.name, 0o600)
         file.write(content)
-    index = ({'job_id': view['job_id'], 'completed_ids': len(view['classifications']),
+    index = ({'scope': view['scope'], 'policy_hash': view['policy_hash'], 'sources': view['sources']} if args.instructions else
+             {'job_id': view['job_id'], 'completed_ids': len(view['classifications']),
               'pending_ids': len(view['pending_ids']), 'missing_body_ids': len(view['missing_body_ids']),
               'pages': len(view['pages']), 'scope': view['scope']} if args.analysis else status_index(view))
     index['artifact'] = str(Path(args.output).resolve())
