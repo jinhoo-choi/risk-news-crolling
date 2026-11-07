@@ -26,7 +26,7 @@ from risk_delivery import (Delivery, address_key, report_headers, rejection_evid
                            retry_targets, checked_delivery_failure)
 from risk_partial_close import checked_closure, source_version
 from risk_provider import Provider
-from risk_outbox import make_packet, validate_packet, store_packet, legacy_packet
+from risk_outbox import make_packet, validate_packet, store_packet, legacy_packet, assert_report_content
 from risk_shards import split_job, hydrate, chunks
 from risk_audit import checkpoint, record_error, record_errors, run_audited, observe_pending, persist_unhandled
 from risk_continuity import (review_catalog, review_source, freeze_exposure, read_exposure, pending_reviews,
@@ -753,7 +753,7 @@ def consume(queue, jid, self_test=False):
             label += ' · 최초 분석 미처리 '+str(len(unprocessed_ids))+'건'
         if alert_overdue_count:
             label += ' · 24시간 이상 미확인 '+str(alert_overdue_count)+'건'
-        banner = '<div style="padding:12px;color:#92400e;background:#fffbeb">'+html.escape(label)+' — 개별 확인 보류는 후속 처리하며, 같은 근거의 반복 분석은 하지 않습니다.</div>'
+        banner = '<div data-risk-owner-status="review-hold" style="padding:12px;color:#92400e;background:#fffbeb">'+html.escape(label)+' — 개별 확인 보류는 후속 처리하며, 같은 근거의 반복 분석은 하지 않습니다.</div>'
         document = re.sub(r'(<body\b[^>]*>)', lambda m: m[1]+banner, document, count=1)
         document = document.replace('금일 리스크 뉴스 없음', '검증 완료 발송 후보 없음')
         if empty:
@@ -764,7 +764,7 @@ def consume(queue, jid, self_test=False):
             subject += ' · '+label
         return subject, document
     def send(subject, html, self_only=False):
-        if job.get('delivery_focus_version') == 2:
+        if self_only and job.get('delivery_focus_version') == 2:
             subject, html = review_notice(subject, html)
         if deferred_ids:
             html = html.replace("금일 리스크 뉴스 없음 — ", "")
@@ -918,6 +918,7 @@ def finish_packet(queue, job, result, packet, bot, guard, native_send):
     current, _ = guard.read()
     if (set(current.get('receipts', {})) != set(packet['expected_receipts'])
             or any(v != 'accepted' for v in current.get('receipts', {}).values())):
+        assert_report_content(packet)
         if grouped or modern_owner:
             message = bot._build_msg(packet['subject'], packet['html'], targets[0])
             if grouped:
