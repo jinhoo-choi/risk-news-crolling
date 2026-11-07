@@ -276,6 +276,12 @@ def delivery_view(job, result, excluded_ids=()):
     if 'unprocessed_ids' in answers:
         answers['unprocessed_ids'] = []
     answers['classifications'] = [r for r in answers['classifications'] if r['article_id'] not in deferred]
+    if job.get('delivery_focus_version') == 2:
+        for row in answers['classifications']:
+            # Reason prose is diagnostic, never an alternative risk verdict.
+            if not isinstance(row.get('reason'), str) or not row['reason'].strip():
+                row['reason'] = '분류 사유 형식 경고; 판정·원문 근거 유지'
+            row['reason'] = row['reason'][:160]
     answers['analyses'] = {aid: a for aid, a in answers['analyses'].items() if aid not in deferred}
     answers['event_groups'] = [dict(g, article_ids=[aid for aid in g['article_ids'] if aid not in deferred])
                               for g in answers.get('event_groups', [])

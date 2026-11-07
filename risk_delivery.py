@@ -329,7 +329,7 @@ class Delivery:
                         raise RuntimeError('시작·접수·미확인 수신자 재전송 금지')
                     job.setdefault('receipts', {})[key] = 'sending'
                     job['attempted_count'] = job.get('attempted_count', 0)+1
-                checkpoint('smtp_data')  # Diagnostics may fail only BEFORE reservation/DATA.
+                checkpoint('smtp_data')  # Diagnostic only; durable reservation below still gates DATA.
                 guard.change(reserve)
                 try:
                     guard.smtp_calls += 1

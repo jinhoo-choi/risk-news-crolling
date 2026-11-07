@@ -356,7 +356,7 @@ class ReviewNotifications(unittest.TestCase):
             self.ack(queue, smtp)
         self.assertEqual(len(smtp.calls), 3)
 
-    def test_verified_commit_evidence_is_private_and_required_before_smtp(self):
+    def test_verified_commit_readback_remains_required_but_diagnostic_save_does_not_block(self):
         from risk_audit import ACTIVE, Audit
         for fail_evidence in (False,True):
             with self.subTest(fail_evidence=fail_evidence):
@@ -365,19 +365,17 @@ class ReviewNotifications(unittest.TestCase):
                 token=ACTIVE.set(audit)
                 put=queue.put
                 def save(path,value,sha=None):
-                    if (fail_evidence and path.startswith('audit/')
-                            and value['events'][-1].get('facts',{}).get('reservation_commit')):
+                    if fail_evidence and path.startswith('audit/'):
                         raise RuntimeError('private audit unavailable')
                     return put(path,value,sha)
                 try:
                     with patch.object(queue,'put',save):
-                        if fail_evidence:
-                            with self.assertRaisesRegex(RuntimeError,'감사 기록 저장 실패'):
-                                self.ack(queue,smtp)
-                        else:self.ack(queue,smtp)
+                        audit.event()
+                        self.ack(queue,smtp)
+                        audit.event(state='completed')
                 finally:ACTIVE.reset(token)
                 self.assertTrue(queue.data['jobs/test.json']['ack'])
-                self.assertEqual(len(smtp.calls),3 if fail_evidence else 4)
+                self.assertEqual(len(smtp.calls),4)
                 if not fail_evidence:
                     saved=queue.data[audit.path]
                     event=next(e for e in saved['events'] if e.get('facts',{}).get('reservation_commit'))

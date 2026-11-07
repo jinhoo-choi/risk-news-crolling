@@ -66,6 +66,84 @@ class NativeContinuity(unittest.TestCase):
         self.assertEqual(queue.data['jobs/test.json']['deferred_ids'], ['held'])
         self.assertEqual(len(smtp.calls), 3)
 
+    def test_first_pass_missing_candidate_analysis_isolated_and_disclosed(self):
+        queue, smtp = self.streamlined(), native_fixtures.SMTP()
+        queue.data['jobs/test.json']['delivery_focus_version'] = 2
+        queue.data['results/test.json']['analyses'].pop('held')
+        self.run_consume(queue, smtp)
+        state = queue.data['jobs/test.json']
+        self.assertEqual(state['deferred_ids'], ['held'])
+        self.assertEqual(state['unprocessed_ids'], [])
+        self.assertFalse(state['analysis_complete'])
+        self.assertEqual(len(smtp.calls), 3)
+        self.assertIn('확인 보류 1건', queue.data['previews/test.json']['html'])
+        self.assertNotIn('https://example.invalid/held', Path('seen_news.json').read_text())
+
+    def test_first_pass_reason_and_summary_length_warn_without_dropping_valid_article(self):
+        for reason in (None, 42, '긴 사유'*1000):
+            with self.subTest(reason_type=type(reason).__name__):
+                Path('seen_news.json').write_bytes(self.before)
+                queue, smtp = self.streamlined(), native_fixtures.SMTP()
+                queue.data['jobs/test.json']['delivery_focus_version'] = 2
+                result = queue.data['results/test.json']
+                if reason is None:
+                    result['classifications'][1].pop('reason')
+                else:
+                    result['classifications'][1]['reason'] = reason
+                result['analyses']['held']['fact_summary'] *= 30
+                self.run_consume(queue, smtp)
+                state = queue.data['jobs/test.json']
+                self.assertEqual(state['deferred_ids'], [])
+                self.assertIn('held', state['validation_warnings'])
+                self.assertEqual(len(smtp.calls), 3)
+
+    def test_first_pass_never_consumes_unread_and_does_not_relabel_it_null(self):
+        from risk_review_context import ready_result
+        queue, smtp = self.streamlined(), native_fixtures.SMTP()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        job['delivery_focus_version'] = 2
+        result['classifications'].pop()
+        result['analyses'].pop('held')
+        result['unprocessed_ids'] = ['held']
+        with self.assertRaisesRegex(ValueError, '미처리 분석'):
+            self.run_consume(queue, smtp)
+        checkpoint = {k: job[k] for k in ('job_id', 'input_hash', 'policy_hash', 'body_manifest_hash')}
+        checkpoint.update(covered_ids=['one'], classifications=result['classifications'], analyses=result['analyses'])
+        with self.assertRaisesRegex(ValueError, '미처리 분석'):
+            ready_result(job, [checkpoint])
+        self.assertEqual(smtp.calls, [])
+        self.assertEqual(queue.data['jobs/test.json']['status'], 'pending')
+        self.assertNotIn('review/held.json', queue.data)
+
+    def test_first_pass_191_inputs_resume_only_152_unread_then_all_ids_accounted(self):
+        from risk_review_context import analysis_plan, ready_result
+        queue = self.streamlined()
+        job, original = queue.data['jobs/test.json'], queue.data['results/test.json']
+        job['delivery_focus_version'] = 2
+        ids = ['article'+str(i) for i in range(191)]
+        job['input']['items'] = [dict(job['input']['items'][0], article_id=aid) for aid in ids]
+        job['body_manifest'] = [dict(job['body_manifest'][0], article_id=aid) for aid in ids]
+        job['input_hash'], job['body_manifest_hash'] = digest(job['input']), digest(job['body_manifest'])
+        def chunk(selected):
+            c = {k: job[k] for k in ('job_id', 'input_hash', 'policy_hash', 'body_manifest_hash')}
+            c.update(covered_ids=selected,
+                     classifications=[{'article_id': aid, 'relevant': True, 'reason': '원문 사건 확인'} for aid in selected],
+                     analyses={aid: copy.deepcopy(original['analyses']['one']) for aid in selected})
+            return c
+        first, rest = chunk(ids[:39]), chunk(ids[39:])
+        before = copy.deepcopy(first)
+        plan = analysis_plan(job, [first])
+        self.assertEqual(plan['pending_ids'], ids[39:])
+        self.assertEqual({page['article_id'] for page in plan['pages']}, set(ids[39:]))
+        # An attempted individual failure is held; it does not stop the rest.
+        rest['classifications'][0].update(relevant=None, reason='분석 실패: 해당 기사 근거 판독 불가')
+        rest['analyses'].pop(ids[39])
+        result = ready_result(job, [first, rest])
+        self.assertEqual(len(result['classifications']), 191)
+        self.assertEqual(len(result['analyses']), 190)
+        self.assertEqual(result.get('unprocessed_ids', []), [])
+        self.assertEqual(first, before)
+
     def test_explicit_unprocessed_partition_delivers_ready_without_seen_for_unread(self):
         queue, smtp = self.streamlined(), native_fixtures.SMTP()
         job, result = queue.data['jobs/test.json'], queue.data['results/test.json']

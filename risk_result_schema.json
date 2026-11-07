@@ -100,7 +100,7 @@
         "minLength": 1,
         "maxLength": 100
       },
-      "description": "delivery_focus_version=1 운영 회차의 명시적 최초 분석 미처리 ID. classifications와 겹치지 않고 두 집합 합이 원본 전체 ID여야 한다. null/false 판정이 아니다."
+      "description": "과거 delivery_focus_version=1 부분 종결 복구 호환용. 새 version=2 결과는 빈 배열/생략만 허용하며 classifications가 입력 전수와 일치해야 한다. 미열람을 null/false로 대체하지 않는다."
     }
   },
   "$defs": {
@@ -213,7 +213,7 @@
           }
         }
       },
-      "description": "v2는 article_id/relevant/reason만 필요하다. exclusion_review/recheck는 구형 v1 결과 호환용이며 새로 작성하지 않는다."
+      "description": "article_id/relevant는 필수 판정 식별자다. reason은 간결한 진단 사유이며 새 delivery_focus_version=2에서 사유 누락·길이·형식 오류는 경고로 처리한다. exclusion_review/recheck는 구형 결과 호환용이며 새로 작성하지 않는다."
     },
     "evidence": {
       "type": "object",
