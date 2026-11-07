@@ -135,8 +135,12 @@ def status_index(view):
             'full_metadata_required_for_decisions': True, 'jobs': jobs}
 
 
-def analysis_plan(job, checkpoints=(), max_bytes=12000):
-    """Local resume plan with lossless bounded pages; never writes a result or sends."""
+def analysis_plan(job, checkpoints=(), max_bytes=12000, body_ids=None):
+    """Resume with a first-pass index and selected lossless source pages.
+
+    None retains the full-source view for existing callers; [] exports no body.
+    Selecting/omitting a body never classifies it or removes a pending ID.
+    """
     if type(max_bytes) is not int or max_bytes < 1000:
         raise ValueError('분석 출력 한도 오류')
     if digest(job['input']) != job['input_hash'] or digest(job['body_manifest']) != job['body_manifest_hash']:
@@ -169,13 +173,25 @@ def analysis_plan(job, checkpoints=(), max_bytes=12000):
                 missing_body_ids.append(aid)
                 done.add(aid)
     pending = [aid for aid in items if aid not in done]
-    pages = []
+    selected = set(pending) if body_ids is None else set(body_ids)
+    if not selected <= items.keys():
+        raise ValueError('본문 요청의 입력 ID 불일치')
+    pages, triage_pages, triage = [], [], []
     for aid in pending:
         article, body = items[aid], bodies[aid]
         text = body['body']
         base = {'article_id': aid, 'title': article['title'], 'description': article['description'],
                 'url': article['url'], 'published_at': article.get('published_at') or article.get('pubDate'),
                 'body_status': body['body_status'], 'body_sha256': hashlib.sha256(text.encode()).hexdigest()}
+        # Compact first pass: no body text, implied verdict, or hidden completion.
+        if len(canonical([base]).encode()) > max_bytes:
+            raise ValueError('기사 메타데이터가 출력 한도 초과; 한도를 늘려 해당 기사만 다시 읽기')
+        if len(canonical(triage+[base]).encode()) > max_bytes:
+            triage_pages.append(triage)
+            triage = []
+        triage.append(base)
+        if aid not in selected:
+            continue
         offset = 0
         while True:
             def page(end):
@@ -195,16 +211,18 @@ def analysis_plan(job, checkpoints=(), max_bytes=12000):
             if low == len(text):
                 break
             offset = low
+    if triage:
+        triage_pages.append(triage)
     return {'job_id': job['job_id'], 'input_hash': job['input_hash'], 'policy_hash': job['policy_hash'],
             'classifications': rows, 'analyses': analyses, 'event_groups': groups, 'pending_ids': pending,
-            'missing_body_ids': missing_body_ids, 'pages': pages,
+            'missing_body_ids': missing_body_ids, 'triage_pages': triage_pages, 'pages': pages,
             'scope': 'local_resume_only_final_validation_required'}
 
 
 def ready_result(job, checkpoints, model_used='unconfirmed'):
     """New rounds require a first pass of every input; holds need not be resolved."""
     from risk_result_validator import validate
-    plan = analysis_plan(job, checkpoints)
+    plan = analysis_plan(job, checkpoints, body_ids=[])
     if job.get('delivery_focus_version') == 2 and plan['pending_ids']:
         raise ValueError('미처리 분석을 계속해야 함 — '+str(len(plan['pending_ids']))+'건')
     result = {key: job[key] for key in ('job_id', 'input_hash', 'policy_hash', 'body_manifest_hash')}
@@ -318,12 +336,15 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('snapshot', nargs='?', help='private JSON: index, jobs, observed_at')
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument('--analysis', action='store_true', help='snapshot contains job and checkpoints; prepare bounded source pages')
+    mode.add_argument('--analysis', action='store_true', help='first-pass index; body pages only for --body-id candidates')
     mode.add_argument('--instructions', action='store_true', help='select current instructions from this pinned checkout; no snapshot')
+    parser.add_argument('--body-id', action='append', default=[], help='with --analysis: pending candidate body to read; repeat for a batch')
     parser.add_argument('--output', required=True, help='new private local status artifact (not an operational result)')
     args = parser.parse_args()
     if args.instructions and args.snapshot or not args.instructions and not args.snapshot:
         parser.error('--instructions takes no snapshot; other modes require one')
+    if args.body_id and not args.analysis:
+        parser.error('--body-id requires --analysis')
     snapshot = {} if args.instructions else strict_json(Path(args.snapshot).read_text())
     class LocalSnapshot:
         def get(self, path):
@@ -332,7 +353,7 @@ if __name__ == '__main__':
             record = snapshot['jobs'].get(path.removeprefix('jobs/').removesuffix('.json'))
             return (record['value'], record['blob_sha']) if record else (None, None)
     view = (instruction_context() if args.instructions else
-            analysis_plan(snapshot['job'], snapshot.get('checkpoints', [])) if args.analysis
+            analysis_plan(snapshot['job'], snapshot.get('checkpoints', []), body_ids=args.body_id) if args.analysis
             else queue_status(LocalSnapshot(), snapshot['observed_at']))
     content = canonical(view)
     import os
@@ -342,6 +363,7 @@ if __name__ == '__main__':
     index = ({'scope': view['scope'], 'policy_hash': view['policy_hash'], 'sources': view['sources']} if args.instructions else
              {'job_id': view['job_id'], 'completed_ids': len(view['classifications']),
               'pending_ids': len(view['pending_ids']), 'missing_body_ids': len(view['missing_body_ids']),
+              'triage_pages': len(view['triage_pages']),
               'pages': len(view['pages']), 'scope': view['scope']} if args.analysis else status_index(view))
     index['artifact'] = str(Path(args.output).resolve())
     index['artifact_sha256'] = hashlib.sha256(content.encode()).hexdigest()

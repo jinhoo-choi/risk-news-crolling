@@ -153,6 +153,31 @@ class Integration(unittest.TestCase):
         self.assertTrue(queue.data['jobs/test.json']['ack'])
         self.assertEqual(queue.data['jobs/test.json']['paid_ai_calls'], 0)
 
+    def test_retention_runs_only_after_ack_and_failure_preserves_delivery(self):
+        queue, smtp = self.fixture(), SMTP()
+        Path('risk_subscription_config.json').write_text('{"input_retention_days": 9}')
+        def maintenance(*args):
+            self.assertEqual(args[1], 9)
+            state = queue.data['jobs/test.json']
+            self.assertEqual(state['status'], 'completed')
+            self.assertTrue(state['history_saved'] and state['ack'])
+            self.assertTrue(all(v == 'accepted' for v in state['receipts'].values()))
+            raise RuntimeError('retention unavailable')
+        with patch('risk_subscription.prune_terminal_inputs', side_effect=maintenance) as prune:
+            self.run_consume(queue, smtp)
+            prune.assert_not_called()
+            with self.assertRaises(RuntimeError):
+                acknowledge(queue, 'test')
+            prune.assert_not_called()
+            queue.remote_seen = Path('seen_news.json').read_bytes()
+            before = copy.deepcopy(queue.data['jobs/test.json']['receipts'])
+            sent = len(smtp.calls)
+            acknowledge(queue, 'test')
+            prune.assert_called_once()
+        self.assertEqual(queue.data['jobs/test.json']['status'], 'completed')
+        self.assertEqual(queue.data['jobs/test.json']['receipts'], before)
+        self.assertEqual(len(smtp.calls), sent)
+
     def test_explicit_data_rejection_has_recoverable_evidence(self):
         queue, smtp, to, cc = self.executive_fixture()
         smtp.data.return_value = (451, b'temporary refusal')
