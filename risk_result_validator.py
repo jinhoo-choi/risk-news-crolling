@@ -226,7 +226,7 @@ def _validate_analysis(analysis, article, body, job):
         raise ValueError('고객 안내 줄 수 초과')
 
 
-def validate(result, job, inputs, manifest):
+def _validate(result, job, inputs, manifest, checkpoint_only=False):
     # 비유한 수와 bool을 숫자로 받지 않는다. bool은 JSON Schema도 거부한다.
     json.dumps(result, allow_nan=False)
     streamlined = (job.get('review_pass_version') == 2 and job.get('continuity_version') == 1
@@ -274,9 +274,9 @@ def validate(result, job, inputs, manifest):
     if len(ids) != len(set(ids)):
         raise ValueError('입력 ID 중복')
     unprocessed = set(result.get('unprocessed_ids', []))
-    if unprocessed and first_pass:
+    if unprocessed and first_pass and not checkpoint_only:
         raise ValueError('미처리 분석을 계속해야 함 — 입력 전체 1차 처리 전 소비 금지')
-    if unprocessed and (not streamlined or job.get('delivery_focus_version') != 1):
+    if unprocessed and not checkpoint_only and (not streamlined or job.get('delivery_focus_version') != 1):
         raise ValueError('미처리 분리 미승인 회차')
     classified = [item['article_id'] for item in result['classifications']]
     if (len(classified) != len(set(classified)) or set(classified) & unprocessed
@@ -375,11 +375,11 @@ def validate(result, job, inputs, manifest):
                 raise
             for aid in active:
                 held[aid] = str(error)
-    if unprocessed and not (true_ids-set(held)):
+    if unprocessed and not checkpoint_only and not (true_ids-set(held)):
         raise ValueError('미처리만 있는 회차를 정상 0건으로 소비 금지')
     summary = {'classifications': len(classified), 'analyses': len(true_ids),
                'needs_review': len({aid for aid, value in verdicts.items() if value is None} | set(held) | unprocessed),
-               'consume_ready': not unprocessed and not held and not any(value is None for value in verdicts.values())}
+               'consume_ready': not checkpoint_only and not unprocessed and not held and not any(value is None for value in verdicts.values())}
     if streamlined:
         summary.update(held_articles=held, omitted_fields=omissions)
         if job.get('delivery_focus_version') in (1, 2):
@@ -387,6 +387,18 @@ def validate(result, job, inputs, manifest):
         if first_pass:
             summary['warnings'] = warnings
     return summary
+
+
+def validate(result, job, inputs, manifest):
+    """Delivery validation always requires the complete frozen contract."""
+    return _validate(result, job, inputs, manifest)
+
+
+def validate_checkpoint(result, job, inputs, manifest):
+    """Validate immutable progress before saving; never authorizes consumption."""
+    if job.get('review_evidence_version') != 1:
+        raise ValueError('새 소유권 계약의 체크포인트 검증 전용')
+    return _validate(result, job, inputs, manifest, checkpoint_only=True)
 
 
 def assert_consume_ready(result, job, inputs, manifest, config, current):
