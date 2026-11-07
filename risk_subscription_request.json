@@ -1,7 +1,7 @@
 {
-  "operation": "consume",
-  "job_id": "risk-production-42301283876",
+  "operation": "prune-articles",
+  "job_id": "article-retention",
   "self_test": false,
   "dry_run": false,
-  "request_id": "resume-42301283876-436a031b-bc5b-472b-9302-107925e566a3"
+  "request_id": "prune-articles-20261107-1794018510592"
 }
