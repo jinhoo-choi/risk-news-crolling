@@ -326,7 +326,7 @@ awk -F',' 'NR>1 && $20!="" && $20+0<140' exposure_data.csv | wc -l   # 영
 
 ### 입력 전체 1차 처리
 - 미시도는 아직 판단하지 않은 기사, 보류는 실제 시도 후 본문·근거 부족/분석 실패인 기사다. 새 입력 전체를 한 번씩 판단하되 보류 해소는 기다리지 않는다. 미열람·시간 부족을 null/false로 가장하지 않는다. 개별 실패는 짧은 사유와 null로 기록하고 다음 기사로 진행한다. 명확한 비대상·URL 중복은 기존 기준으로 먼저 거른다.
-- 원본은 비공개 로컬에서 해시 검사한다. analysis_plan(job, checkpoints) 또는 `python risk_review_context.py private-snapshot.json --analysis --output private-plan.json`으로 완료 ID를 재사용하고 미시도 본문만 나눠 읽는다. offset/end/complete로 기사 전체를 확인한다. 제한보다 출력이 크면 max_bytes를 줄여 잘린 구간만 다시 읽는다.
+- 원본은 비공개 로컬에서 해시 검사한다. `python risk_review_context.py private-snapshot.json --analysis --output private-plan.json`은 완료 ID를 재사용하고 미시도 제목·설명을 triage_pages에 나눠 담는다. 명확한 비대상은 기존 제외 기준으로 판정해 체크포인트에 저장한다. 모호하거나 위험 후보인 기사는 같은 명령에 `--body-id ID`를 반복 지정해 해당 본문만 읽는다. 함수 호출은 `analysis_plan(job, checkpoints, body_ids=[])`로 시작한다. 색인 확인·본문 선택만으로 pending_ids가 완료되지는 않는다. 선택한 본문은 offset/end/complete로 확인하고 출력이 잘리면 해당 구간만 다시 읽는다.
 - analysis-checkpoints/<job_id>/<attempt_id>-<번호>.json은 job/input/policy/body_manifest 해시, covered_ids, classifications/analyses와 필요한 event_groups를 담는다. 묶음 경계에서 최신 attempt 소유권·SHA를 확인하고 다음 번호로 저장한다. 성공 확인된 ID 합집합으로 processed_count를 계산한다. 쓰기 결과가 불명확하면 원격 내용부터 확인하며 다른 원본을 덮어쓰지 않는다. 구형 해시 누락은 보존 원본으로 확인하고 임의 보충하지 않는다.
 - 기존 exclusion_reuse는 원문·정책·잔고·이력·날짜가 같은 검증된 false만 재사용한다. 유효 본문 미확보는 상태에 근거한 보류이며 반복 대체 검색하지 않는다. 같은 자료의 추가 재심사·장문 근거 양식을 만들지 않는다. 상세 대응·고객 문구는 고정 CSV/seen을 둔 로컬 narrative_targets(job, result, bot)가 고른 대표에만 작성한다. 비대표는 사실·귀속·근거를 유지하고 선택 문구는 빈 값/null로 둔다. 계획 실패 시 선택 문구 없이 진행한다.
 
@@ -337,6 +337,7 @@ awk -F',' 'NR>1 && $20!="" && $20+0<140' exposure_data.csv | wc -l   # 영
 - 공개 risk_subscription_request.json에는 기존 operation=consume/job_id/self_test=false/dry_run=false/고유 request_id만 최신 SHA로 기록한다. 직접 SMTP를 따로 실행하지 않는다. 요청 뒤 정상 진행은 기다려 확인하고 짧은 대기만으로 실패·재요청하지 않는다. accepted 재발송, sending/uncertain 초기화, 종결 회차 재소비는 금지한다. 이력/ACK 실패는 메일 재전송 없이 기존 recover로 정합화한다. 명시적 SMTP 거부는 기존 retry_at·시도 상한·고정본·TTL·수신자 검증을 따르며 새 재시도 규칙을 만들지 않는다.
 
 ### 보류 후속·완료 보고
+- 과거 입력 보존기간 정리는 운영 발송·이력·ACK 완료 후 실행한다. 정규 수집 전에 이 작업을 수행하지 않으며 정리 실패는 진단 경고로 남긴다. 보존기간·미종결 회차·영수증·보류 원본 보호 기준은 그대로 유지한다.
 - 정규 수집은 작은 sources 색인만 읽고 오래된 보류 원문 전체를 읽지 않는다. 색인 없는 구형 보류는 정상 회차 후 미종결 작업이 없을 때 index-reviews로만 이전한다. 같은 본문·근거는 자동 재분석하지 않는다. 새 회차·시간 경과·메뉴/제목만의 변경은 새 근거가 아니다.
 - 접근 복구·새 유효 본문/공식 근거가 확인된 보류만 collect-review --article-id ID로 지정한다. 같거나 확보 실패면 no_change다. 기본 collect-review의 unprocessed는 과거 부분 종결 누락 복구 전용이다. 원래 발행시각 기준 12시간 초과·미래·날짜/시간대 미확인은 활성 대상에서 제외하되 원본·감사는 보존한다. 정규 SMTP 전원 accepted·seen/ACK 후 기존 잠금과 1회 후속 제한을 지킨다. 해결 판정은 검증·발송·ACK 후에만 닫는다.
 - completed는 발송·이력·ACK 완료다. 전체 1차 처리 여부/미시도/후보/보류를 별도 보고하고 본문 미확보를 정상 0건으로 쓰지 않는다. 본문 미확보만의 보류는 별도 오류메일·보류 경고에서 제외한다. 실제 받은편지함 수신·화면 검수는 접수와 구분한다.

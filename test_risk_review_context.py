@@ -189,6 +189,48 @@ class ContextTests(unittest.TestCase):
 
 
 class AnalysisPlanTests(unittest.TestCase):
+    def test_triage_does_not_read_or_classify_unattempted_sources(self):
+        from risk_review_context import ready_result
+        job, checkpoint = self.fixture()
+        original = copy.deepcopy(job)
+        plan = analysis_plan(job, [checkpoint], body_ids=[])
+        self.assertEqual(plan['pages'], [])
+        cards = [a for page in plan['triage_pages'] for a in page]
+        self.assertEqual([a['article_id'] for a in cards], ['unread'])
+        self.assertTrue(all('body' not in a and 'relevant' not in a for a in cards))
+        self.assertEqual(plan['pending_ids'], ['unread'])
+        self.assertEqual(plan['missing_body_ids'], ['missing'])
+        self.assertEqual(job, original)
+        job['delivery_focus_version'] = 2
+        with self.assertRaisesRegex(ValueError, '미처리 분석'):
+            ready_result(job, [checkpoint])
+
+    def test_candidate_pages_preserve_source_and_skip_completed_ids(self):
+        job, checkpoint = self.fixture()
+        plan = analysis_plan(job, [checkpoint], max_bytes=1000, body_ids=['done', 'unread'])
+        self.assertEqual({p['article_id'] for p in plan['pages']}, {'unread'})
+        self.assertEqual(''.join(p['body'] for p in plan['pages']), job['body_manifest'][1]['body'])
+        self.assertTrue(all(len(canonical(p).encode()) <= 1000 for p in plan['pages']))
+        self.assertTrue(all(len(canonical(p).encode()) <= 1000 for p in plan['triage_pages']))
+        with self.assertRaisesRegex(ValueError, '입력 ID 불일치'):
+            analysis_plan(job, [checkpoint], body_ids=['not-an-input'])
+
+    def test_cli_defaults_to_triage_then_reads_only_requested_candidates(self):
+        job, checkpoint = self.fixture()
+        script = str(Path(__file__).with_name('risk_review_context.py'))
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp, 'snapshot.json')
+            snapshot.write_text(canonical({'job': job, 'checkpoints': [checkpoint]}))
+            for suffix, flags in [('triage', []), ('body', ['--body-id', 'unread'])]:
+                target = Path(tmp, suffix+'.json')
+                run = subprocess.run([sys.executable, script, str(snapshot), '--analysis',
+                                      '--output', str(target), *flags], capture_output=True, text=True)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                view = json.loads(target.read_text())
+                self.assertEqual(view['pending_ids'], ['unread'])
+                self.assertEqual(bool(view['pages']), bool(flags))
+                self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+
     def fixture(self):
         items = [dict(article_id=i, title='기사', description='사건 설명', url='https://example.invalid/'+i)
                  for i in ['done', 'unread', 'missing']]

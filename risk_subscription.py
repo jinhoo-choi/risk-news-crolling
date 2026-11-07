@@ -274,14 +274,6 @@ def collect(config, queue, verification=False, reviews_only=False, review_ids=No
             break
         if after_job_id is None:
             raise RuntimeError('보류 후속 수집의 완료된 정규 회차 없음')
-    if not verification:
-        current_config(queue)
-        try:
-            prune_terminal_inputs(queue, config.get('input_retention_days', 7))
-        except Exception as error:
-            record_error('collect', error, 'input_prune_failed')
-            notify_best_effort(RuntimeError('종결 회차 입력 정리 실패 — 자동 재시도 없이 수집 계속'),
-                               '미종결 회차·원본 메타데이터·영수증은 정리 대상에서 제외합니다.')
     bot = import_bot()
     for state_file in ('seen_news.json', 'exposure_data.csv'):
         data, _ = queue.source(state_file)
@@ -962,6 +954,14 @@ def acknowledge(queue, jid):
     else:
         queue.put('jobs/'+jid+'.json', job, sha)
     checkpoint('ack_complete')
+    # Retention is maintenance after durable delivery/history/ACK, never a
+    # prerequisite for fresh collection. Failure must not change delivery state.
+    if job.get('mode') == 'production' and not job.get('self_test'):
+        try:
+            config = json.loads(Path(CONFIG).read_text())
+            prune_terminal_inputs(queue, config.get('input_retention_days', 7))
+        except Exception as error:
+            record_error('cleanup', error, 'input_prune_failed')
     notify_reviews(queue, job)
     print(json.dumps({'job_id': jid, 'status': 'completed', 'paid_ai_calls': 0, 'history_saved': True,
                       'ack': True, 'analysis_complete': job.get('analysis_complete', True),

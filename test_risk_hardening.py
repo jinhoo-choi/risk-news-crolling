@@ -207,12 +207,13 @@ class Collection(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, '일부 검색 수집 실패'):
                 self.collect(Memory())
 
-    def test_cleanup_exception_does_not_block_collection_or_send(self):
+    def test_collection_never_scans_old_inputs_or_sends_cleanup_alert(self):
         queue = Memory()
         queue.list_input_entries = Mock(side_effect=RuntimeError('tree unavailable'))
         with patch.object(bridge, 'notify_error', side_effect=RuntimeError('SMTP mock failure')) as notify:
             self.collect(queue)
-        notify.assert_called_once()
+        queue.list_input_entries.assert_not_called()
+        notify.assert_not_called()
         self.assertIn('jobs/risk-production-hardening-test.json', queue.data)
 
 
