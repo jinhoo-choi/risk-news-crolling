@@ -24,6 +24,69 @@ class NativeContinuity(unittest.TestCase):
     fixture = native_fixtures.Integration.fixture
     run_consume = native_fixtures.Integration.run_consume
 
+    def executive_mixed(self):
+        queue = self.mixed()
+        queue.data['jobs/test.json'].update(delivery_focus_version=2, review_pass_version=2,
+            action_quality_version=2, exclusion_review_version=2, created_at=now().isoformat())
+        with patch.object(self, 'fixture', return_value=queue):
+            return native_fixtures.Integration.executive_fixture(self)
+
+    def test_executive_to_cc_wire_report_has_no_operational_hold_notice(self):
+        from email import message_from_bytes, policy
+        from email.utils import getaddresses
+        queue, smtp, to, cc = self.executive_mixed()
+        self.run_consume(queue, smtp)
+        packet = queue.data['outbox/test.json']
+        message = message_from_bytes(smtp.data.call_args.args[0], policy=policy.default)
+        self.assertEqual(getaddresses(message.get_all('To')), [('', a) for a in to])
+        self.assertEqual(getaddresses(message.get_all('Cc')), [('', a) for a in cc])
+        self.assertNotIn('확인 보류', str(message['Subject']))
+        self.assertNotIn('확인 보류', message.get_body(preferencelist=('html',)).get_content())
+        self.assertNotIn('data-risk-owner-status', packet['html'])
+        self.assertEqual(queue.data['jobs/test.json']['deferred_ids'], ['held'])
+        self.assertEqual(queue.data['review/index.json']['pending'], ['held'])
+        self.assertNotIn('https://example.invalid/held', Path('seen_news.json').read_text())
+        smtp.data.assert_called_once()
+
+    def test_hold_notice_guard_blocks_generated_full_report_but_allows_article_text(self):
+        from risk_outbox import assert_report_content
+        legacy = '<div>확인 보류 2건 — 개별 확인 보류는 후속 처리하며, 같은 근거의 반복 분석은 하지 않습니다.</div>'
+        for subject, document in [('리스크 보고 · 확인 보류 2건', '<body>기사</body>'),
+                                  ('리스크 보고', legacy),
+                                  ('리스크 보고', '<div data-risk-owner-status="review-hold">상태</div>')]:
+            with self.subTest(subject=subject, document=document):
+                packet = {'subject': subject, 'html': document, 'self_only': False}
+                with self.assertRaisesRegex(RuntimeError, '임원·그룹'):assert_report_content(packet)
+                assert_report_content(dict(packet, self_only=True))
+        assert_report_content({'subject':'리스크 보고', 'html':'<p>거래소가 상장 심사를 확인 보류했다고 밝혔다.</p>', 'self_only':False})
+
+    def test_accepted_report_history_recovery_skips_new_send_content_guard(self):
+        queue, smtp, _, _ = self.executive_mixed()
+        self.run_consume(queue, smtp)
+        frozen = copy.deepcopy(queue.data['outbox/test.json'])
+        Path('seen_news.json').write_bytes(self.before)
+        with patch.object(bridge, 'assert_report_content', side_effect=AssertionError('accepted must not resend')) as guard, \
+             patch.object(bridge.smtplib, 'SMTP_SSL', side_effect=AssertionError('no SMTP')):
+            bridge.recover(queue, 'test')
+        guard.assert_not_called()
+        self.assertEqual(queue.data['outbox/test.json'], frozen)
+        self.assertEqual(Path('seen_news.json').read_text(), frozen['seen_after_snapshot'])
+
+    def test_existing_unsent_executive_packet_with_hold_banner_sends_no_smtp(self):
+        queue, smtp, _, _ = self.executive_mixed()
+        original = bridge.make_packet
+        def legacy_packet(*args, **kwargs):
+            args = list(args)
+            args[2] += ' · 확인 보류 2건'
+            with patch('risk_outbox.assert_report_content'):
+                return original(*args, **kwargs)
+        with patch.object(bridge, 'make_packet', side_effect=legacy_packet), \
+             self.assertRaisesRegex(RuntimeError, '임원·그룹'):
+            self.run_consume(queue, smtp)
+        smtp.data.assert_not_called()
+        self.assertEqual(queue.data['jobs/test.json']['receipts'], {})
+        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+
     def frozen(self, queue):
         job = queue.data['jobs/test.json']
         queue.data.update(continuity.freeze_exposure(job, Path('exposure_data.csv').read_bytes(), now().isoformat()))
@@ -76,7 +139,7 @@ class NativeContinuity(unittest.TestCase):
         self.assertEqual(state['unprocessed_ids'], [])
         self.assertFalse(state['analysis_complete'])
         self.assertEqual(len(smtp.calls), 3)
-        self.assertIn('확인 보류 1건', queue.data['previews/test.json']['html'])
+        self.assertNotIn('확인 보류', queue.data['previews/test.json']['html'])
         self.assertNotIn('https://example.invalid/held', Path('seen_news.json').read_text())
 
     def test_first_pass_reason_and_summary_length_warn_without_dropping_valid_article(self):

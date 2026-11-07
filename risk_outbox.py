@@ -19,6 +19,24 @@ def sha(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def assert_report_content(value):
+    """Operational hold notices belong only in owner mail, never group reports.
+
+    Match the generated notice, not an article legitimately discussing a hold.
+    Called for new packets and immediately before an actual SMTP attempt;
+    accepted historical packets remain usable for history-only recovery.
+    """
+    if value['self_only']:
+        return
+    document = BeautifulSoup(value['html'], 'html.parser')
+    marked = document.find(attrs={'data-risk-owner-status': 'review-hold'})
+    legacy = any(re.match(r'^확인 보류 \d+건', node.get_text(' ', strip=True))
+                 and '개별 확인 보류는 후속 처리하며' in node.get_text(' ', strip=True)
+                 for node in document.find_all('div'))
+    if (marked or legacy or re.search(r'(?:^| · )확인 보류 \d+건', value['subject'])):
+        raise RuntimeError('운영 보류 안내가 전체 보고에 포함됨 — 임원·그룹 발송 차단')
+
+
 def make_packet(job, result, subject, document, targets, self_only, seen, recipient_route="configured"):
     value = {'schema_version': 1, 'job_id': job['job_id'],
              'input_hash': job['input_hash'], 'policy_hash': job['policy_hash'],
@@ -32,6 +50,7 @@ def make_packet(job, result, subject, document, targets, self_only, seen, recipi
              'created_at': now().isoformat()}
     value['packet_hash'] = digest(value)
     validate_packet(value, job, result)
+    assert_report_content(value)
     return value
 
 
