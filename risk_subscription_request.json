@@ -3,5 +3,5 @@
   "job_id": "article-retention",
   "self_test": false,
   "dry_run": false,
-  "request_id": "prune-articles-20261107-1794018510592"
+  "request_id": "prune-articles-batched-20261107-1794018799216"
 }
