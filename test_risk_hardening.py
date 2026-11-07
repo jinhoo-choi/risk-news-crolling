@@ -55,6 +55,14 @@ class Memory:
                  'size': len(json.dumps(v).encode())}
                 for p, v in self.data.items() if p.startswith(prefix)]
 
+    def list_entries(self, directory):
+        prefix = directory+'/'
+        return [{'path': p[len(prefix):], 'type': 'blob', 'sha': self.get(p)[1]}
+                for p in self.data if p.startswith(prefix)]
+
+    def read_review_batch(self, entries):
+        return {e['path']: self.get('review/'+e['path']) for e in entries}
+
     def source(self, path):
         if path == bridge.CONFIG:
             return b'{"engine":"subscription","policy_version":"risk-subscription-v1"}', 'sha'
@@ -216,6 +224,16 @@ class Collection(unittest.TestCase):
         notify.assert_not_called()
         self.assertIn('jobs/risk-production-hardening-test.json', queue.data)
 
+    def test_old_fresh_search_item_is_not_fetched_or_saved(self):
+        queue = Memory()
+        self.bot.crawl_naver_news.return_value = [{'url': 'https://example.invalid/expired',
+            'title': '만료 기사', 'pubDate': (now()-timedelta(hours=12, seconds=1)).isoformat()}]
+        self.bot.fetch_article_body = Mock(side_effect=AssertionError('expired body'))
+        self.collect(queue)
+        self.bot.fetch_article_body.assert_not_called()
+        saved = queue.data['jobs/risk-production-hardening-test.json']
+        self.assertEqual((saved['input_count'], saved['raw_count']), (0, 0))
+
 
 class Retention(unittest.TestCase):
     def fixture(self, status='completed', age=8):
@@ -240,12 +258,14 @@ class Retention(unittest.TestCase):
                 self.assertEqual(len(queue.commits), 1)
                 values, deleted = queue.commits[0]
                 self.assertEqual(set(values), {'jobs/old.json'})
-                self.assertEqual(set(deleted), {'inputs/old/items-000.json', 'inputs/old/body_manifest-000.json'})
+                self.assertEqual(set(deleted), {'inputs/old/items-000.json', 'inputs/old/body_manifest-000.json',
+                                                'results/old.json', 'previews/old.json', 'logs/old.json'})
                 for key, value in original['jobs/old.json'].items():
-                    self.assertEqual(queue.data['jobs/old.json'][key], value)
-                for path in ('index.json', 'results/old.json', 'previews/old.json', 'logs/old.json'):
-                    self.assertEqual(queue.data[path], original[path])
-                self.assertEqual(queue.data['jobs/old.json']['inputs_pruned_files'], 2)
+                    if key not in {'input', 'body_manifest'}:
+                        self.assertEqual(queue.data['jobs/old.json'][key], value)
+                self.assertEqual(queue.data['index.json'], original['index.json'])
+                self.assertNotIn('body_manifest', queue.data['jobs/old.json'])
+                self.assertEqual(queue.data['jobs/old.json']['inputs_pruned_files'], 5)
                 bridge.prune_terminal_inputs(queue)
                 self.assertEqual(len(queue.commits), 1)
 
@@ -319,13 +339,47 @@ class Retention(unittest.TestCase):
 
     def test_retention_is_configurable_but_not_zero_or_negative(self):
         queue = self.fixture(age=8)
-        bridge.prune_terminal_inputs(queue, retention_days=10)
+        bridge.prune_terminal_inputs(queue, retention_hours=240)
         self.assertEqual(queue.commits, [])
-        bridge.prune_terminal_inputs(queue, retention_days=2)
+        bridge.prune_terminal_inputs(queue, retention_hours=48)
         self.assertEqual(len(queue.commits), 1)
         for days in (0, -1, True, '7'):
             with self.assertRaises(ValueError):
                 bridge.prune_terminal_inputs(queue, days)
+
+    def test_retention_sweeps_expired_and_unindexed_copies_but_keeps_replay_keys_and_exclusions(self):
+        queue = Memory()
+        instant = now()
+        expiry = (instant-timedelta(hours=12, seconds=1)).isoformat()
+        queue.data['review/index.json'] = {'schema_version': 1, 'pending': ['expired', 'fresh', 'unknown']}
+        for aid, date in [('expired', expiry), ('orphan', expiry), ('excluded', expiry),
+                          ('fresh', (instant-timedelta(hours=12)).isoformat()), ('unknown', 'bad-date')]:
+            item = {'article_id': aid, 'title': 'private title', 'published_at': date, 'url': 'https://example.invalid/'+aid}
+            body = {'article_id': aid, 'body': 'private article body', 'body_status': 'verified'}
+            queue.data['review/'+aid+'.json'] = {'schema_version': 1, 'article_id': aid, 'status': 'pending',
+                'item': item, 'body': body, 'source_hash': digest({'item': item, 'body': body})}
+        queue.data['review/excluded.json'].update(status='resolved', resolution_kind='owner_excluded')
+        queue.data['notifications/review-record.json'] = {'status': 'accepted'}
+        with patch('risk_continuity.now', return_value=instant):
+            self.assertEqual(bridge.prune_articles(queue)['pruned_reviews'], 3)
+            self.assertEqual(bridge.prune_articles(queue)['pruned_reviews'], 0)
+        for aid in ('expired', 'orphan'):
+            self.assertNotIn('review/'+aid+'.json', queue.data)
+        self.assertNotIn('body', queue.data['review/excluded.json'])
+        self.assertEqual(queue.data['review/excluded.json']['resolution_kind'], 'owner_excluded')
+        index = queue.data['review/index.json']
+        self.assertEqual(index['pending'], ['fresh', 'unknown'])
+        self.assertEqual(index['sources']['expired']['published_at'], expiry)
+        self.assertEqual(queue.data['notifications/review-record.json']['status'], 'accepted')
+
+    def test_maintenance_cannot_modify_inflight_or_unacknowledged_round(self):
+        for status in ('pending', 'sending', 'uncertain', 'delivery_complete'):
+            with self.subTest(status=status):
+                queue = self.fixture(status=status)
+                original = copy.deepcopy(queue.data)
+                self.assertEqual(bridge.prune_articles(queue)['status'], 'preserved_active')
+                self.assertEqual(queue.data, original)
+                self.assertEqual(queue.commits, [])
 
 
 class AtomicQueue(unittest.TestCase):

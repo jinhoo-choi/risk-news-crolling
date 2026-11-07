@@ -155,15 +155,14 @@ class Integration(unittest.TestCase):
 
     def test_retention_runs_only_after_ack_and_failure_preserves_delivery(self):
         queue, smtp = self.fixture(), SMTP()
-        Path('risk_subscription_config.json').write_text('{"input_retention_days": 9}')
-        def maintenance(*args):
-            self.assertEqual(args[1], 9)
+        def maintenance(actual_queue):
+            self.assertIs(actual_queue, queue)
             state = queue.data['jobs/test.json']
             self.assertEqual(state['status'], 'completed')
             self.assertTrue(state['history_saved'] and state['ack'])
             self.assertTrue(all(v == 'accepted' for v in state['receipts'].values()))
             raise RuntimeError('retention unavailable')
-        with patch('risk_subscription.prune_terminal_inputs', side_effect=maintenance) as prune:
+        with patch('risk_subscription.prune_articles', side_effect=maintenance) as prune:
             self.run_consume(queue, smtp)
             prune.assert_not_called()
             with self.assertRaises(RuntimeError):

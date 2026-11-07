@@ -4,12 +4,15 @@ import hashlib
 import json
 import os
 import re
+import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from risk_analysis_guard import strict_json
 
 REPOSITORY = 'jinhoo-choi/insight-bot-data'
@@ -217,11 +220,18 @@ class Queue:
 
     def list_input_entries(self, job_id=None):
         """List live input trees, including jobs no longer present in index.json."""
+        return self.list_entries('inputs', job_id)
+
+    def list_entries(self, directory, job_id=None):
+        """List only approved risk maintenance namespaces at a pinned head."""
+        if (directory not in {'inputs', 'review', 'jobs', 'results', 'outbox', 'previews', 'logs'}
+                or job_id is not None and directory != 'inputs'):
+            raise ValueError('큐 정리 디렉터리 오류')
         if job_id is not None and not JOB_ID.fullmatch(job_id):
             raise ValueError('큐 회차 ID 오류')
         head = self.request('/git/ref/heads/main')['object']['sha']
         tree_sha = self.request('/git/commits/'+head)['tree']['sha']
-        parts = (PREFIX+'/inputs').split('/') + ([job_id] if job_id else [])
+        parts = (PREFIX+'/'+directory).split('/') + ([job_id] if job_id else [])
         for part in parts:
             tree = self.request('/git/trees/'+tree_sha)
             if tree.get('truncated'):
@@ -237,14 +247,57 @@ class Queue:
             raise RuntimeError('큐 입력 트리 목록 불완전 — 정리 보류')
         return tree['tree']
 
+    def read_review_batch(self, entries):
+        """Read a large backlog with one shallow sparse checkout, not thousands of API calls."""
+        if len(entries) <= 100:
+            return {e['path']: self.get('review/'+e['path']) for e in entries}
+        remote = 'https://github.com/'+REPOSITORY+'.git'
+        auth = base64.b64encode(('x-access-token:'+self.token).encode()).decode()
+        env = dict(os.environ, GIT_TERMINAL_PROMPT='0', GIT_LFS_SKIP_SMUDGE='1', GIT_CONFIG_COUNT='2',
+                   GIT_CONFIG_KEY_0='http.'+remote+'.extraheader', GIT_CONFIG_VALUE_0='Authorization: Basic '+auth,
+                   GIT_CONFIG_KEY_1='http.followRedirects', GIT_CONFIG_VALUE_1='false')
+        with tempfile.TemporaryDirectory(prefix='risk-review-retention-') as work:
+            def git(*args):
+                subprocess.run(['git', *args], cwd=work, env=env, timeout=180,
+                               check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                git('clone', '--quiet', '--depth=1', '--filter=blob:none', '--sparse', '--no-checkout',
+                    '--branch', 'main', remote, '.')
+                git('sparse-checkout', 'set', '--no-cone', '/'+PREFIX+'/review/')
+                git('checkout', '--quiet', '--detach', 'HEAD')
+            except (OSError, subprocess.SubprocessError):
+                raise RuntimeError('비공개 보류 자료 일괄 읽기 실패') from None
+            result = {}
+            for entry in entries:
+                name = entry['path']
+                if not name.endswith('.json') or not JOB_ID.fullmatch(name[:-5]) or entry.get('mode') != '100644':
+                    raise RuntimeError('비공개 보류 자료 파일 형식 오류')
+                path = Path(work)/PREFIX/'review'/name
+                if path.is_symlink() or not path.is_file():
+                    raise RuntimeError('비공개 보류 자료 원본 변경')
+                raw = path.read_bytes()
+                sha = hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+                if sha != entry['sha']:
+                    raise RuntimeError('비공개 보류 자료 원본 변경')
+                result[name] = (strict_json(raw.decode()), sha)
+            return result
+
     def put_many(self, values, expected, deletions=()):
         """Publish atomically; rebase only confirmed ref races with intact leases."""
         deletions = list(deletions)
         for path in deletions:
             parts = path.split('/')
-            if (len(parts) != 3 or parts[0] != 'inputs' or not JOB_ID.fullmatch(parts[1])
-                    or not JOB_ID.fullmatch(parts[2].removesuffix('.json'))
-                    or not parts[2].endswith('.json') or not expected.get(path)
+            owned = (len(parts) == 3 and parts[0] == 'inputs' and JOB_ID.fullmatch(parts[1])
+                     and JOB_ID.fullmatch(parts[2].removesuffix('.json')) and parts[2].endswith('.json'))
+            review = (len(parts) == 2 and parts[0] == 'review' and parts[1].endswith('.json')
+                      and JOB_ID.fullmatch(parts[1][:-5]) and parts[1] not in {'index.json', 'notification-groups.json'}
+                      and 'review/index.json' in values and expected.get('review/index.json'))
+            payload = (len(parts) == 2 and parts[0] in {'results', 'outbox', 'previews', 'logs'}
+                       and parts[1].endswith('.json') and JOB_ID.fullmatch(parts[1][:-5])
+                       and 'jobs/'+parts[1] in values
+                       and expected.get('jobs/'+parts[1])
+                       and values['jobs/'+parts[1]].get('inputs_pruned_at'))
+            if (not (owned or review or payload) or not expected.get(path)
                     or path in values):
                 raise ValueError('큐 입력 삭제 경로·SHA 오류')
         entries = []
