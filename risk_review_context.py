@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 
 from risk_queue import JOB_ID, digest
@@ -150,17 +151,25 @@ def analysis_plan(job, checkpoints=(), max_bytes=12000, body_ids=None):
     if (len(items) != len(job['input']['items']) or len(bodies) != len(job['body_manifest'])
             or set(items) != set(bodies)):
         raise ValueError('분석 입력 ID 누락·중복')
+    proof_required = job.get('review_evidence_version') == 1
     rows, analyses, groups, done = [], {}, [], set()
     for checkpoint in checkpoints:
         if any(checkpoint.get(k) != job[k] for k in ('job_id', 'input_hash', 'policy_hash', 'body_manifest_hash')):
             raise ValueError('다른 회차·정책 체크포인트')
         ids = checkpoint['covered_ids']
         classified = checkpoint['classifications']
+        candidates = {r['article_id'] for r in classified if r['relevant'] is True}
         if (len(ids) != len(set(ids)) or not set(ids) <= items.keys() or done.intersection(ids)
                 or len(classified) != len(ids) or {r['article_id'] for r in classified} != set(ids)
                 or any(r.get('relevant') is not None and type(r.get('relevant')) is not bool for r in classified)
-                or set(checkpoint['analyses']) != {r['article_id'] for r in classified if r['relevant'] is True}):
+                or (not set(checkpoint['analyses']) <= candidates if proof_required
+                    else set(checkpoint['analyses']) != candidates)):
             raise ValueError('체크포인트 완료 ID·분석 누락·중복')
+        if proof_required:
+            from risk_review_evidence import validate_decision
+            for row in classified:
+                validate_decision(row, items[row['article_id']], bodies[row['article_id']],
+                                  checkpoint['analyses'].get(row['article_id']))
         done.update(ids)
         rows.extend(copy.deepcopy(classified))
         analyses.update(copy.deepcopy(checkpoint['analyses']))
@@ -168,8 +177,15 @@ def analysis_plan(job, checkpoints=(), max_bytes=12000, body_ids=None):
     missing_body_ids = []
     if job.get('review_pass_version') == 2:
         for aid, body in bodies.items():
-            if aid not in done and body['body_status'] in {'missing', 'unreadable'}:
-                rows.append({'article_id': aid, 'relevant': None, 'reason': '유효 본문 미확보; 새 근거 확보 전 재분석하지 않음'})
+            from risk_body_quality import body_quality
+            unusable = body['body_status'] in {'missing', 'unreadable'} or (
+                proof_required and body_quality(body['body'])[0] != 'verified')
+            if aid not in done and unusable:
+                row = {'article_id': aid, 'relevant': None, 'reason': '유효 본문 미확보; 새 근거 확보 전 재분석하지 않음'}
+                if proof_required:
+                    from risk_review_evidence import unavailable_basis
+                    row['decision_basis'] = unavailable_basis(body)
+                rows.append(row)
                 missing_body_ids.append(aid)
                 done.add(aid)
     pending = [aid for aid in items if aid not in done]
@@ -219,7 +235,7 @@ def analysis_plan(job, checkpoints=(), max_bytes=12000, body_ids=None):
             'scope': 'local_resume_only_final_validation_required'}
 
 
-def ready_result(job, checkpoints, model_used='unconfirmed'):
+def ready_result(job, checkpoints, model_used='unconfirmed', attempt_id=None):
     """New rounds require a first pass of every input; holds need not be resolved."""
     from risk_result_validator import validate
     plan = analysis_plan(job, checkpoints, body_ids=[])
@@ -230,9 +246,35 @@ def ready_result(job, checkpoints, model_used='unconfirmed'):
                   analysis_engine='chatgpt_subscription', model_used=model_used,
                   classifications=plan['classifications'], analyses=plan['analyses'],
                   event_groups=plan['event_groups'])
+    if job.get('review_evidence_version') == 1:
+        if not isinstance(attempt_id, str) or not JOB_ID.fullmatch(attempt_id):
+            raise ValueError('최종 결과의 분석 소유자 ID 필요')
+        result['review_attempt_id'] = attempt_id
     if plan['pending_ids']:
         result['unprocessed_ids'] = plan['pending_ids']
     validate(result, job, job['input'], job['body_manifest'])
+    return result
+
+
+def next_batch(job, checkpoints=(), limit=25):
+    """Read the next bounded batch; priority changes order, never verdicts/IDs."""
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise ValueError('다음 본문 묶음은 1~100건')
+    plan = analysis_plan(job, checkpoints, body_ids=[])
+    pending = set(plan['pending_ids'])
+    bodies = {b['article_id']: b['body'] for b in job['body_manifest']}
+    def priority(article):
+        # Source text may reveal a severe incident behind a generic title.
+        # This only orders full-source reading; it never supplies a verdict.
+        text = article['title']+' '+article['description']+' '+bodies[article['article_id']]
+        risk = bool(re.search(r'장애|제재|과태료|상장폐지|횡령|배임|부도|파산|회생|급락|폭락|담보|반대매매', text))
+        return (0 if risk and '한국투자증권' in text else 1 if risk else 2)
+    candidates = sorted((a for a in job['input']['items'] if a['article_id'] in pending), key=priority)
+    selected = [a['article_id'] for a in candidates[:limit]]
+    result = analysis_plan(job, checkpoints, body_ids=selected)
+    order = {aid:i for i,aid in enumerate(selected)}
+    result['pages'].sort(key=lambda p:(order[p['article_id']],p['offset']))
+    result['priority_ids'] = selected
     return result
 
 
@@ -339,12 +381,15 @@ if __name__ == '__main__':
     mode.add_argument('--analysis', action='store_true', help='first-pass index; body pages only for --body-id candidates')
     mode.add_argument('--instructions', action='store_true', help='select current instructions from this pinned checkout; no snapshot')
     parser.add_argument('--body-id', action='append', default=[], help='with --analysis: pending candidate body to read; repeat for a batch')
+    parser.add_argument('--next-batch', type=int, help='with --analysis: next 1~100 pending bodies, priority first; no classifications implied')
     parser.add_argument('--output', required=True, help='new private local status artifact (not an operational result)')
     args = parser.parse_args()
     if args.instructions and args.snapshot or not args.instructions and not args.snapshot:
         parser.error('--instructions takes no snapshot; other modes require one')
     if args.body_id and not args.analysis:
         parser.error('--body-id requires --analysis')
+    if args.next_batch is not None and (not args.analysis or args.body_id):
+        parser.error('--next-batch requires --analysis and cannot combine with --body-id')
     snapshot = {} if args.instructions else strict_json(Path(args.snapshot).read_text())
     class LocalSnapshot:
         def get(self, path):
@@ -353,6 +398,7 @@ if __name__ == '__main__':
             record = snapshot['jobs'].get(path.removeprefix('jobs/').removesuffix('.json'))
             return (record['value'], record['blob_sha']) if record else (None, None)
     view = (instruction_context() if args.instructions else
+            next_batch(snapshot['job'], snapshot.get('checkpoints', []), args.next_batch) if args.next_batch is not None else
             analysis_plan(snapshot['job'], snapshot.get('checkpoints', []), body_ids=args.body_id) if args.analysis
             else queue_status(LocalSnapshot(), snapshot['observed_at']))
     content = canonical(view)

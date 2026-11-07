@@ -24,6 +24,7 @@ jobs:
         id: consume
         env:
           RISK_QUEUE_TOKEN: ${{ secrets.RISK_QUEUE_TOKEN }}
+          RISK_DEFER_DIAGNOSTICS: 'true'
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
@@ -61,6 +62,11 @@ jobs:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         run: python risk_subscription.py notify-error
+      - name: Persist optional private diagnostics after history and ACK
+        if: always()
+        env:
+          RISK_QUEUE_TOKEN: ${{ secrets.RISK_QUEUE_TOKEN }}
+        run: python risk_diagnostics.py
       - name: Persist private workflow outcomes (never resend)
         if: always()
         env:

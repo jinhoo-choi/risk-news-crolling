@@ -153,7 +153,7 @@ def review_age(item, current):
         return 'date_unconfirmed'
 
 
-def prune_expired_reviews(queue, leases):
+def prune_expired_reviews(queue, leases, max_batches=None):
     """Delete expired source copies, retaining small identities to prevent replay."""
     index, index_sha = review_index(queue)
     catalog = index.setdefault('sources', {})
@@ -168,6 +168,13 @@ def prune_expired_reviews(queue, leases):
         source = catalog.get(name[:-5])
         if source is None or review_age(source, instant) != 'eligible':
             candidates.append(entry)
+    if max_batches is not None:
+        # ACK's bounded cleanup reads only known expired sources. Legacy orphan
+        # discovery remains the explicit full maintenance operation, never a
+        # reason to hold the delivery workflow open for thousands of records.
+        candidates = [e for e in candidates if e['path'][:-5] in catalog
+                      and review_age(catalog[e['path'][:-5]], instant) == 'expired']
+        candidates = candidates[:REVIEW_PRUNE_BATCH*max_batches]
     snapshots = queue.read_review_batch(candidates)
     pending = set(index['pending'])
     expired = []

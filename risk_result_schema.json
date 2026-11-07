@@ -101,6 +101,11 @@
         "maxLength": 100
       },
       "description": "과거 delivery_focus_version=1 부분 종결 복구 호환용. 새 version=2 결과는 빈 배열/생략만 허용하며 classifications가 입력 전수와 일치해야 한다. 미열람을 null/false로 대체하지 않는다."
+    },
+    "review_attempt_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,80}$",
+      "description": "새 review_evidence_version=1의 결과를 작성한 분석 소유자. 구형 회차에 소급 추가 금지."
     }
   },
   "$defs": {
@@ -211,6 +216,47 @@
               }
             }
           }
+        },
+        "decision_basis": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "source_hash"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "body",
+                "metadata_rule",
+                "unavailable"
+              ]
+            },
+            "source_hash": {
+              "$ref": "#/$defs/hash"
+            },
+            "quote": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 240
+            },
+            "rule": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "blocker": {
+              "enum": [
+                "entity",
+                "event_stage",
+                "date",
+                "conflicting_evidence",
+                "unrelated_body",
+                "analysis_failed"
+              ]
+            }
+          },
+          "description": "새 계약의 false/null 근거. 본문 판정은 짧은 원문 인용, 명확한 비대상은 기존 결정론적 제외 규칙, 미확보는 실제 본문 상태. 미시도 대체 금지."
         }
       },
       "description": "article_id/relevant는 필수 판정 식별자다. reason은 간결한 진단 사유이며 새 delivery_focus_version=2에서 사유 누락·길이·형식 오류는 경고로 처리한다. exclusion_review/recheck는 구형 결과 호환용이며 새로 작성하지 않는다."
