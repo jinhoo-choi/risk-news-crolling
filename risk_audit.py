@@ -67,7 +67,7 @@ class Audit:
                       'state': 'running', 'events': [], 'github_run_id': os.environ.get('GITHUB_RUN_ID', ''),
                       'github_run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT', '')}
 
-    def event(self, stage=None, *, state='running', code='', error=None, facts=None, required=True, advance=True):
+    def event(self, stage=None, *, state='running', code='', error=None, facts=None, required=False, advance=True, persist=True):
         stage = stage or self.value['stage']
         if stage not in STAGES or state not in {'running', 'completed', 'failed'}:
             raise ValueError('감사 단계·상태 오류')
@@ -81,6 +81,14 @@ class Audit:
         if advance:
             self.value['stage'] = stage
         self.value['events'].append(event)
+        if not persist:
+            # Diagnostic stages are buffered locally; delivery receipts and locks
+            # still use their own mandatory queue writes. Flush at operation end.
+            try:
+                spool({'audit_path': self.path, 'event': event})
+            except Exception:
+                print('RISK_AUDIT recorded=false stage='+stage)
+            return False
         try:
             previous, sha = getattr(self.queue, 'get_fresh', self.queue.get)(self.path)
             if previous != self.saved:
@@ -94,7 +102,7 @@ class Audit:
                 spool(fallback)
             except Exception:
                 pass  # Report unknown persistence, never claim durable storage.
-            print('RISK_AUDIT state=failed recorded=false stage='+stage)
+            print('RISK_AUDIT state=warning recorded=false stage='+stage)
             if required:
                 raise RuntimeError('비공개 감사 기록 저장 실패 — 새 발송 단계 진행 금지') from failure
             return False
@@ -102,7 +110,7 @@ class Audit:
 
 def checkpoint(stage, **facts):
     if audit := ACTIVE.get():
-        audit.event(stage, facts=facts or None)
+        audit.event(stage, facts=facts or None, persist=False)
 
 
 def record_error(stage, error, code='runtime_error', **facts):
@@ -171,7 +179,7 @@ def persist_unhandled(error, stage='config', operation='bootstrap'):
             spool({'stage': stage, 'error': error_detail(error), 'persistence_error': error_detail(failure)})
         except Exception:
             pass
-        print('RISK_AUDIT state=failed recorded=false stage='+stage)
+        print('RISK_AUDIT state=warning recorded=false stage='+stage)
 
 
 def observe_pending(queue, job):

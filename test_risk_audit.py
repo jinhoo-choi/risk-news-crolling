@@ -88,13 +88,26 @@ class Evidence(unittest.TestCase):
         self.q.put.assert_not_called()
         self.assertEqual(Path('risk_audit_spool.jsonl').stat().st_mode & 0o777, 0o600)
 
-    def test_initial_audit_failure_stops_before_any_action_and_marks_unsaved(self):
+    def test_diagnostic_storage_failure_does_not_block_action_or_claim_saved(self):
         self.q.put = Mock(side_effect=QueueConflict())
         action, output = Mock(), io.StringIO()
-        with contextlib.redirect_stdout(output), self.assertRaises(RuntimeError):
+        with contextlib.redirect_stdout(output):
             audit.run_audited(self.q, 'consume', 'test', action)
-        action.assert_not_called()
+        action.assert_called_once()
         self.assertIn('recorded=false', output.getvalue())
+        self.assertTrue(Path('risk_audit_spool.jsonl').exists())
+
+    def test_stage_checkpoints_are_batched_without_losing_timestamps(self):
+        def action():
+            for stage in ('verify', 'render', 'outbox', 'smtp_prepare', 'smtp_data', 'smtp_receipt'):
+                audit.checkpoint(stage)
+        with patch.object(self.q, 'put', wraps=self.q.put) as put:
+            audit.run_audited(self.q, 'consume', 'test', action)
+        self.assertEqual(put.call_count, 2)  # Start + final, not one remote write per stage.
+        record, = self.records()
+        self.assertEqual(len(record['events']), 8)
+        self.assertTrue(all(event['at'] for event in record['events']))
+        self.assertEqual(len(Path('risk_audit_spool.jsonl').read_text().splitlines()), 6)
 
     def test_child_failure_and_cause_are_private_redacted_and_public_output_is_fixed(self):
         secret = 'not-a-real-private-token'
@@ -237,33 +250,48 @@ class DeliveryEvidence(unittest.TestCase):
     def audited_consume(self, q, smtp):
         return audit.run_audited(q, 'consume', 'test', lambda: self.run_consume(q, smtp))
 
-    def test_audit_failure_before_data_never_reserves_or_sends(self):
+    def test_diagnostic_audit_failure_still_delivers_with_receipts(self):
         q, smtp = self.prepare(), fixtures.SMTP()
         put = q.put
         def blocked(path, value, sha=None):
-            if path.startswith('audit/') and value['stage'] == 'smtp_data' and value['state'] == 'running':
+            if path.startswith('audit/'):
                 raise QueueConflict()
             return put(path, value, sha)
-        with patch.object(q, 'put', blocked), self.assertRaises(RuntimeError):
+        with patch.object(q, 'put', blocked):
             self.audited_consume(q, smtp)
-        self.assertEqual(smtp.calls, [])
-        self.assertEqual(q.data['jobs/test.json'].get('attempted_count', 0), 0)
-        self.assertEqual(q.data['jobs/test.json']['receipts'], {})
-        self.assertEqual(Path('seen_news.json').read_bytes(), self.before)
+        self.assertEqual(len(smtp.calls), 3)
+        self.assertEqual(set(q.data['jobs/test.json']['receipts'].values()), {'accepted'})
+        self.assertEqual(q.data['jobs/test.json']['status'], 'delivery_complete')
+        self.assertTrue(Path('risk_audit_spool.jsonl').exists())
 
     def test_after_data_audit_failure_preserves_accepted_receipt(self):
         q, smtp = self.prepare(), fixtures.SMTP()
         put = q.put
         def blocked(path, value, sha=None):
-            if path.startswith('audit/') and value['stage'] == 'smtp_receipt' and value['state'] == 'running':
+            if path.startswith('audit/') and value['state'] == 'completed':
                 raise QueueConflict()
             return put(path, value, sha)
-        with patch.object(q, 'put', blocked), self.assertRaises(RuntimeError):
+        with patch.object(q, 'put', blocked):
             self.audited_consume(q, smtp)
-        self.assertEqual(len(smtp.calls), 1)
-        self.assertEqual(list(q.data['jobs/test.json']['receipts'].values()), ['accepted'])
-        self.assertEqual(q.data['jobs/test.json']['attempted_count'], 1)
+        self.assertEqual(len(smtp.calls), 3)
+        self.assertEqual(set(q.data['jobs/test.json']['receipts'].values()), {'accepted'})
+        self.assertEqual(q.data['jobs/test.json']['attempted_count'], 3)
         self.assertFalse(q.data['jobs/test.json'].get('ack', False))
+
+    def test_audit_failure_does_not_bypass_input_hash_or_outbox_durability(self):
+        for failure in ('hash', 'outbox'):
+            with self.subTest(failure=failure):
+                q, smtp = self.prepare(), fixtures.SMTP()
+                if failure == 'hash':
+                    q.data['results/test.json']['input_hash'] = '0'*64
+                put = q.put
+                def blocked(path, value, sha=None):
+                    if path.startswith('audit/') or failure == 'outbox' and path.startswith('outbox/'):
+                        raise QueueConflict()
+                    return put(path, value, sha)
+                with patch.object(q, 'put', blocked), self.assertRaises((ValueError, RuntimeError)):
+                    self.audited_consume(q, smtp)
+                self.assertEqual(smtp.calls, [])
 
     def test_smtp_and_uncertain_write_errors_are_both_kept_and_never_retried(self):
         q, smtp = self.prepare(), fixtures.SMTP(fail_at=1)

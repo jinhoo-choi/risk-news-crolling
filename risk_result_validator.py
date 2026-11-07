@@ -231,19 +231,23 @@ def validate(result, job, inputs, manifest):
     json.dumps(result, allow_nan=False)
     streamlined = (job.get('review_pass_version') == 2 and job.get('continuity_version') == 1
                    and job.get('mode') == 'production')
-    held, omissions = {}, {}
+    first_pass = streamlined and job.get('delivery_focus_version') == 2
+    held, omissions, warnings = {}, {}, {}
     for error in VALIDATOR.iter_errors(result):
         path = list(error.absolute_path)
         if (streamlined and len(path) == 2 and path[0] == 'classifications'
                 and error.validator == 'required'
                 and set(error.validator_value)-set(error.instance) == {'reason'}):
-            held[error.instance['article_id']] = '분류 사유 누락'
+            (warnings if first_pass else held)[error.instance['article_id']] = '분류 사유 누락'
         elif (streamlined and len(path) >= 3 and path[0] == 'classifications'
                 and path[2] not in {'article_id', 'relevant'}):
             aid = result['classifications'][path[1]].get('article_id')
-            held[aid] = '분류 사유 형식 오류'
+            (warnings if first_pass and path[2] == 'reason' else held)[aid] = '분류 사유 형식 오류'
         elif streamlined and len(path) >= 2 and path[0] == 'analyses':
             aid = path[1]
+            if first_pass and path[2:] == ['fact_summary'] and error.validator == 'maxLength':
+                warnings[aid] = '사실 요약 길이 초과'
+                continue
             if error.validator == 'required' and len(path) == 2:
                 missing = set(error.validator_value)-set(error.instance)
                 if missing <= {'action', 'customer_notice'}:
@@ -265,6 +269,8 @@ def validate(result, job, inputs, manifest):
     if len(ids) != len(set(ids)):
         raise ValueError('입력 ID 중복')
     unprocessed = set(result.get('unprocessed_ids', []))
+    if unprocessed and first_pass:
+        raise ValueError('미처리 분석을 계속해야 함 — 입력 전체 1차 처리 전 소비 금지')
     if unprocessed and (not streamlined or job.get('delivery_focus_version') != 1):
         raise ValueError('미처리 분리 미승인 회차')
     classified = [item['article_id'] for item in result['classifications']]
@@ -308,7 +314,10 @@ def validate(result, job, inputs, manifest):
                 raise
             held[row['article_id']] = str(error)
     true_ids = {key for key, verdict in verdicts.items() if verdict is True}
-    if set(result['analyses']) != true_ids:
+    if first_pass and set(result['analyses']) <= true_ids:
+        for aid in true_ids-set(result['analyses']):
+            held[aid] = '후보 분석 누락 — 해당 기사 후속 확인'
+    elif set(result['analyses']) != true_ids:
         raise ValueError('확정 후보 분석 누락·추가')
     if job.get('event_grouping_version') == 1 and 'event_groups' not in result:
         raise ValueError('동일 사건 전건 비교 결과 누락')
@@ -360,8 +369,10 @@ def validate(result, job, inputs, manifest):
                'consume_ready': not unprocessed and not held and not any(value is None for value in verdicts.values())}
     if streamlined:
         summary.update(held_articles=held, omitted_fields=omissions)
-        if job.get('delivery_focus_version') == 1:
+        if job.get('delivery_focus_version') in (1, 2):
             summary['unprocessed_ids'] = sorted(unprocessed)
+        if first_pass:
+            summary['warnings'] = warnings
     return summary
 
 

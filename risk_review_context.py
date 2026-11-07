@@ -168,9 +168,11 @@ def analysis_plan(job, checkpoints=(), max_bytes=12000):
 
 
 def ready_result(job, checkpoints, model_used='unconfirmed'):
-    """Explicit pending partition; do not invent a null/false verdict for unread IDs."""
+    """New rounds require a first pass of every input; holds need not be resolved."""
     from risk_result_validator import validate
     plan = analysis_plan(job, checkpoints)
+    if job.get('delivery_focus_version') == 2 and plan['pending_ids']:
+        raise ValueError('미처리 분석을 계속해야 함 — '+str(len(plan['pending_ids']))+'건')
     result = {key: job[key] for key in ('job_id', 'input_hash', 'policy_hash', 'body_manifest_hash')}
     result.update(schema_version=1, policy_version='risk-subscription-v1',
                   analysis_engine='chatgpt_subscription', model_used=model_used,

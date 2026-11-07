@@ -477,8 +477,8 @@ def collect(config, queue, verification=False, reviews_only=False, review_ids=No
                                  'expired_count': sum(v == 'expired' for v in ages.values()),
                                  'date_unconfirmed_count': sum(v == 'date_unconfirmed' for v in ages.values())}
         job['review_pass_version'] = rules.get('review_pass_version', 1)
-        if rules.get('delivery_focus_version') == 1:
-            job['delivery_focus_version'] = 1
+        if rules.get('delivery_focus_version') in (1, 2):
+            job['delivery_focus_version'] = rules['delivery_focus_version']
         job['report_layout_version'] = 1
         job['smtp_evidence_version'] = 1
         current_config(queue)
@@ -528,6 +528,7 @@ def verify_job(queue, jid, self_test=False):
         job['_validation_holds'] = info['held_articles']
         job['_validation_omissions'] = info['omitted_fields']
         job['_unprocessed_ids'] = info.get('unprocessed_ids', [])
+        job['_validation_warnings'] = info.get('warnings', {})
     if job.get('continuity_version') == 1 and policy().get('continuity', {}).get('version') != 1:
         raise RuntimeError('연속 운영 정책 미승인 — 발송 보류')
     if not info['consume_ready'] and (self_test or job.get('continuity_version') != 1):
@@ -616,7 +617,8 @@ def consume(queue, jid, self_test=False):
                              if isinstance(row.get('recheck'), dict) and row['recheck'].get('blocker') == 'body_unusable')
     unprocessed_ids = set(job.get('_unprocessed_ids', []))
     alert_deferred_ids = [aid for aid in deferred_ids if aid not in body_deferred_ids | unprocessed_ids]
-    reasons = {row['article_id']: row.get('reason', '') for row in result['classifications']}
+    reasons = {row['article_id']: row.get('reason') if isinstance(row.get('reason'), str) else '분류 사유 형식 경고'
+               for row in result['classifications']}
     reasons.update(job.get('_validation_holds', {}))
     reasons.update(dict.fromkeys(job.get('_unprocessed_ids', []), '최초 분석 미처리: 검증 기사 우선 안내 후 이어서 처리'))
     values, expected, resolutions = ({}, {}, {}) if self_test else prepare_reviews(queue, job, verdicts, reasons=reasons)
@@ -631,8 +633,9 @@ def consume(queue, jid, self_test=False):
     if job.get('review_pass_version') == 2:
         metadata['validation_holds'] = job['_validation_holds']
         metadata['omitted_fields'] = job['_validation_omissions']
-    if job.get('delivery_focus_version') == 1:
+    if job.get('delivery_focus_version') in (1, 2):
         metadata['unprocessed_ids'] = job.get('_unprocessed_ids', [])
+        metadata['validation_warnings'] = job.get('_validation_warnings', {})
     metadata['owner_excluded_ids'] = sorted(excluded_ids.intersection(verdicts))
     if values or resolutions:
         values['jobs/'+jid+'.json'], expected['jobs/'+jid+'.json'] = metadata, sha
@@ -661,7 +664,7 @@ def consume(queue, jid, self_test=False):
             label += ' · 최초 분석 미처리 '+str(len(unprocessed_ids))+'건'
         if alert_overdue_count:
             label += ' · 24시간 이상 미확인 '+str(alert_overdue_count)+'건'
-        banner = '<div style="padding:12px;color:#92400e;background:#fffbeb">'+html.escape(label)+' — 미처리는 최초 분석을 이어가며, 판정 보류는 새 근거가 확보될 때 다시 확인합니다.</div>'
+        banner = '<div style="padding:12px;color:#92400e;background:#fffbeb">'+html.escape(label)+' — 개별 확인 보류는 후속 처리하며, 같은 근거의 반복 분석은 하지 않습니다.</div>'
         document = re.sub(r'(<body\b[^>]*>)', lambda m: m[1]+banner, document, count=1)
         document = document.replace('금일 리스크 뉴스 없음', '검증 완료 발송 후보 없음')
         if empty:
@@ -672,6 +675,8 @@ def consume(queue, jid, self_test=False):
             subject += ' · '+label
         return subject, document
     def send(subject, html, self_only=False):
+        if job.get('delivery_focus_version') == 2:
+            subject, html = review_notice(subject, html)
         if deferred_ids:
             html = html.replace("금일 리스크 뉴스 없음 — ", "")
         if self_test:
@@ -892,6 +897,7 @@ def recover(queue, jid):
         job['_validation_holds'] = info['held_articles']
         job['_validation_omissions'] = info['omitted_fields']
         job['_unprocessed_ids'] = info.get('unprocessed_ids', [])
+        job['_validation_warnings'] = info.get('warnings', {})
     if (not info['consume_ready'] and job.get('continuity_version') != 1
             or job.get('continuity_version') == 1 and policy().get('continuity', {}).get('version') != 1):
         raise RuntimeError('복구 연속 처리 정책 미승인')
