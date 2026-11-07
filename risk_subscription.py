@@ -31,7 +31,7 @@ from risk_shards import split_job, hydrate, chunks
 from risk_audit import checkpoint, record_error, record_errors, run_audited, observe_pending, persist_unhandled
 from risk_continuity import (review_catalog, review_source, freeze_exposure, read_exposure, pending_reviews,
                              prepare_reviews, finish_reviews, delivery_view, delivery_verdicts, read_review,
-                             review_age)
+                             review_age, prune_expired_reviews)
 
 CONFIG = 'risk_subscription_config.json'
 POLICY = 'risk_policy.json'
@@ -163,20 +163,28 @@ def close_rejected(queue, jid):
     return True
 
 
-def prune_terminal_inputs(queue, retention_days=7):
-    """Remove only old terminal input shards; keep metadata/receipts and Git history."""
-    if type(retention_days) is not int or retention_days < 1:
-        raise ValueError('입력 보존기간은 1일 이상 정수')
-    cutoff = now()-timedelta(days=retention_days)
-    for entry in queue.list_input_entries():
-        jid = entry['path']
-        if entry['type'] != 'tree' or not JOB_ID.fullmatch(jid):
-            raise RuntimeError('큐 입력 회차 디렉터리 오류')
+def prune_terminal_inputs(queue, retention_hours=12):
+    """Prune terminal payloads after the recovery window; keep receipts and hashes."""
+    if type(retention_hours) is not int or retention_hours < 1:
+        raise ValueError('입력 보존기간은 1시간 이상 정수')
+    cutoff = now()-timedelta(hours=retention_hours)
+    directories = ('results', 'outbox', 'previews', 'logs')
+    blobs = {directory+'/'+e['path']: e['sha'] for directory in directories
+             for e in queue.list_entries(directory) if e['type'] == 'blob'}
+    pruned_rounds, pruned_files = 0, 0
+    for entry in queue.list_entries('jobs'):
+        name = entry['path']
+        if entry['type'] != 'blob' or not name.endswith('.json') or not JOB_ID.fullmatch(name[:-5]):
+            continue
+        jid = name[:-5]
         path = 'jobs/'+jid+'.json'
         job, sha = queue.get(path)
         if not job or job.get('job_id') != jid or job.get('status') not in TERMINAL:
             continue
         if any(v != 'accepted' for v in job.get('receipts', {}).values()):
+            continue
+        if job['status'] == 'completed' and (not job.get('ack') or not job.get('history_saved')
+                or not job.get('receipts') or set(job['receipts']) != set(job.get('expected_receipts', []))):
             continue
         if job['status'] in {'expired', 'cancelled'} and job.get('attempted_count', 0):
             continue
@@ -188,6 +196,8 @@ def prune_terminal_inputs(queue, retention_days=7):
                 continue
         except (ValueError, TypeError):
             continue
+        if job.get('input_retention_hours'):
+            continue
         shards = queue.list_input_entries(jid)
         expected, deletions = {path: sha}, []
         for shard in shards:
@@ -198,11 +208,46 @@ def prune_terminal_inputs(queue, retention_days=7):
             part = 'inputs/'+jid+'/'+name
             deletions.append(part)
             expected[part] = shard['sha']
-        if not deletions:
+        for directory in directories:
+            part = directory+'/'+jid+'.json'
+            payload_sha = blobs.get(part)
+            if payload_sha:
+                deletions.append(part)
+                expected[part] = payload_sha
+        original = job.get('input') or {}
+        if not deletions and not (original.get('items') or original.get('raw_articles') or job.get('body_manifest')):
             continue
-        job.update(inputs_pruned_at=now().isoformat(), input_retention_days=retention_days,
+        original.pop('items', None)
+        original.pop('raw_articles', None)
+        job.pop('body_manifest', None)
+        job.update(inputs_pruned_at=now().isoformat(), input_retention_hours=retention_hours,
                    inputs_pruned_files=len(deletions), inputs_pruned_bytes=sum(s.get('size', 0) for s in shards))
         queue.put_many({path: job}, expected, deletions=deletions)
+        pruned_rounds += 1
+        pruned_files += len(deletions)
+    return {'pruned_rounds': pruned_rounds, 'pruned_payload_files': pruned_files}
+
+
+def prune_articles(queue):
+    """Maintenance only. No expiry, collection, analysis, SMTP, seen write or ACK."""
+    index, sha = queue.get('index.json')
+    if not index or not isinstance(index.get('jobs'), list) or not isinstance(index.get('partial_closures', {}), dict):
+        raise RuntimeError('정리 회차 색인 누락')
+    leases = {'index.json': sha}
+    for jid in dict.fromkeys([*index['jobs'], *index.get('partial_closures', {})]):
+        if not JOB_ID.fullmatch(jid):
+            raise RuntimeError('정리 회차 ID 오류')
+        job, job_sha = queue.get('jobs/'+jid+'.json')
+        if not job or job.get('job_id') != jid or job.get('status') not in TERMINAL | {'closed_partial', 'delivery_failed'}:
+            return {'status': 'preserved_active', 'pruned_reviews': 0, 'paid_ai_calls': 0, 'smtp_calls': 0}
+        if job['status'] == 'closed_partial':
+            checked_closure(job, index)
+        elif job['status'] == 'delivery_failed':
+            checked_delivery_failure(job)
+        leases['jobs/'+jid+'.json'] = job_sha
+    count = prune_expired_reviews(queue, leases)
+    return {'status': 'pruned', 'pruned_reviews': count, 'paid_ai_calls': 0, 'smtp_calls': 0,
+            **prune_terminal_inputs(queue)}
 
 
 def reusable_exclusions(queue, index, job):
@@ -217,7 +262,7 @@ def reusable_exclusions(queue, index, job):
         if not previous or previous.get('status') != 'completed' or previous.get('mode') != 'production':
             continue
         created = utc_time(previous['created_at'])
-        if (not timedelta(0) <= current-created <= timedelta(hours=12)
+        if (previous.get('inputs_pruned_at') or not timedelta(0) <= current-created <= timedelta(hours=12)
                 or created.astimezone(timezone(timedelta(hours=9))).date()
                    != current.astimezone(timezone(timedelta(hours=9))).date()
                 or previous['policy_hash'] != job['policy_hash']
@@ -347,7 +392,8 @@ def collect(config, queue, verification=False, reviews_only=False, review_ids=No
         if article['url'] not in urls:
             urls.add(article['url'])
             unique.append(article)
-    raw = unique
+    instant = now()
+    raw = [a for a in unique if verification or review_age(a, instant) != 'expired']
     items = []
     by_url = {s['url']: s for s in catalog.values() if s.get('url')}
     previous_sources = dict(catalog)
@@ -954,15 +1000,14 @@ def acknowledge(queue, jid):
     else:
         queue.put('jobs/'+jid+'.json', job, sha)
     checkpoint('ack_complete')
-    # Retention is maintenance after durable delivery/history/ACK, never a
-    # prerequisite for fresh collection. Failure must not change delivery state.
+    notify_reviews(queue, job)
+    # Cleanup follows durable ACK and the notice that reads the review records.
     if job.get('mode') == 'production' and not job.get('self_test'):
         try:
-            config = json.loads(Path(CONFIG).read_text())
-            prune_terminal_inputs(queue, config.get('input_retention_days', 7))
+            retention = prune_articles(queue)
+            print('RISK_ARTICLE_RETENTION '+json.dumps(retention))
         except Exception as error:
             record_error('cleanup', error, 'input_prune_failed')
-    notify_reviews(queue, job)
     print(json.dumps({'job_id': jid, 'status': 'completed', 'paid_ai_calls': 0, 'history_saved': True,
                       'ack': True, 'analysis_complete': job.get('analysis_complete', True),
                       'deferred_count': len(job.get('deferred_ids', [])),

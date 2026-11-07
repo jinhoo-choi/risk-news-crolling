@@ -152,6 +152,54 @@ def review_age(item, current):
         return 'date_unconfirmed'
 
 
+def prune_expired_reviews(queue, leases):
+    """Delete expired source copies, retaining small identities to prevent replay."""
+    index, index_sha = review_index(queue)
+    values, expected, deletions = {}, {**leases, REVIEW_INDEX: index_sha}, []
+    catalog = index.setdefault('sources', {})
+    instant = now()
+    candidates = []
+    for entry in queue.list_entries('review'):
+        name = entry['path']
+        if name in {'index.json', 'notification-groups.json'}:
+            continue
+        if entry['type'] != 'blob' or not name.endswith('.json') or not JOB_ID.fullmatch(name[:-5]):
+            raise RuntimeError('보류 정리 파일 목록 오류')
+        source = catalog.get(name[:-5])
+        if source is None or review_age(source, instant) != 'eligible':
+            candidates.append(entry)
+    snapshots = queue.read_review_batch(candidates)
+    pending = set(index['pending'])
+    for entry in candidates:
+        name = entry['path']
+        aid, path = name[:-5], 'review/'+name
+        record, sha = snapshots[name]
+        if (not record or record.get('article_id') != aid or sha != entry['sha']):
+            raise RuntimeError('보류 정리 원본 변경')
+        if record.get('data_pruned_at') or review_age(record.get('item', {}), instant) != 'expired':
+            continue  # Unknown publication dates never become guessed expirations.
+        if aid in catalog or aid in pending:
+            source = record.get('last_source') or review_source(record['item'], record.get('body', {}))
+            source = {key: source.get(key) for key in ('url', 'item_hash', 'body_hash', 'body_status')}
+            source['published_at'] = record['item'].get('published_at') or record['item'].get('pubDate')
+            catalog[aid] = source
+        pending.discard(aid)
+        expected[path] = sha
+        if record.get('resolution_kind') == 'owner_excluded':
+            # Keep the explicit no-send decision, without its article/body copy.
+            values[path] = {k: record[k] for k in ('schema_version', 'article_id', 'status',
+                           'resolution_kind', 'resolved_at', 'resolved_by_job', 'source_hash') if k in record}
+            values[path]['data_pruned_at'] = instant.isoformat()
+        else:
+            deletions.append(path)
+    count = len(deletions)+len(values)
+    if count:
+        index['pending'] = [aid for aid in index['pending'] if aid in pending]
+        values[REVIEW_INDEX] = index
+        queue.put_many(values, expected, deletions=deletions)
+    return count
+
+
 def prepare_reviews(queue, job, verdicts, reason='analysis_pending', reasons=None):
     """Return one atomic batch; unresolved copies must persist BEFORE any SMTP."""
     index, index_sha = review_index(queue)
