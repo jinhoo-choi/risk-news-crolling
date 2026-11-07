@@ -115,7 +115,7 @@ def save_checkpoint(queue, jid, attempt_id, checkpoint):
     checkpoint = bind_sources(checkpoint, job)
     from risk_review_context import analysis_plan
     analysis_plan(job, [checkpoint], body_ids=[])
-    if not checkpoint['covered_ids']:
+    if not checkpoint['covered_ids'] and not checkpoint.get('event_groups'):
         raise ValueError('빈 체크포인트 저장 금지')
     h = digest(checkpoint)
     if any(ref['sha256'] == h for ref in attempt['checkpoint_refs']):
@@ -123,12 +123,19 @@ def save_checkpoint(queue, jid, attempt_id, checkpoint):
         return attempt  # Ambiguous previous write: verify before returning success.
     if set(attempt['covered_ids']).intersection(checkpoint['covered_ids']):
         raise ValueError('완료 ID 재분석·덮어쓰기 금지')
+    checkpoints, leases = read_checkpoints(queue, job, attempt)
+    from risk_review_context import validate_progress
+    validate_progress(job, [*checkpoints, checkpoint], attempt_id)
+    # A single final grouping checkpoint may refer to earlier immutable article
+    # decisions. No early grouping can become impossible to extend or correct.
+    if checkpoint.get('event_groups') and any(cp.get('event_groups') for cp in checkpoints):
+        raise ValueError('동일 사건 전체 비교는 한 체크포인트로 저장')
     cp_path = 'analysis-checkpoints/'+jid+'/'+attempt_id+'-'+str(len(attempt['checkpoint_refs'])+1).zfill(4)+'.json'
     attempt['checkpoint_refs'].append({'path': cp_path, 'sha256': h})
     attempt['covered_ids'].extend(checkpoint['covered_ids'])
     attempt.update(processed_count=len(attempt['covered_ids']), updated_at=now().isoformat())
     queue.put_many({path: attempt, cp_path: checkpoint},
-                   {'jobs/'+jid+'.json': job_sha, path: attempt_sha, cp_path: None,
+                   {**leases, 'jobs/'+jid+'.json': job_sha, path: attempt_sha, cp_path: None,
                     'results/'+jid+'.json': None, 'outbox/'+jid+'.json': None})
     return attempt
 

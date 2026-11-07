@@ -235,12 +235,7 @@ def analysis_plan(job, checkpoints=(), max_bytes=12000, body_ids=None):
             'scope': 'local_resume_only_final_validation_required'}
 
 
-def ready_result(job, checkpoints, model_used='unconfirmed', attempt_id=None):
-    """New rounds require a first pass of every input; holds need not be resolved."""
-    from risk_result_validator import validate
-    plan = analysis_plan(job, checkpoints, body_ids=[])
-    if job.get('delivery_focus_version') == 2 and plan['pending_ids']:
-        raise ValueError('미처리 분석을 계속해야 함 — '+str(len(plan['pending_ids']))+'건')
+def _assemble(job, plan, model_used, attempt_id):
     result = {key: job[key] for key in ('job_id', 'input_hash', 'policy_hash', 'body_manifest_hash')}
     result.update(schema_version=1, policy_version='risk-subscription-v1',
                   analysis_engine='chatgpt_subscription', model_used=model_used,
@@ -252,6 +247,26 @@ def ready_result(job, checkpoints, model_used='unconfirmed', attempt_id=None):
         result['review_attempt_id'] = attempt_id
     if plan['pending_ids']:
         result['unprocessed_ids'] = plan['pending_ids']
+    return result
+
+
+def validate_progress(job, checkpoints, attempt_id):
+    """Catch immutable/global errors before checkpoint publication, not at SMTP."""
+    from risk_result_validator import validate_checkpoint
+    plan = analysis_plan(job, checkpoints, body_ids=[])
+    if plan['event_groups'] and plan['pending_ids']:
+        raise ValueError('동일 사건 묶음은 입력 전수 1차 처리 뒤 한 번 저장')
+    result = _assemble(job, plan, 'unconfirmed', attempt_id)
+    return validate_checkpoint(result, job, job['input'], job['body_manifest'])
+
+
+def ready_result(job, checkpoints, model_used='unconfirmed', attempt_id=None):
+    """New rounds require a first pass of every input; holds need not be resolved."""
+    from risk_result_validator import validate
+    plan = analysis_plan(job, checkpoints, body_ids=[])
+    if job.get('delivery_focus_version') == 2 and plan['pending_ids']:
+        raise ValueError('미처리 분석을 계속해야 함 — '+str(len(plan['pending_ids']))+'건')
+    result = _assemble(job, plan, model_used, attempt_id)
     validate(result, job, job['input'], job['body_manifest'])
     return result
 

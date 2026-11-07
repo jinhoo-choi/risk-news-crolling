@@ -27,6 +27,8 @@ null의 `blocker`는 `entity`, `event_stage`, `date`, `conflicting_evidence`, `u
 
 체크포인트는 `{job_id,input_hash,policy_hash,body_manifest_hash,covered_ids,classifications,analyses,event_groups}`이다. 최종 최고점 대표는 전체 입력의 기존 점수 산출 뒤 선정하며 서로 다른 입력 ID를 사건 중복이라는 이유로 미리 제외하지 않는다.
 
+기사별 체크포인트는 `event_groups=[]`로 저장한다. 전체 1차 처리 뒤 사건 묶음을 한 번 비교하고, 마지막 기사 체크포인트 또는 별도의 묶음 체크포인트에 저장한다. 별도 묶음은 `covered_ids=[]`, `classifications=[]`, `analyses={}`와 전체 `event_groups`를 담는다. 저장 전 전체 계약의 형식·그룹 ID·중복을 검증하므로 오류가 있으면 원격 상태는 바뀌지 않는다. 로컬 오류만 고쳐 같은 저장을 다시 계획하며 완료 기사 판단을 재생성하지 않는다. 체크포인트 검증은 미완료 진행을 저장하기 위한 것이며 미시도 소비 차단을 완화하지 않는다.
+
 ## 연결 도구를 사용하는 오프라인 transaction 계획
 
 CLI는 GitHub·SMTP·AI를 호출하지 않는다. 이미 내려받은 비공개 로컬 snapshot을 받아 게시할 내용을 만든다. 공개 저장소에 snapshot/transaction을 저장하지 않는다.
@@ -44,6 +46,8 @@ CLI는 GitHub·SMTP·AI를 호출하지 않는다. 이미 내려받은 비공개
 ```
 
 위 job의 `{}`는 설명용 자리이며 실제 원장을 사용한다. shards·attempt가 참조한 checkpoint·인계 archive도 동일 commit에서 조회해 넣는다. 존재하는 파일의 실제 SHA를 쓰고, 부재가 확인된 경로만 null로 쓴다. 분석 출력용 `{job,checkpoints}` snapshot과 session용 `{queue_head,files}` snapshot을 혼동하지 않는다.
+
+새 head의 tree에서 blob SHA가 변하지 않은 입력 shards·완료 checkpoint는 최초 검증한 비공개 로컬 원본을 재사용한다. 매 묶음마다 본문 전체를 다시 다운로드하지 않는다. 변경된 attempt/job 및 새 checkpoint와 부재 조건만 갱신하고, 게시 직전 모든 expected SHA를 대조한다. 로컬 진행 검증은 저장된 판정을 합칠 뿐 AI 재분석을 요구하지 않는다.
 
 ```bash
 python risk_review_session.py private-session.json begin --job-id JOB --attempt-id OWNER --source-main MAIN_SHA --automation-id AUTOMATION --output private-begin-001.json

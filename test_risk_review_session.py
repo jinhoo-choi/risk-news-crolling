@@ -207,6 +207,45 @@ class Sessions(unittest.TestCase):
         cp=self.checkpoint();cp['classifications'][1]['decision_basis']['source_hash']='0'*64
         with self.assertRaisesRegex(ValueError,'해시 불일치'):
             analysis_plan(self.j,[bind_sources(cp,self.j)],body_ids=[])
+    def test_malformed_group_rejected_before_immutable_write_then_corrected(self):
+        begin(self.q,'test','owner',MAIN,'automation');before=copy.deepcopy(self.q.data)
+        cp=self.checkpoint();cp['event_groups']=[{'article_ids':['one','held'],'reason':'같은 원문 사건으로 확인했다.'}]
+        with self.assertRaisesRegex(Exception,'reviewed'):save_checkpoint(self.q,'test','owner',cp)
+        self.assertEqual(self.q.data,before)
+        cp['event_groups'][0]['reviewed']=True
+        save_checkpoint(self.q,'test','owner',cp);finalize(self.q,'test','owner')
+        smtp=SMTP();self.consume(smtp);self.assertEqual(len(smtp.calls),3)
+    def test_final_group_only_checkpoint_reuses_all_article_decisions(self):
+        begin(self.q,'test','owner',MAIN,'automation')
+        save_checkpoint(self.q,'test','owner',self.checkpoint(['one']))
+        save_checkpoint(self.q,'test','owner',self.checkpoint(['held']))
+        refs=copy.deepcopy(self.q.data['analysis-attempts/test.json']['checkpoint_refs'])
+        before={r['path']:copy.deepcopy(self.q.data[r['path']]) for r in refs}
+        cp=self.checkpoint();cp.update(covered_ids=[],classifications=[],analyses={},
+                event_groups=[{'article_ids':['one','held'],'reason':'같은 원문 사건으로 확인했다.','reviewed':True}])
+        save_checkpoint(self.q,'test','owner',cp);result=finalize(self.q,'test','owner')
+        self.assertEqual(result['event_groups'],cp['event_groups'])
+        self.assertEqual(before,{p:self.q.data[p] for p in before})
+        self.assertEqual(self.q.data['analysis-attempts/test.json']['processed_count'],2)
+    def test_duplicate_group_across_checkpoints_rejected_without_mutation(self):
+        begin(self.q,'test','owner',MAIN,'automation');cp=self.checkpoint()
+        cp['event_groups']=[{'article_ids':['one','held'],'reason':'같은 원문 사건으로 확인했다.','reviewed':True}]
+        save_checkpoint(self.q,'test','owner',cp);before=copy.deepcopy(self.q.data)
+        cp.update(covered_ids=[],classifications=[],analyses={})
+        with self.assertRaisesRegex(ValueError,'중복 ID'):save_checkpoint(self.q,'test','owner',cp)
+        self.assertEqual(self.q.data,before);finalize(self.q,'test','owner')
+    def test_progress_with_only_exclusions_saves_but_never_passes_consume_gate(self):
+        begin(self.q,'test','owner',MAIN,'automation');cp=self.checkpoint(['one'])
+        body=self.j['body_manifest'][0]['body']
+        cp['classifications'][0].update(relevant=False,reason='기존 제외 기준 확인',
+                decision_basis={'kind':'body','source_hash':source_hash(body),'quote':body})
+        cp['analyses']={}
+        save_checkpoint(self.q,'test','owner',cp)
+        from risk_review_context import validate_progress
+        info=validate_progress(self.j,[cp],'owner')
+        self.assertFalse(info['consume_ready']);self.assertEqual(info['unprocessed_ids'],['held'])
+        with self.assertRaisesRegex(ValueError,'미처리'):finalize(self.q,'test','owner')
+        save_checkpoint(self.q,'test','owner',self.checkpoint(['held']));finalize(self.q,'test','owner')
 
 
 class ModernDelivery(unittest.TestCase):
