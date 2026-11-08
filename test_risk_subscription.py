@@ -153,6 +153,45 @@ class Integration(unittest.TestCase):
         self.assertTrue(queue.data['jobs/test.json']['ack'])
         self.assertEqual(queue.data['jobs/test.json']['paid_ai_calls'], 0)
 
+    def test_verified_broker_security_without_exposure_is_reference_owner_report(self):
+        queue = self.fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        job['broker_security_version'] = 1
+        item = job['input']['items'][0]
+        item.update(title='미래에셋증권 고객정보 유출 사고 확인',
+                    description='미래에셋증권이 고객정보 유출 사실을 확인했다.',
+                    desc='미래에셋증권이 고객정보 유출 사실을 확인했다.')
+        body = '미래에셋증권은 고객정보 유출 사고가 발생한 사실을 확인했다.'
+        job['body_manifest'][0]['body'] = body
+        analysis = result['analyses']['one']
+        analysis.update(entity='미래에셋증권', entities=['미래에셋증권'],
+                        base_grade='참고', fact_summary=body, action='', customer_notice=None,
+                        judgment={'핵심사건':'고객정보 유출', '손실주체':'없음',
+                                  '당사연관':'직접', '확정여부':'확정'},
+                        evidence=[{'source_segment':'body', 'source_hash':hashlib.sha256(body.encode()).hexdigest(),
+                                   'quote':body}])
+        result['classifications'][0]['reason'] = '확인된 타 증권사 고객정보 유출 참고 리스크.'
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        from risk_provider import Provider
+        from risk_broker_security import verified_broker_security
+        attached = dict(item, entity=analysis['entity'])
+        Provider(job, result).attach(attached)
+        self.assertTrue(verified_broker_security(attached))
+        legacy = copy.deepcopy(job)
+        legacy.pop('broker_security_version')
+        Provider(legacy, result).attach(attached)
+        self.assertFalse(verified_broker_security(attached))
+        smtp = SMTP()
+        self.run_consume(queue, smtp)
+        packet = queue.data['outbox/test.json']
+        self.assertTrue(packet['self_only'])
+        self.assertEqual(len(smtp.calls), 1)
+        self.assertIn(item['title'], packet['html'])
+        self.assertIn('참고', packet['html'])
+        self.assertNotIn('고객케어', packet['html'])
+        self.assertEqual(queue.data['jobs/test.json']['paid_ai_calls'], 0)
+
     def test_retention_runs_only_after_ack_and_failure_preserves_delivery(self):
         queue, smtp = self.fixture(), SMTP()
         def maintenance(actual_queue, max_batches=None):
