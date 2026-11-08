@@ -125,7 +125,7 @@ def save_checkpoint(queue, jid, attempt_id, checkpoint):
         raise ValueError('완료 ID 재분석·덮어쓰기 금지')
     checkpoints, leases = read_checkpoints(queue, job, attempt)
     from risk_review_context import validate_progress
-    validate_progress(job, [*checkpoints, checkpoint], attempt_id)
+    validation = validate_progress(job, [*checkpoints, checkpoint], attempt_id)
     # A single final grouping checkpoint may refer to earlier immutable article
     # decisions. No early grouping can become impossible to extend or correct.
     if checkpoint.get('event_groups') and any(cp.get('event_groups') for cp in checkpoints):
@@ -133,6 +133,11 @@ def save_checkpoint(queue, jid, attempt_id, checkpoint):
     cp_path = 'analysis-checkpoints/'+jid+'/'+attempt_id+'-'+str(len(attempt['checkpoint_refs'])+1).zfill(4)+'.json'
     attempt['checkpoint_refs'].append({'path': cp_path, 'sha256': h})
     attempt['covered_ids'].extend(checkpoint['covered_ids'])
+    # Expose the existing validator's individual holds in the offline plan,
+    # before immutable publication. Holds still never block valid peers.
+    attempt['validation_summary'] = {key: copy.deepcopy(validation[key]) for key in
+        ('classifications', 'analyses', 'needs_review', 'held_articles', 'omitted_fields', 'warnings')
+        if key in validation}
     attempt.update(processed_count=len(attempt['covered_ids']), updated_at=now().isoformat())
     queue.put_many({path: attempt, cp_path: checkpoint},
                    {**leases, 'jobs/'+jid+'.json': job_sha, path: attempt_sha, cp_path: None,
@@ -248,4 +253,8 @@ if __name__ == '__main__':
     import os
     with open(args.output,'x') as stream:
         os.chmod(args.output,0o600);json.dump(output,stream,ensure_ascii=False,indent=2)
-    print(json.dumps({'operation':args.operation,'transactions':len(queue.transactions),'smtp_calls':0,'paid_ai_calls':0}))
+    summary = {'operation':args.operation,'transactions':len(queue.transactions),
+               'smtp_calls':0,'paid_ai_calls':0}
+    if args.operation == 'checkpoint':
+        summary['validation_hold_count'] = len(value.get('validation_summary',{}).get('held_articles',{}))
+    print(json.dumps(summary))
