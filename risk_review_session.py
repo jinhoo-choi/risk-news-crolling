@@ -88,7 +88,8 @@ def begin(queue, jid, attempt_id, source_main, automation_id):
 def read_checkpoints(queue, job, attempt):
     prefix = 'analysis-checkpoints/'+job['job_id']+'/'
     checkpoints, leases, paths = [], {}, set()
-    if len(attempt.get('checkpoint_refs', [])) > len(job['input']['items'])+1:
+    allowance = 2 if job.get('caution_care_version') == 1 else 1
+    if len(attempt.get('checkpoint_refs', [])) > len(job['input']['items'])+allowance:
         raise ValueError('체크포인트 개수가 입력 범위를 초과')
     for ref in attempt.get('checkpoint_refs', []):
         path = ref['path']
@@ -114,8 +115,9 @@ def save_checkpoint(queue, jid, attempt_id, checkpoint):
     from risk_review_evidence import bind_sources
     checkpoint = bind_sources(checkpoint, job)
     from risk_review_context import analysis_plan
-    analysis_plan(job, [checkpoint], body_ids=[])
-    if not checkpoint['covered_ids'] and not checkpoint.get('event_groups'):
+    if 'narratives' not in checkpoint:
+        analysis_plan(job, [checkpoint], body_ids=[])
+    if not checkpoint['covered_ids'] and not checkpoint.get('event_groups') and 'narratives' not in checkpoint:
         raise ValueError('빈 체크포인트 저장 금지')
     h = digest(checkpoint)
     if any(ref['sha256'] == h for ref in attempt['checkpoint_refs']):
@@ -124,6 +126,8 @@ def save_checkpoint(queue, jid, attempt_id, checkpoint):
     if set(attempt['covered_ids']).intersection(checkpoint['covered_ids']):
         raise ValueError('완료 ID 재분석·덮어쓰기 금지')
     checkpoints, leases = read_checkpoints(queue, job, attempt)
+    if any('narratives' in saved for saved in checkpoints):
+        raise ValueError('대표기사 문구 체크포인트 이후 추가·중복 오류')
     from risk_review_context import validate_progress
     validation = validate_progress(job, [*checkpoints, checkpoint], attempt_id)
     # A single final grouping checkpoint may refer to earlier immutable article

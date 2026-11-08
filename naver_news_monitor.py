@@ -4986,6 +4986,13 @@ def filter_articles_for_scope(filtered: list, exposure_data: dict, self_only: bo
     return [a for a in filtered if _keep(a)]
 
 
+def _customer_notice_row(a):
+    """Reuse the existing escaped care row for eligible urgent/caution cards."""
+    notice_text = _esc(truncate_at_sentence(a.get("customer_notice") or "", 200))
+    notice_row = f'<tr><td class="care-td" bgcolor="#f8fafc" style="padding:10px 16px;background:#f8fafc;border-top:1px solid #e2e8f0;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#334155;">고객케어 안내 추천 문구</span></p><p style="margin:0;font-size:12px;color:#334155;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
+    return notice_row
+
+
 def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '', exposure_data: dict = None, ref_date: str = '', competitor_notices: list = None, today_str: str = '', now_override=None):
     """now_override: 헤더의 '기준 시각'을 명시 지정(수동 보정 발송용).
     자동 발송분과 동일한 기준시각으로 재발송할 때 사용하며,
@@ -5097,6 +5104,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 if grade == "주의":
                     c_exp_html = build_exposure_html(a_entities, exposure_data or {}, ref_date, border_color=gs["border_left"], article=a)
                     c_action_row = f'<tr><td style="padding:10px 16px;background:#ffffff;border-top:1px solid {gs["card_border"]};border-bottom:1px solid {gs["card_border"]};"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#dc2626;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">⚡ 대응방안</span></p><p style="margin:0;font-size:13px;color:#1e293b;line-height:1.6;font-weight:500;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
+                    c_notice_row = _customer_notice_row(a) if a.get("_caution_care") else ''
                     c_exp_row   = f'<tr><td style="padding:0;">{c_exp_html}</td></tr>' if c_exp_html else ""
                     c_risk = display_risk_score(a)
                     if c_risk:
@@ -5131,7 +5139,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
               </table>
             </td>
           </tr>
-          {c_action_row}{c_exp_row}
+          {c_action_row}{c_notice_row}{c_exp_row}
         </table>'''
                 else:
                     exposure_html = build_exposure_html(a_entities, exposure_data or {}, ref_date, article=a)
@@ -5160,8 +5168,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                     urgent_badges += _price_badge(a)  # 등락률 뱃지 — 키워드 옆
                     action_row = f'<tr><td class="action-td" bgcolor="#ffffff" style="padding:10px 16px;border-bottom:1px solid {gs["card_border"]};background:#ffffff;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#dc2626;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">⚡ 대응방안</span></p><p style="margin:0;font-size:12px;color:#1e293b;line-height:1.6;font-weight:600;word-break:keep-all;">{_esc(a["action"])}</p></td></tr>' if a.get("action") else ""
                     exposure_row = f'<tr><td style="padding:0;border-top:1px solid #e2e8f0;border-bottom:1px solid {gs["card_border"]};background:#ffffff;">{exposure_html}</td></tr>' if exposure_html else ""
-                    notice_text = _esc(truncate_at_sentence(a.get("customer_notice") or "", 200))
-                    notice_row = f'<tr><td class="care-td" bgcolor="#f8fafc" style="padding:10px 16px;background:#f8fafc;border-top:1px solid #e2e8f0;"><p style="margin:0 0 5px 0;font-size:11px;font-weight:bold;letter-spacing:0.3px;"><span style="background:#2563eb;color:#fff;padding:2px 6px;font-size:10px;margin-right:5px;border-radius:3px;">✦ AI</span><span style="color:#334155;">고객케어 안내 추천 문구</span></p><p style="margin:0;font-size:12px;color:#334155;line-height:1.7;white-space:pre-line;word-break:keep-all;">{notice_text}</p></td></tr>' if a.get("customer_notice") else ""
+                    notice_row = _customer_notice_row(a)
                     bottom_box = f'<tr><td bgcolor="#fff8f8" style="background:#fff8f8;border-top:1px solid {gs["card_border"]};padding:0;"><table width="100%" cellpadding="0" cellspacing="0" border="0">{action_row}{notice_row}{exposure_row}</table></td></tr>' if (action_row or exposure_row or notice_row) else ""
                     is_last = (display_items.index(a) == len([x for x in display_items if x.get("grade")=="긴급"]) - 1 + sum(1 for x in display_items if x.get("grade")!="긴급"))
                     divider = "" if is_last else f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0;"><tr><td style="padding:0;height:1px;background:#ef4444;font-size:0;line-height:0;">&nbsp;</td></tr></table>'
@@ -6792,7 +6799,10 @@ JSON만 출력:
                 # 탐지·대응방안은 유지하고 고객 문구만 버린다
                 print(f"  [고객문구 차단:{_nf_reason}] {article.get('title','')[:35]}")
                 result["customer_notice"] = None
-            if result.get("customer_notice") and (grade == "긴급" or article.get("_notice_exempt")):
+            caution_notice = (grade == "주의" and RISK_PROVIDER is not None
+                              and RISK_PROVIDER.job.get('caution_care_version') == 1
+                              and not _body_failed)
+            if result.get("customer_notice") and (grade == "긴급" or caution_notice or article.get("_notice_exempt")):
                 notice_text = result["customer_notice"]
                 # ── 고객 안내 문구 검증 (플레이스홀더·연도 환각·창작 수치) ──
                 notice_text, _nfix = sanitize_customer_notice(
@@ -6802,9 +6812,22 @@ JSON만 출력:
                 notice_text, _nsol = strip_solicitation(notice_text)
                 if _nsol:
                     print(f"  [매매권유 제거 {_nsol}문장] {article.get('title','')[:30]}")
+                if caution_notice:
+                    supported_lines = []
+                    for line in notice_text.splitlines():
+                        supported = []
+                        for sentence in re.split(r'(?<=[.!?])\s+', line):
+                            clean, _ = strip_unsupported_action_clauses(sentence, action_guard_rows)
+                            if clean:
+                                supported.append(clean)
+                        if supported:
+                            supported_lines.append(' '.join(supported))
+                    notice_text = '\n'.join(supported_lines)
                 if _body_failed:
                     notice_text += "\n*(본문 크롤링 실패, 제목 기반 생성)"
                 article["customer_notice"] = notice_text
+                if caution_notice:
+                    article["_caution_care"] = True
         except Exception as e:
             print(f"  대응방안 생성 오류 ({article.get('title','')[:20]}): {e}")
 

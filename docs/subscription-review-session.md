@@ -82,3 +82,38 @@ python risk_review_session.py private-session-fresh.json finalize --job-id JOB -
 정규 자연 실행에서 input 전체 판단·미시도 0, 시작/결과/소비 시각, SMTP 접수·seen·ACK를 같은 회차 ID로 확인해야 운영 개선 판정이 가능하다. 오프라인 함수 시간은 AI 분석 시간이나 실제 안내 지연이 아니다. 예약이 실행되지 않는 외부 원인은 저장소 코드만으로 해결됐다고 판정할 수 없다. 예약/배포 승인은 운영자의 명시적 범위에 따른다.
 
 새 회차의 `first_pass_complete/first_pass_count`는 전체 입력 1차 판단 여부/건수이며 `analysis_complete`는 보류 해소 여부다. 본문 상태 보류를 포함한 전수 판단 완료와 모든 사실 확인 완료를 구분한다. `collection_timing.input_ready_at`은 입력 준비 시각이고 private 큐 게시 완료는 Actions의 collected/step 종료 증거로 확인한다.
+
+
+## 대표기사 문구 추가 (caution_care_version=1 새 회차)
+
+기사 판정 체크포인트는 불변으로 유지한다. 전수 1차 처리와 event_groups 저장 뒤
+`--narrative-draft --attempt-id OWNER`로 로컬 초안만 조립한다. 이 초안은 ready 결과가
+아니며 비공개 results에 게시하지 않는다. 고정 CSV/seen에서 기존 narrative_targets를
+한 번 실행해 고른 최종 긴급·주의 대표기사의 문구만 작성한다.
+
+다음 별도 체크포인트를 기존 session checkpoint 명령으로 게시·재조회한다.
+
+```json
+{
+  "job_id": "JOB", "input_hash": "HASH", "policy_hash": "HASH", "body_manifest_hash": "HASH",
+  "covered_ids": [], "classifications": [], "analyses": {}, "event_groups": [],
+  "narratives": {
+    "ARTICLE_ID": {
+      "action": "원문과 실제 보유현황에 따른 실무 확인 조치",
+      "customer_notice": "해당 사건과 고객이 확인할 사항을 담은 안내 초안"
+    }
+  }
+}
+```
+
+허용 필드는 action/customer_notice와 선택적인 omission_reason뿐이다. 사실·판정·등급·귀속을
+바꿀 수 없으며 이미 작성한 문구를 다른 문구로 덮어쓸 수도 없다. 단 한 번 추가한다.
+미시도 입력·false·본문 미확보 기사를 문구 대상으로 바꿀 수 없다. 대응방안을 빈 값으로
+생략할 때에는 실제 오류/근거 부족을 omission_reason(8~240자)에 적는다.
+대표가 없으면 narratives={}로 작성 완료를 기록한다. 고객 안내 금지 대상은
+customer_notice=null을 유지한다. 선택 문구 검증 실패는 기존대로 문구를 생략하며
+정상 사실 안내는 계속한다. 이 단계는 새 모델 호출·본문 재조회·외부 API·SMTP를 하지 않는다.
+
+finalize는 이 문구 체크포인트까지 합쳐 action/customer_notice만 최종 결과에 반영한다.
+이전 기사 체크포인트의 바이트·해시·완료ID는 바뀌지 않는다. 새 플래그가 없는 구형
+회차는 기존 finalize/고객 문구 표시 계약을 유지하며 접수·종결 결과는 재작성하지 않는다.

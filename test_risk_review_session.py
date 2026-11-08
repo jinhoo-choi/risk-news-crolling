@@ -52,6 +52,89 @@ class Sessions(unittest.TestCase):
         b=self.j['body_manifest'][1]['body'];v={'kind':'body','source_hash':source_hash(b),'quote':b}
         if blocker:v['blocker']=blocker
         return v
+    def narrative_checkpoint(self, writing):
+        cp=self.checkpoint()
+        cp.update(covered_ids=[],classifications=[],analyses={},event_groups=[],narratives=writing)
+        return cp
+
+    def test_representative_writing_is_appended_without_rewriting_decisions(self):
+        self.j['caution_care_version']=1
+        self.answer['analyses']['one'].update(action='',customer_notice=None)
+        begin(self.q,'test','owner',MAIN,'automation')
+        save_checkpoint(self.q,'test','owner',self.checkpoint())
+        original=copy.deepcopy(self.q.data['analysis-checkpoints/test/owner-0001.json'])
+        with self.assertRaisesRegex(ValueError,'문구 체크포인트 필요'):
+            finalize(self.q,'test','owner')
+        draft=ready_result(self.j,[original],attempt_id='owner',narrative_draft=True)
+        self.assertEqual(draft['analyses']['one']['action'],'')
+        action='당사 공식 장애 공지에서 영향 범위와 복구 상태를 확인한다.'
+        cp=self.narrative_checkpoint({'one':{'action':action,'customer_notice':None}})
+        save_checkpoint(self.q,'test','owner',cp)
+        result=finalize(self.q,'test','owner')
+        self.assertEqual(result['analyses']['one']['action'],action)
+        self.assertEqual(self.q.data['analysis-checkpoints/test/owner-0001.json'],original)
+        self.assertEqual(self.q.data['analysis-attempts/test.json']['processed_count'],2)
+        before=copy.deepcopy(self.q.data)
+        self.assertEqual(finalize(self.q,'test','owner'),result)
+        self.assertEqual(self.q.data,before)
+
+    def test_narratives_cannot_change_facts_duplicate_or_disguise_missing_writing(self):
+        self.j['caution_care_version']=1
+        self.answer['analyses']['one'].update(action='',customer_notice=None)
+        begin(self.q,'test','owner',MAIN,'automation')
+        save_checkpoint(self.q,'test','owner',self.checkpoint())
+        for writing in ({'action':'','customer_notice':None},
+                        {'action':'공식 공지 확인','customer_notice':None,'base_grade':'긴급'}):
+            with self.subTest(writing=writing),self.assertRaises(ValueError):
+                save_checkpoint(self.q,'test','owner',self.narrative_checkpoint({'one':writing}))
+        cp=self.narrative_checkpoint({'one':{'action':'','customer_notice':None,
+                      'omission_reason':'사건의 현재 조치를 뒷받침할 근거 부족'}})
+        save_checkpoint(self.q,'test','owner',cp)
+        with self.assertRaisesRegex(ValueError,'중복 오류'):
+            save_checkpoint(self.q,'test','owner',self.narrative_checkpoint({}))
+        self.assertEqual(finalize(self.q,'test','owner')['analyses']['one']['action'],'')
+
+    def test_narratives_need_full_first_pass_and_do_not_apply_to_legacy_jobs(self):
+        begin(self.q,'test','owner',MAIN,'automation')
+        with self.assertRaisesRegex(ValueError,'계약'):
+            save_checkpoint(self.q,'test','owner',self.narrative_checkpoint({}))
+        self.j['caution_care_version']=1
+        with self.assertRaisesRegex(ValueError,'전수 1차 처리'):
+            save_checkpoint(self.q,'test','owner',self.narrative_checkpoint({}))
+
+    def test_bad_optional_narrative_fields_do_not_block_valid_peers(self):
+        self.j['caution_care_version']=1
+        self.answer['analyses']['one'].update(action='',customer_notice=None)
+        begin(self.q,'test','owner',MAIN,'automation')
+        save_checkpoint(self.q,'test','owner',self.checkpoint())
+        cp=self.narrative_checkpoint({'one':{'action':99,'customer_notice':'잘못된 문구'*40,
+                                             'omission_reason':'선택 문구의 형식 오류를 기록한다'}})
+        owner=save_checkpoint(self.q,'test','owner',cp)
+        self.assertFalse(owner['validation_summary']['held_articles'])
+        self.assertEqual(set(owner['validation_summary']['omitted_fields']['one']),{'action','customer_notice'})
+        finalize(self.q,'test','owner')
+        smtp=SMTP();self.consume(smtp)
+        self.assertTrue(smtp.calls)
+        self.assertFalse(self.q.data['jobs/test.json']['deferred_ids'])
+
+    def test_narrative_draft_cli_does_not_publish_or_require_final_writing(self):
+        import tempfile
+        self.j['caution_care_version']=1
+        cp=self.checkpoint()
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot=Path(tmp,'input.json');output=Path(tmp,'draft.json')
+            snapshot.write_text(json.dumps({'job':self.j,'checkpoints':[cp]}))
+            root=Path(__file__).parent
+            cmd=[sys.executable,str(root/'risk_review_context.py'),str(snapshot),
+                 '--narrative-draft','--attempt-id','owner','--output',str(output)]
+            before=copy.deepcopy(self.q.data)
+            done=subprocess.run(cmd,capture_output=True,text=True)
+            self.assertEqual(done.returncode,0,done.stderr)
+            draft=json.loads(output.read_text())
+            self.assertEqual(draft['scope'],'local_narrative_draft_only_not_ready')
+            self.assertEqual(draft['result']['review_attempt_id'],'owner')
+            self.assertEqual(self.q.data,before)
+
     def test_normal_native_delivery_and_idempotent_finalize(self):
         result=self.publish();before=copy.deepcopy(self.q.data)
         self.assertEqual(finalize(self.q,'test','owner'),result);self.assertEqual(self.q.data,before)

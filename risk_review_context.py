@@ -153,9 +153,16 @@ def analysis_plan(job, checkpoints=(), max_bytes=12000, body_ids=None):
         raise ValueError('분석 입력 ID 누락·중복')
     proof_required = job.get('review_evidence_version') == 1
     rows, analyses, groups, done = [], {}, [], set()
+    narrative_checkpoint = None
     for checkpoint in checkpoints:
         if any(checkpoint.get(k) != job[k] for k in ('job_id', 'input_hash', 'policy_hash', 'body_manifest_hash')):
             raise ValueError('다른 회차·정책 체크포인트')
+        if 'narratives' in checkpoint:
+            if (job.get('caution_care_version') != 1 or narrative_checkpoint is not None
+                    or not isinstance(checkpoint['narratives'], dict)
+                    or any(checkpoint.get(k) for k in ('covered_ids', 'classifications', 'analyses', 'event_groups'))):
+                raise ValueError('대표기사 문구 체크포인트 계약·중복 오류')
+            narrative_checkpoint = checkpoint['narratives']
         ids = checkpoint['covered_ids']
         classified = checkpoint['classifications']
         candidates = {r['article_id'] for r in classified if r['relevant'] is True}
@@ -189,6 +196,27 @@ def analysis_plan(job, checkpoints=(), max_bytes=12000, body_ids=None):
                 missing_body_ids.append(aid)
                 done.add(aid)
     pending = [aid for aid in items if aid not in done]
+    if narrative_checkpoint is not None:
+        if pending:
+            raise ValueError('대표기사 문구는 입력 전수 1차 처리 후 작성')
+        for aid, writing in narrative_checkpoint.items():
+            if (aid not in analyses or not isinstance(analyses[aid], dict)
+                    or bodies[aid]['body_status'] != 'verified'
+                    or not isinstance(writing, dict)
+                    or not {'action', 'customer_notice'} <= writing.keys()
+                    or writing.keys() - {'action', 'customer_notice', 'omission_reason'}):
+                raise ValueError('대표기사 문구 ID·필드 오류')
+            reason = writing.get('omission_reason', '')
+            if (not isinstance(reason, str) or len(reason) > 240
+                    or isinstance(writing['action'], str)
+                    and not writing['action'].strip() and len(reason.strip()) < 8):
+                raise ValueError('대응방안 미작성은 실제 생략 사유 필요')
+            # Optional text errors remain per-field omissions in the existing
+            # validator; they must not block otherwise valid articles.
+            for field in ('action', 'customer_notice'):
+                if analyses[aid].get(field) not in ('', None, writing[field]):
+                    raise ValueError('이미 작성한 대표기사 문구 덮어쓰기 금지')
+                analyses[aid][field] = writing[field]
     selected = set(pending) if body_ids is None else set(body_ids)
     if not selected <= items.keys():
         raise ValueError('본문 요청의 입력 ID 불일치')
@@ -232,6 +260,7 @@ def analysis_plan(job, checkpoints=(), max_bytes=12000, body_ids=None):
     return {'job_id': job['job_id'], 'input_hash': job['input_hash'], 'policy_hash': job['policy_hash'],
             'classifications': rows, 'analyses': analyses, 'event_groups': groups, 'pending_ids': pending,
             'missing_body_ids': missing_body_ids, 'triage_pages': triage_pages, 'pages': pages,
+            'narratives_ready': narrative_checkpoint is not None,
             'scope': 'local_resume_only_final_validation_required'}
 
 
@@ -260,12 +289,14 @@ def validate_progress(job, checkpoints, attempt_id):
     return validate_checkpoint(result, job, job['input'], job['body_manifest'])
 
 
-def ready_result(job, checkpoints, model_used='unconfirmed', attempt_id=None):
+def ready_result(job, checkpoints, model_used='unconfirmed', attempt_id=None, *, narrative_draft=False):
     """New rounds require a first pass of every input; holds need not be resolved."""
     from risk_result_validator import validate
     plan = analysis_plan(job, checkpoints, body_ids=[])
     if job.get('delivery_focus_version') == 2 and plan['pending_ids']:
         raise ValueError('미처리 분석을 계속해야 함 — '+str(len(plan['pending_ids']))+'건')
+    if job.get('caution_care_version') == 1 and not narrative_draft and not plan['narratives_ready']:
+        raise ValueError('대표기사 대응방안·고객문구 체크포인트 필요 — 문구 초안은 --narrative-draft 사용')
     result = _assemble(job, plan, model_used, attempt_id)
     validate(result, job, job['input'], job['body_manifest'])
     return result
@@ -395,6 +426,8 @@ if __name__ == '__main__':
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--analysis', action='store_true', help='first-pass index; body pages only for --body-id candidates')
     mode.add_argument('--instructions', action='store_true', help='select current instructions from this pinned checkout; no snapshot')
+    mode.add_argument('--narrative-draft', action='store_true', help='assemble a local draft for native representative planning; never publish as ready')
+    parser.add_argument('--attempt-id', help='analysis owner for --narrative-draft')
     parser.add_argument('--body-id', action='append', default=[], help='with --analysis: pending candidate body to read; repeat for a batch')
     parser.add_argument('--next-batch', type=int, help='with --analysis: next 1~100 pending bodies, priority first; no classifications implied')
     parser.add_argument('--output', required=True, help='new private local status artifact (not an operational result)')
@@ -403,6 +436,8 @@ if __name__ == '__main__':
         parser.error('--instructions takes no snapshot; other modes require one')
     if args.body_id and not args.analysis:
         parser.error('--body-id requires --analysis')
+    if args.narrative_draft and not args.attempt_id:
+        parser.error('--narrative-draft requires --attempt-id')
     if args.next_batch is not None and (not args.analysis or args.body_id):
         parser.error('--next-batch requires --analysis and cannot combine with --body-id')
     snapshot = {} if args.instructions else strict_json(Path(args.snapshot).read_text())
@@ -413,6 +448,9 @@ if __name__ == '__main__':
             record = snapshot['jobs'].get(path.removeprefix('jobs/').removesuffix('.json'))
             return (record['value'], record['blob_sha']) if record else (None, None)
     view = (instruction_context() if args.instructions else
+            {'result': ready_result(snapshot['job'], snapshot.get('checkpoints', []),
+                                    attempt_id=args.attempt_id, narrative_draft=True),
+             'scope': 'local_narrative_draft_only_not_ready'} if args.narrative_draft else
             next_batch(snapshot['job'], snapshot.get('checkpoints', []), args.next_batch) if args.next_batch is not None else
             analysis_plan(snapshot['job'], snapshot.get('checkpoints', []), body_ids=args.body_id) if args.analysis
             else queue_status(LocalSnapshot(), snapshot['observed_at']))
@@ -422,6 +460,7 @@ if __name__ == '__main__':
         os.chmod(file.name, 0o600)
         file.write(content)
     index = ({'scope': view['scope'], 'policy_hash': view['policy_hash'], 'sources': view['sources']} if args.instructions else
+             {'job_id': view['result']['job_id'], 'scope': view['scope']} if args.narrative_draft else
              {'job_id': view['job_id'], 'completed_ids': len(view['classifications']),
               'pending_ids': len(view['pending_ids']), 'missing_body_ids': len(view['missing_body_ids']),
               'triage_pages': len(view['triage_pages']),

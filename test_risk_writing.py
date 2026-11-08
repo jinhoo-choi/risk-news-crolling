@@ -83,6 +83,110 @@ class Writing(unittest.TestCase):
         job['body_manifest_hash']=result['body_manifest_hash']=digest(job['body_manifest'])
         return queue
 
+    def test_new_caution_card_keeps_action_and_care_without_changing_legacy_scope(self):
+        notice='가상방산의 입찰제한이 공시됐습니다. 회사 공시의 대상 사업과 적용 기간, 보유 수량과 주문 가능 상태를 확인해 주세요.'
+        observations=[]
+        for enabled in (False,True):
+            with self.subTest(enabled=enabled):
+                Path('seen_news.json').write_bytes(self.integration.before)
+                queue=self.action_plan_fixture()
+                job,result=queue.data['jobs/test.json'],queue.data['results/test.json']
+                job['action_quality_version']=2
+                if enabled:job['caution_care_version']=1
+                a=result['analyses']['one'];a.pop('action_plan');a['customer_notice']=notice
+                exposure={'가상방산':[{'종목명':'가상방산','종목코드':'990001','종목유형':'주식',
+                                       '잔고(억)':'150','고객수':'1'}]}
+                smtp=integration_cases.SMTP()
+                with patch.object(self.bot,'load_exposure_data',return_value=exposure),contextlib.redirect_stdout(io.StringIO()):
+                    self.integration.run_consume(queue,smtp)
+                document=queue.data['previews/test.json']['html']
+                self.assertIn(html.escape(a['action'],quote=True),document)
+                self.assertEqual(html.escape(notice,quote=True) in document,enabled)
+                self.assertEqual(queue.data['filter-logs/test.json']['final'][0]['grade'],'주의')
+                self.assertTrue(smtp.calls)
+                final=queue.data['filter-logs/test.json']['final'][0]
+                observations.append((final['grade'],final['_risk_score'],[c[0] for c in smtp.calls]))
+        self.assertEqual(observations[0],observations[1])
+
+    def test_market_event_demoted_to_caution_keeps_both_writing_blocks(self):
+        queue=self.integration.fixture();job,result=queue.data['jobs/test.json'],queue.data['results/test.json']
+        job.update(action_quality_version=2,caution_care_version=1)
+        body='코스피가 급락하며 서킷브레이커가 발동했다.'
+        item=job['input']['items'][0];item.update(title=body,description=body,desc=body,keyword='증시 급락')
+        job['input']['raw_articles']=[dict(item)];job['body_manifest'][0]['body']=body
+        action='거래소 시세와 보유계좌의 평가금액을 대조하고, 신용거래 계좌의 담보부족·반대매매 예정 내역을 확인한다.'
+        notice='시장 변동성이 커졌습니다. 보유자산의 평가금액과 주문 가능 상태를 확인해 주세요.'
+        a=result['analyses']['one'];a.update(entity='',entities=[],event_type='기타리스크',base_grade='긴급',
+            fact_summary=body,action=action,customer_notice=notice,
+            judgment={'핵심사건':'국내 증시 급락','손실주체':'주주','당사연관':'직접','확정여부':'확정'},
+            evidence=[{'source_segment':'body','source_hash':hashlib.sha256(body.encode()).hexdigest(),'quote':body}])
+        job['input_hash']=result['input_hash']=digest(job['input'])
+        job['body_manifest_hash']=result['body_manifest_hash']=digest(job['body_manifest'])
+        stock={'종목명':'가상기업','종목코드':'990001','종목유형':'주식','잔고(억)':'150','고객수':'1'}
+        exposure={'가상기업':[stock,{**stock,'종목유형':'여신','잔고(억)':'40'}]}
+        with patch.object(self.bot,'load_exposure_data',return_value=exposure),contextlib.redirect_stdout(io.StringIO()):
+            self.integration.run_consume(queue,integration_cases.SMTP())
+        final=queue.data['filter-logs/test.json']['final'][0]
+        self.assertEqual(final['grade'],'주의')
+        document=queue.data['previews/test.json']['html']
+        self.assertIn(html.escape(action,quote=True),document)
+        self.assertIn(html.escape(notice,quote=True),document)
+
+    def test_new_care_contract_keeps_broker_notice_prohibition(self):
+        queue=self.integration.fixture();job,result=queue.data['jobs/test.json'],queue.data['results/test.json']
+        job.update(action_quality_version=2,caution_care_version=1)
+        result['analyses']['one']['customer_notice']='당사 장애에 대해 사과드리며 복구를 보장합니다.'
+        smtp=integration_cases.SMTP()
+        with contextlib.redirect_stdout(io.StringIO()):self.integration.run_consume(queue,smtp)
+        document=queue.data['previews/test.json']['html']
+        self.assertNotIn('사과드리며',document)
+        self.assertNotIn('고객케어 안내 추천 문구',document)
+        self.assertTrue(smtp.calls)
+
+    def test_caution_narrative_checkpoint_survives_finalize_and_native_html(self):
+        from risk_review_session import begin,save_checkpoint,finalize
+        queue=self.action_plan_fixture();job=queue.data['jobs/test.json']
+        result=queue.data.pop('results/test.json');a=result['analyses']['one']
+        action=a['action'];a.update(action='',customer_notice=None);a.pop('action_plan')
+        job.update(action_quality_version=2,caution_care_version=1,review_evidence_version=1,
+                   delivery_focus_version=2,review_pass_version=2,exclusion_review_version=2)
+        cp={k:job[k] for k in ('job_id','input_hash','policy_hash','body_manifest_hash')}
+        cp.update(covered_ids=['one'],classifications=result['classifications'],analyses=result['analyses'],event_groups=[])
+        from risk_continuity import freeze_exposure
+        from risk_queue import now
+        queue.data.update(freeze_exposure(job,Path('exposure_data.csv').read_bytes(),now().isoformat()))
+        begin(queue,'test','writer','a'*40,'automation')
+        save_checkpoint(queue,'test','writer',cp)
+        notice='가상방산의 입찰제한이 공시됐습니다. 보유 수량과 회사 공시의 대상 사업·적용 기간을 확인해 주세요.'
+        writing={k:job[k] for k in ('job_id','input_hash','policy_hash','body_manifest_hash')}
+        writing.update(covered_ids=[],classifications=[],analyses={},event_groups=[],
+                       narratives={'one':{'action':action,'customer_notice':notice}})
+        save_checkpoint(queue,'test','writer',writing)
+        finalize(queue,'test','writer')
+        stock={'종목명':'가상방산','종목코드':'990001','종목유형':'주식','잔고(억)':'150','고객수':'1'}
+        smtp=integration_cases.SMTP()
+        with patch.object(self.bot,'load_exposure_data',return_value={'가상방산':[stock]}),contextlib.redirect_stdout(io.StringIO()):
+            self.integration.run_consume(queue,smtp)
+        document=queue.data['previews/test.json']['html']
+        self.assertIn(html.escape(action,quote=True),document)
+        self.assertIn(html.escape(notice,quote=True),document)
+        self.assertIn('고객케어 안내 추천 문구',document)
+        self.assertEqual(queue.data['jobs/test.json']['status'],'delivery_complete')
+        self.assertTrue(smtp.calls)
+
+    def test_caution_care_keeps_solicitation_and_unsupported_credit_guards(self):
+        queue=self.action_plan_fixture();job,result=queue.data['jobs/test.json'],queue.data['results/test.json']
+        job.update(action_quality_version=2,caution_care_version=1)
+        result['analyses']['one'].pop('action_plan')
+        result['analyses']['one']['customer_notice']='가상방산 공시와 보유 수량을 확인해 주세요. 지금 매수하셔야 합니다. 신용계좌의 반대매매 일정을 점검하세요.'
+        stock={'종목명':'가상방산','종목코드':'990001','종목유형':'주식','잔고(억)':'150','고객수':'1'}
+        with patch.object(self.bot,'load_exposure_data',return_value={'가상방산':[stock]}),contextlib.redirect_stdout(io.StringIO()):
+            self.integration.run_consume(queue,integration_cases.SMTP())
+        document=queue.data['previews/test.json']['html']
+        self.assertIn('가상방산 공시와 보유 수량을 확인해 주세요.',document)
+        self.assertNotIn('지금 매수하셔야',document)
+        self.assertNotIn('신용계좌의 반대매매 일정을',document)
+
     def test_execution_plan_rejects_missing_generic_or_ungrounded_parts(self):
         import copy
         queue=self.action_plan_fixture()
