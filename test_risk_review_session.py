@@ -71,8 +71,32 @@ class Sessions(unittest.TestCase):
         self.assertNotIn('results/test.json',self.q.data)
     def test_attempted_fact_error_keeps_verified_peer(self):
         self.answer['analyses']['held']['fact_summary']='원문에 없는 피해액 987654321원이다.'
-        self.publish();smtp=SMTP();self.consume(smtp)
+        self.publish()
+        summary=self.q.data['analysis-attempts/test.json']['validation_summary']
+        self.assertEqual(summary['held_articles'],{'held':'원문에 없는 수치: fact_summary'})
+        smtp=SMTP();self.consume(smtp)
         self.assertEqual(len(smtp.calls),3);self.assertEqual(self.q.data['jobs/test.json']['deferred_ids'],['held'])
+    def test_source_number_spelling_and_foreign_index_guard_remain_strict(self):
+        from risk_result_validator import _validate_analysis
+        analysis=copy.deepcopy(self.answer['analyses']['held'])
+        analysis.update(entity='',entities=[],event_type='기타리스크',base_grade='참고',
+                        action='',customer_notice=None)
+        analysis['judgment'].update(당사연관='직접',핵심사건='시장 제도 및 지수 변동')
+        def check(body, summary):
+            analysis.update(fact_summary=summary,evidence=[{'source_segment':'body',
+                'source_hash':source_hash(body),'quote':body}])
+            return _validate_analysis(analysis,{'title':'시장 제도 및 지수 소식','description':''},
+                                      {'body':body,'body_status':'verified'},self.j)
+        policy='금융당국은 오는 9일부터 3개월간 증권사 신용융자 담보비율 유지 의무를 면제하기로 했다.'
+        check(policy,policy)
+        with self.assertRaisesRegex(ValueError,'원문에 없는 수치'):
+            check(policy,policy.replace('오는 9일','11월 9일'))
+        domestic='코스피는 5.52% 하락했다.'
+        check(domestic,domestic)
+        with self.assertRaisesRegex(ValueError,'원문에 없는 수치'):
+            check(domestic,'코스피는 5.5%대 하락했다.')
+        with self.assertRaisesRegex(ValueError,'빈 주체'):
+            check('나스닥지수는 5.52% 하락했다.','나스닥지수는 5.52% 하락했다.')
     def test_candidate_analysis_failure_with_source_proof_is_individual_hold(self):
         self.answer['analyses'].pop('held')
         self.answer['classifications'][1]['decision_basis']=self.body_basis()
@@ -176,6 +200,30 @@ class Sessions(unittest.TestCase):
         self.assertEqual(plan['transactions'][0]['expected']['jobs/test.json'],self.q.get('jobs/test.json')[1])
         self.assertEqual(Path('transaction.json').stat().st_mode&0o777,0o600)
         self.assertNotIn('analysis-attempts/test.json',self.q.data)
+    def test_offline_checkpoint_reports_holds_before_publication_and_local_correction(self):
+        begin(self.q,'test','owner',MAIN,'automation')
+        before=copy.deepcopy(self.q.data)
+        files={k:{'value':v,'sha':self.q.get(k)[1]} for k,v in self.q.data.items()}
+        for k in ('results/test.json','outbox/test.json'):files[k]={'value':None,'sha':None}
+        Path('snapshot.json').write_text(json.dumps({'queue_head':MAIN,'files':files}))
+        cp=self.checkpoint();original=cp['analyses']['held']['fact_summary']
+        cp['analyses']['held']['fact_summary']='원문에 없는 피해액 987654321원이다.'
+        script=Path(__file__).with_name('risk_review_session.py')
+        plans=[]
+        for i,text in enumerate((cp['analyses']['held']['fact_summary'],original)):
+            cp['analyses']['held']['fact_summary']=text
+            Path('checkpoint.json').write_text(json.dumps(cp))
+            run=subprocess.run([sys.executable,str(script),'snapshot.json','checkpoint',
+                '--job-id','test','--attempt-id','owner','--checkpoint','checkpoint.json',
+                '--output',f'plan-{i}.json'],capture_output=True,text=True)
+            self.assertEqual(run.returncode,0,run.stderr)
+            self.assertEqual(json.loads(run.stdout)['validation_hold_count'],1-i)
+            plans.append(json.loads(Path(f'plan-{i}.json').read_text()))
+        self.assertEqual(plans[0]['value']['validation_summary']['held_articles'],
+                         {'held':'원문에 없는 수치: fact_summary'})
+        self.assertEqual(plans[1]['value']['validation_summary']['held_articles'],{})
+        self.assertEqual(self.q.data,before)
+        self.assertNotIn('results/test.json',self.q.data)
     def test_optional_artifact_failure_cannot_block_native_delivery(self):
         self.publish();original=self.q.put_many
         def fail(values,expected,deletions=()):

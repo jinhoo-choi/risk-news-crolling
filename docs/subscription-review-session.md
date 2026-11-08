@@ -58,6 +58,8 @@ python risk_review_session.py private-session-fresh.json finalize --job-id JOB -
 
 각 출력의 `transactions`를 연결된 GitHub 도구로 다음과 같이 게시한다.
 
+`checkpoint` 로컬 출력의 `value.validation_summary`는 이미 수행한 검증의 기사별 `held_articles`·선택 문구 생략·경고를 보여준다. 표준 출력에는 `validation_hold_count`만 표시한다. 원격 게시 전에 이 결과를 확인해 원문에 없는 월 추가·소수점 변경 같은 로컬 제출 오류만 원문 표기로 1회 보정하고 새 출력 파일로 다시 계획할 수 있다. 원문 재조회·AI 재심사·검증 완화는 추가하지 않는다. 실제 사실·귀속 부족은 해당 기사 보류로 유지하며 정상 후보 발송을 기다리게 하지 않는다. 게시가 확인된 체크포인트·결과는 이 기능으로 수정하지 않는다.
+
 1. private 저장소 `main`이 출력의 `queue_head`인지 확인한다. 그 commit의 tree에서 모든 `expected` 경로의 blob SHA/부재를 대조한다. 경로에는 `subscription/risk/`를 앞에 붙인다.
 2. `values`만 JSON blob/tree로 만들고 해당 head를 부모로 commit을 생성한다. 관계없는 기존 tree는 base_tree로 보존한다. 삭제는 허용하지 않는다.
 3. `update_ref(expected_sha=queue_head, force=false)`로 게시한다. 다른 head/lease면 멈추고 최신 snapshot으로 다시 계획한다. 시간 초과/응답 유실이면 실제 head와 파일부터 조회한다. 무조건 재쓰기하지 않는다.
