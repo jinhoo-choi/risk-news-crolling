@@ -838,7 +838,8 @@ class ReplayCollection(unittest.TestCase):
     def test_regular_collection_leaves_backlog_for_post_delivery_without_mutation(self):
         queue = self.seed()
         before = copy.deepcopy(queue.data['review/held.json'])
-        self.collect(queue)
+        with patch.object(bridge,'policy',return_value={'caution_care_version':1}):
+            self.collect(queue)
         small = queue.data['jobs/risk-production-hardening-test.json']
         full = hydrate(queue, small)
         self.assertEqual(full['input']['items'], [])
@@ -846,6 +847,7 @@ class ReplayCollection(unittest.TestCase):
         self.assertEqual(full['review_dispatch']['phase'], 'regular')
         self.assertEqual(queue.data['review/held.json'], before)
         self.assertIn('exposure_snapshot', small)
+        self.assertEqual(small['caution_care_version'],1)
 
     def test_pending_same_id_in_fresh_search_is_deferred_before_body_fetch(self):
         queue = self.seed()

@@ -554,6 +554,8 @@ def collect(config, queue, verification=False, reviews_only=False, review_ids=No
             job['review_evidence_version'] = 1
         if rules.get('broker_security_version') == 1:
             job['broker_security_version'] = 1
+        if rules.get('caution_care_version') == 1:
+            job['caution_care_version'] = 1
         job['report_layout_version'] = 1
         job['smtp_evidence_version'] = 1
         current_config(queue)
