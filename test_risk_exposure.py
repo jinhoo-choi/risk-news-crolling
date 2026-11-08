@@ -18,6 +18,35 @@ def row(name, code='000001', kind='주식', bank='20', branch='5'):
 
 
 class Exposure(unittest.TestCase):
+    def test_foreign_ticker_survives_csv_name_normalization_without_other_assets(self):
+        foreign = [row('반도체레버리지ETF', 'SOXL', kind)
+                   for kind in ('해외주식', '해외대출', '해외담보')]
+        exp = {'반도체레버리지ETF': foreign,
+               '비슷한 국내 ETF': [row('비슷한 국내 ETF', '494310')],
+               '다른 해외 ETF': [row('다른 해외 ETF', 'SOXX', '해외주식')],
+               '국내 코드 충돌': [row('국내 코드 충돌', 'SOXL')],
+               '채권 코드 충돌': [row('채권 코드 충돌', 'SOXL', '채권')]}
+        before = copy.deepcopy(exp)
+        self.assertEqual(bot.find_exposure('SOXL', exp), foreign)
+        self.assertEqual(bot.find_exposure(' soxl ', exp), foreign)
+        self.assertEqual(bot.find_exposure('SOX', exp), [])
+        self.assertEqual(bot.find_exposure('SOXL', {'국내 코드 충돌':exp['국내 코드 충돌']}), [])
+        self.assertEqual(exp, before)
+
+    def test_foreign_earnings_incident_uses_existing_exposure_delivery_gate(self):
+        exp = {'퀄컴':[row('퀄컴', 'QCOM', '해외주식', bank='150')]}
+        article = dict(title='QCOM 실적쇼크·가이던스 하향', entity='QCOM',
+                       entities=['QCOM'], grade='주의', event_type='기타리스크',
+                       _ai_confidence=0.95, customer_notice=None)
+        with patch.object(bot, 'get_price_change', return_value=None), \
+             patch.object(bot, 'build_price_alert_section', lambda *args: ''), \
+             redirect_stdout(io.StringIO()):
+            rows = bot.regrade_by_score([article], exp)
+            scope = bot.decide_send_scope(rows, exp)
+        self.assertEqual(rows[0]['grade'], '주의')
+        self.assertTrue(scope['has_strong_caution'])
+        self.assertFalse(scope['self_only'])
+
     def test_market_statistics_without_issuer_omit_exposure_card(self):
         for entity in ("", [], ["", " "]):
             with self.subTest(entity=entity), patch.object(bot, "find_exposure",

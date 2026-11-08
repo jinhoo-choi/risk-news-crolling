@@ -1616,6 +1616,17 @@ def find_exposure(entity: str, exposure_data: dict) -> list:
         return [row for rows in exposure_data.values() for row in rows
                 if str(row.get("종목코드") or "").strip().upper() == issuer_ticker]
 
+    # CSV loading translates foreign ticker names (SOXL -> a Korean label).
+    # Recover identity from the exact typed snapshot code, never that label's
+    # similarity to another ETF or an unrelated domestic/bond code.
+    ticker = entity.strip().upper()
+    if re.fullmatch(r'[A-Z]{1,5}(?:[./-][A-Z])?', ticker):
+        foreign_rows = [row for rows in exposure_data.values() for row in rows
+                        if row.get('종목유형') in ('해외주식', '해외대출', '해외담보')
+                        and str(row.get('종목코드') or '').strip().upper() == ticker]
+        if foreign_rows:
+            return foreign_rows
+
     results = []
     seen_names = set()
 
