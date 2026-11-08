@@ -11,6 +11,7 @@ from datetime import timedelta, timezone
 from email.utils import parsedate_to_datetime
 from event_history import _amounts, _compact
 from risk_market_evidence import has_market_event_evidence, has_credit_policy_change
+from risk_broker_security import confirmed_security_evidence
 
 
 def source_date(year, month, day, published):
@@ -198,6 +199,17 @@ class Provider:
         article.pop('_subscription_snapshot_key', None)
         article.pop('_subscription_market_event', None)
         article.pop('_subscription_credit_policy', None)
+        article.pop('_subscription_broker_security', None)
+        article.pop('_broker_security_quotes', None)
+        security_quotes = [e['quote'] for e in a['evidence']
+                           if e['source_segment'] == 'body' and e['quote'] in body]
+        if (self.job.get('broker_security_version') == 1
+                and a['body_status'] == 'verified'
+                and a['event_type'] in ('시스템장애', '기타리스크')
+                and a['judgment']['확정여부'] == '확정'
+                and confirmed_security_evidence(a['entity'], security_quotes)):
+            article['_subscription_broker_security'] = True
+            article['_broker_security_quotes'] = security_quotes
         if (body and not a['entity'] and not a['entities'] and a['event_type'] == '기타리스크'
                 and a['judgment']['확정여부'] == '확정'):
             quotes = [e['quote'] for e in a['evidence'] if e['source_segment'] == 'body']

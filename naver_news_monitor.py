@@ -3471,8 +3471,12 @@ def is_market_news(article: dict) -> bool:
 
 def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> list:
     """등급별 상한 초과 시 리스크 점수 기반으로 하위 등급 강등"""
+    from risk_broker_security import verified_broker_security
     for article in articles:
         apply_verified_direct_incident(article, now)
+        if article.get('entity') in _BROKER_ENTITIES and verified_broker_security(article):
+            article.update(grade='참고', _grade_locked=True, _force_urgent=False,
+                           customer_notice=None)
     # ── 타 증권사 주체 기사의 당사 오추출 방어 ──
     # AI가 entity를 "한국투자증권"으로 뽑았으나 제목에 당사가 없고 타 증권사(키움·
     # 미래에셋 등)가 제목에 있으면, 경쟁사 이슈를 당사 이슈로 오인한 것. entity를
@@ -3505,7 +3509,8 @@ def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> li
     # 제목에 없으면, 경쟁사 자체 사건(전산장애·제재·손실)이다.
     # - 익스포저 있음: 고객이 해당 증권주를 보유해 참고용으로 표시 가치가 있으므로
     #   참고로 강등(전사 긴급/주의 발송만 차단, 노출은 유지)
-    # - 익스포저 없음: 표시할 익스포저 자체가 없어 참고로 남겨둘 실익이 없고,
+    # - 확인된 구독 보안사고: 익스포저 없이도 참고로 유지한다.
+    # - 그 외 익스포저 없음: 표시할 익스포저 자체가 없어 참고로 남겨둘 실익이 없고,
     #   경쟁사 내부 사정을 다루는 게 부적절함 — 완전 배제(_excluded=True)
     #   (2026-07-16: 신한투자증권 익스포저 0건 기사가 참고 등급으로 발송된 사례
     #   확인 후 추가 — filter_prompt.txt엔 이미 relevant:false 규칙이 있었으나
@@ -3564,7 +3569,8 @@ def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> li
                 if _hit:
                     _ent = _hit[0]
             _has_exp = bool(find_exposure(_ent, exposure_data or {}))
-            if not _has_exp:
+            _security_exception = _ent == a.get('entity') and verified_broker_security(a)
+            if not _has_exp and not _security_exception:
                 print(f"  [경쟁사 리스크·익스포저없음 완전배제] {_ent}: {_title[:35]}")
                 a["_excluded"] = True
                 continue
@@ -4951,6 +4957,9 @@ def filter_articles_for_scope(filtered: list, exposure_data: dict, self_only: bo
     def _keep(a):
         if a.get('_subscription_stat_series'):
             return market_crash
+        from risk_broker_security import verified_broker_security
+        if a.get('entity') in _BROKER_ENTITIES and verified_broker_security(a):
+            return True  # A reference card never opens the full-report route itself.
         if a.get('_subscription_credit_policy'):
             return True  # Verified rule change accompanies an already-authorized full report.
         if market_crash and a.get('_subscription_market_event'):
