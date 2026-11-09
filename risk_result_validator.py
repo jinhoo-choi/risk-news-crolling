@@ -347,6 +347,22 @@ def _validate(result, job, inputs, manifest, checkpoint_only=False):
                     omissions.setdefault(key, []).append('customer_notice')
                     analysis['customer_notice'] = None
                 _validate_analysis(analysis, source[key], bodies[key], job)
+                if streamlined:
+                    # Use the consume guard before a bad card reaches its batch.
+                    # Keep the saved judgment intact and defer only this article.
+                    from risk_analysis_guard import AnalysisIncompleteError, validate_grade_map
+                    native = dict(source[key], body=bodies[key]['body'],
+                                  _body_failed=analysis['body_status'] != 'verified',
+                                  _body_risk_confirmed=analysis['body_status'] == 'verified',
+                                  _body_source_url=bodies[key].get('source_url', source[key]['url']),
+                                  _body_source_hash=text_digest(bodies[key]['body']))
+                    entry = {field: analysis[field] for field in
+                             ('confidence', 'entity', 'entities', 'event_type', 'action')}
+                    entry.update(id=1, relevant=True, grade=analysis['base_grade'])
+                    try:
+                        validate_grade_map([entry], [native])
+                    except AnalysisIncompleteError as error:
+                        raise ValueError('기존 consume 판정 변환 거부: ' + str(error)) from error
         except ValueError as error:
             if not streamlined:
                 raise
