@@ -312,6 +312,29 @@ class NativeContinuity(unittest.TestCase):
                 self.assertNotIn('https://example.invalid/held', Path('seen_news.json').read_text())
                 self.assertIn('https://example.invalid/test/one', queue.data['previews/test.json']['html'])
 
+    def test_v2_native_grade_guard_defers_only_incompatible_market_card(self):
+        queue, smtp = self.streamlined(), native_fixtures.SMTP()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        article = job['input']['items'][1]
+        article.update(title='닛케이 하락', description='일본 지수 하락', desc='일본 지수 하락')
+        body = '닛케이 지수가 하락했다. 관련 기사: 코스피 하락.'
+        job['body_manifest'][1].update(body=body)
+        analysis = result['analyses']['held']
+        analysis.update(entity='', entities=[], event_type='기타리스크',
+                        fact_summary='닛케이 지수가 하락했다.', action='', customer_notice=None,
+                        evidence=[dict(source_segment='body', source_hash=hashlib.sha256(body.encode()).hexdigest(),
+                                       quote='닛케이 지수가 하락했다.')])
+        analysis['judgment'].update(핵심사건='일본 지수 하락', 당사연관='직접')
+        job['input_hash'] = result['input_hash'] = digest(job['input'])
+        job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+        original = copy.deepcopy(result)
+        self.run_consume(queue, smtp)
+        self.assertEqual(queue.data['jobs/test.json']['deferred_ids'], ['held'])
+        self.assertEqual(len(smtp.calls), 3)
+        self.assertEqual(queue.data['results/test.json'], original)
+        self.assertNotIn(article['url'], Path('seen_news.json').read_text())
+        self.assertIn('https://example.invalid/test/one', queue.data['previews/test.json']['html'])
+
     def test_v2_optional_text_shape_omitted_and_missing_action_plan_does_not_block(self):
         queue, smtp = self.streamlined(), native_fixtures.SMTP()
         result = queue.data['results/test.json']
