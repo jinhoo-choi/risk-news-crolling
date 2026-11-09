@@ -158,9 +158,9 @@ class Integration(unittest.TestCase):
         job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
         job['broker_security_version'] = 1
         item = job['input']['items'][0]
-        item.update(title='미래에셋증권 고객정보 유출 사고 확인',
-                    description='미래에셋증권이 고객정보 유출 사실을 확인했다.',
-                    desc='미래에셋증권이 고객정보 유출 사실을 확인했다.')
+        item.update(title='보안 침해사고…투자자 보호 제도 점검',
+                    description='미래에셋증권도 정보 유출.',
+                    desc='미래에셋증권도 정보 유출.')
         body = '미래에셋증권은 고객정보 유출 사고가 발생한 사실을 확인했다.'
         job['body_manifest'][0]['body'] = body
         analysis = result['analyses']['one']
@@ -178,8 +178,12 @@ class Integration(unittest.TestCase):
         attached = dict(item, entity=analysis['entity'])
         Provider(job, result).attach(attached)
         self.assertTrue(verified_broker_security(attached))
+        self.assertEqual(attached['fact_summary'], body)
         legacy = copy.deepcopy(job)
         legacy.pop('broker_security_version')
+        legacy_article = dict(item, entity=analysis['entity'])
+        Provider(legacy, result).attach(legacy_article)
+        self.assertNotIn('fact_summary', legacy_article)
         Provider(legacy, result).attach(attached)
         self.assertFalse(verified_broker_security(attached))
         smtp = SMTP()
@@ -188,6 +192,8 @@ class Integration(unittest.TestCase):
         self.assertTrue(packet['self_only'])
         self.assertEqual(len(smtp.calls), 1)
         self.assertIn(item['title'], packet['html'])
+        self.assertIn(body, packet['html'])
+        self.assertNotIn(item['desc'], packet['html'])
         self.assertIn('참고', packet['html'])
         self.assertNotIn('고객케어', packet['html'])
         self.assertEqual(queue.data['jobs/test.json']['paid_ai_calls'], 0)
