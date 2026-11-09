@@ -112,7 +112,9 @@ class Writing(unittest.TestCase):
         queue=self.integration.fixture();job,result=queue.data['jobs/test.json'],queue.data['results/test.json']
         job.update(action_quality_version=2,caution_care_version=1)
         body='코스피가 급락하며 서킷브레이커가 발동했다.'
-        item=job['input']['items'][0];item.update(title=body,description=body,desc=body,keyword='증시 급락')
+        item=job['input']['items'][0];item.update(title='반도체가 끌고 외국인이 결정…시장 시험대',
+            description='검색 요약은 사건 설명을 대신하지 않는다.',
+            desc='검색 요약은 사건 설명을 대신하지 않는다.',keyword='증시 급락')
         job['input']['raw_articles']=[dict(item)];job['body_manifest'][0]['body']=body
         action='거래소 시세와 보유계좌의 평가금액을 대조하고, 신용거래 계좌의 담보부족·반대매매 예정 내역을 확인한다.'
         notice='시장 변동성이 커졌습니다. 보유자산의 평가금액과 주문 가능 상태를 확인해 주세요.'
@@ -129,6 +131,8 @@ class Writing(unittest.TestCase):
         final=queue.data['filter-logs/test.json']['final'][0]
         self.assertEqual(final['grade'],'주의')
         document=queue.data['previews/test.json']['html']
+        self.assertIn(html.escape(body,quote=True),document)
+        self.assertNotIn(item['desc'],document)
         self.assertIn(html.escape(action,quote=True),document)
         self.assertIn(html.escape(notice,quote=True),document)
 

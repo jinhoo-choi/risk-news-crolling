@@ -5073,7 +5073,8 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                         a_entities = _kept
             if grade == "참고":
                 reference_summary = (a.get('fact_summary') if
-                    a.get('_subscription_market_event') or a.get('_subscription_credit_policy') else '')
+                    a.get('_subscription_market_event') or a.get('_subscription_credit_policy')
+                    or a.get('_subscription_broker_security') else '')
                 r_risk = display_risk_score(a)
                 if r_risk:
                     r_filled = min(int(r_risk), 10)
@@ -5130,7 +5131,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                 </tr>
               </table>
               <a href="{_esc(a['url'])}" class="title-link caution-title" style="font-weight:bold;font-size:15px;text-decoration:none;color:#1e293b;line-height:1.6;word-break:keep-all;display:block;">{_esc(a['title'])}</a>
-              {f'<p class="desc-p" style="margin:6px 0;font-size:12px;color:#475569;line-height:1.6;">{_esc(a.get("fact_summary", ""))}</p>' if a.get('_subscription_stat_series') and a.get('fact_summary') else ''}
+              {f'<p class="desc-p" style="margin:6px 0;font-size:12px;color:#475569;line-height:1.6;">{_esc(a.get("fact_summary", ""))}</p>' if (a.get('_subscription_stat_series') or a.get('_subscription_market_event') or a.get('_subscription_credit_policy')) and a.get('fact_summary') else ''}
               <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 0 0;">
                 <tr>
                   <td style="font-size:11px;"><a href="{_esc(a['url'])}" style="color:#4a6099;text-decoration:none;">↗ 기사 보기</a></td>

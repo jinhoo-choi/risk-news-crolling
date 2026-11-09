@@ -1,6 +1,7 @@
 """Broker source attribution and unchanged delivery gates; no network or SMTP."""
 import copy
 import hashlib
+import html
 import unittest
 from unittest.mock import patch
 
@@ -66,6 +67,20 @@ class BrokerSecurity(unittest.TestCase):
         self.assertIsNone(rows[0]['customer_notice'])
         with patch.object(bot, 'build_price_alert_section', lambda *args: ''):
             self.assertTrue(bot.decide_send_scope(rows, {})['self_only'])
+
+    def test_mixed_topic_reference_displays_verified_incident_below_original_title(self):
+        bot = import_bot()
+        a = self.article()
+        a.update(title='해킹 땐 배상, 파산 땐 코인 반환?… 디지털자산법',
+                 desc='가상자산 거래소의 파산 때 코인 반환을 논의한다.',
+                 fact_summary=a['body'], grade='참고')
+        with patch.object(bot, 'build_price_alert_section', lambda *args: ''):
+            document = bot.build_email_html([a], total_count=1, ai_summary='',
+                                           exposure_data={}, ref_date='', today_str='')
+        self.assertIn(html.escape(a['title'], quote=True), document)
+        self.assertIn(html.escape(a['fact_summary'], quote=True), document)
+        self.assertNotIn(a['desc'], document)
+        self.assertNotIn('고객케어 안내 추천 문구', document)
 
 
 if __name__ == '__main__':

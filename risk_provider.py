@@ -210,6 +210,7 @@ class Provider:
                 and confirmed_security_evidence(a['entity'], security_quotes)):
             article['_subscription_broker_security'] = True
             article['_broker_security_quotes'] = security_quotes
+            article['fact_summary'] = a['fact_summary']
         if (body and not a['entity'] and not a['entities'] and a['event_type'] == '기타리스크'
                 and a['judgment']['확정여부'] == '확정'):
             quotes = [e['quote'] for e in a['evidence'] if e['source_segment'] == 'body']
