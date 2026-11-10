@@ -199,10 +199,20 @@ class Provider:
         article.pop('_subscription_snapshot_key', None)
         article.pop('_subscription_market_event', None)
         article.pop('_subscription_credit_policy', None)
+        article.pop('_subscription_reference_watch', None)
+        article.pop('_reference_watch_quotes', None)
         article.pop('_subscription_broker_security', None)
         article.pop('_broker_security_quotes', None)
         security_quotes = [e['quote'] for e in a['evidence']
                            if e['source_segment'] == 'body' and e['quote'] in body]
+        if (self.job.get('reference_watch_version') == 1 and a['body_status'] == 'verified'
+                and a['base_grade'] == '참고'):
+            from risk_reference_watch import reference_kind
+            watch = reference_kind(a['entity'], a['event_type'], a['judgment'], security_quotes)
+            if watch:
+                article['_subscription_reference_watch'] = watch
+                article['_reference_watch_quotes'] = security_quotes
+                article['fact_summary'] = a['fact_summary']
         if (self.job.get('broker_security_version') == 1
                 and a['body_status'] == 'verified'
                 and a['event_type'] in ('시스템장애', '기타리스크')

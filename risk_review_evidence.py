@@ -36,7 +36,8 @@ def bind_sources(checkpoint, job):
         article, body = articles[row['article_id']], bodies[row['article_id']]
         if basis.get('kind') == 'metadata_rule':
             from naver_news_monitor import is_hard_excluded
-            excluded, rule = is_hard_excluded(article['title'], article['description'], article['url'])
+            excluded, rule = is_hard_excluded(article['title'], article['description'], article['url'],
+                                              job.get('reference_watch_version') == 1)
             if not excluded:
                 raise ValueError('명확한 제외 규칙 불일치 — 본문 판단 필요: '+row['article_id'])
             basis.setdefault('rule', rule)
@@ -46,7 +47,7 @@ def bind_sources(checkpoint, job):
     return checkpoint
 
 
-def validate_decision(row, article, body, analysis=None):
+def validate_decision(row, article, body, analysis=None, reference_watch=False):
     """Missing first-pass proof is incomplete work, never a consumable hold."""
     if NOT_REVIEWED.search(str(row.get('reason', ''))):
         raise ValueError('미시도 판정을 null/false로 대체 금지: '+row['article_id'])
@@ -71,11 +72,11 @@ def validate_decision(row, article, body, analysis=None):
             raise ValueError('본문 미확보 상태 근거 불일치: '+row['article_id'])
         return
     if kind == 'metadata_rule':
-        # Reuse the actual, unchanged deterministic exclusion rules. A generic
+        # Reuse the frozen round's deterministic exclusion rules. A generic
         # title such as "service status" never qualifies as an exclusion rule.
         from naver_news_monitor import is_hard_excluded
         text = article['title']+'\n'+article['description']
-        excluded, rule = is_hard_excluded(article['title'], article['description'], article['url'])
+        excluded, rule = is_hard_excluded(article['title'], article['description'], article['url'], reference_watch)
         if (set(basis) != {'kind', 'source_hash', 'rule'} or row['relevant'] is not False
                 or not excluded or basis['rule'] != rule or basis['source_hash'] != source_hash(text)):
             raise ValueError('명확한 제외 규칙 불일치 — 본문 판단 필요: '+row['article_id'])

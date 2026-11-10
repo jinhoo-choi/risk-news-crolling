@@ -198,6 +198,70 @@ class Integration(unittest.TestCase):
         self.assertNotIn('고객케어', packet['html'])
         self.assertEqual(queue.data['jobs/test.json']['paid_ai_calls'], 0)
 
+    def test_new_reference_alerts_keep_body_summary_and_existing_owner_delivery(self):
+        cases = [
+            ("증권사 주식정보 서비스 이용료 '깜깜이'…금감원, 제도 개선 나선다",
+             '금융감독원은 증권사의 주식정보 제공서비스 운영 실태를 점검하고 개선방안을 마련했다고 밝혔다.',
+             '증권업계', '감독 제도 개선', '직접', '확정'),
+            ('반대매매 유예 전화 신청 증권사 불통…삼성-한투證 책임있을까',
+             '한국투자증권 고객센터 대기 순번이 길어 한 시간 기다리다 통화가 끊겼다는 주장이 올라왔다.',
+             '한국투자증권', '전화 접수 차질', '당사이슈', '확인필요'),
+        ]
+        for title, body, entity, core, relation, stage in cases:
+            with self.subTest(entity=entity):
+                Path('seen_news.json').write_bytes(self.before)
+                queue = self.fixture()
+                job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+                job['reference_watch_version'] = 1
+                item = job['input']['items'][0]
+                item.update(title=title, description='', desc='')
+                job['body_manifest'][0]['body'] = body
+                analysis = result['analyses']['one']
+                analysis.update(entity=entity, entities=[entity], event_type='기타리스크',
+                                base_grade='참고', fact_summary=body, action='', customer_notice=None,
+                                judgment={'핵심사건':core,'손실주체':'없음','당사연관':relation,'확정여부':stage},
+                                evidence=[{'source_segment':'body','source_hash':hashlib.sha256(body.encode()).hexdigest(),
+                                           'quote':body}])
+                job['input_hash'] = result['input_hash'] = digest(job['input'])
+                job['body_manifest_hash'] = result['body_manifest_hash'] = digest(job['body_manifest'])
+                from risk_result_validator import _validate_analysis
+                incorrect = copy.deepcopy(analysis)
+                incorrect['base_grade'] = '주의'
+                with self.assertRaisesRegex(ValueError, '접수 차질·감독 예고/개선'):
+                    _validate_analysis(incorrect, item, job['body_manifest'][0], job)
+                incorrect = copy.deepcopy(analysis)
+                incorrect['customer_notice'] = '고객 안내'
+                with self.assertRaisesRegex(ValueError, '접수 차질·감독 예고/개선'):
+                    _validate_analysis(incorrect, item, job['body_manifest'][0], job)
+                from risk_provider import Provider
+                from risk_reference_watch import verified_reference_watch
+                article = dict(item, entity=entity, event_type='기타리스크', grade='참고')
+                Provider(job, result).attach(article)
+                self.assertTrue(verified_reference_watch(article))
+                graded = self.bot.regrade_by_score([article], {})
+                self.assertEqual(graded[0]['grade'], '참고')
+                self.assertEqual(graded[0]['entity'], entity)
+                self.assertFalse(graded[0].get('_force_urgent'))
+                legacy = copy.deepcopy(job)
+                legacy.pop('reference_watch_version')
+                Provider(legacy, result).attach(article)
+                self.assertFalse(verified_reference_watch(article))
+                smtp = SMTP()
+                self.run_consume(queue, smtp)
+                packet = queue.data['outbox/test.json']
+                self.assertTrue(packet['self_only'])
+                self.assertEqual([c[0] for c in smtp.calls], [['owner@example.invalid']])
+                self.assertIn(body, packet['html'])
+                self.assertNotIn('고객케어', packet['html'])
+                self.assertEqual(queue.data['jobs/test.json']['paid_ai_calls'], 0)
+
+    def test_new_reference_contract_preserves_actual_owner_system_incident(self):
+        queue, smtp = self.fixture(), SMTP()
+        queue.data['jobs/test.json']['reference_watch_version'] = 1
+        self.run_consume(queue, smtp)
+        self.assertFalse(queue.data['outbox/test.json']['self_only'])
+        self.assertEqual(len(smtp.calls), 3)
+
     def test_retention_runs_only_after_ack_and_failure_preserves_delivery(self):
         queue, smtp = self.fixture(), SMTP()
         def maintenance(actual_queue, max_batches=None):

@@ -318,6 +318,7 @@ def reusable_exclusions(queue, index, job):
 
 def collect(config, queue, verification=False, reviews_only=False, review_ids=None):
     collection_started_at = now()
+    rules = policy()
     checkpoint('collect')
     if reviews_only and verification:
         raise RuntimeError("보류 재수집은 운영 회차만 허용")
@@ -440,7 +441,8 @@ def collect(config, queue, verification=False, reviews_only=False, review_ids=No
                 and (review_age(previous, now()) != 'eligible'
                      or review_source(article, {})['item_hash'] == previous['item_hash'])):
             continue
-        if not bot.is_hard_excluded(article['title'], article.get('desc', ''), article['url'])[0]:
+        if not bot.is_hard_excluded(article['title'], article.get('desc', ''), article['url'],
+                                    not verification and rules.get('reference_watch_version') == 1)[0]:
             items.append(article)
     held_unchanged = {a['article_id'] for a in raw if a['article_id'] in previous_sources
                       and (review_age(previous_sources[a['article_id']], now()) != 'eligible' or
@@ -522,7 +524,6 @@ def collect(config, queue, verification=False, reviews_only=False, review_ids=No
         raise RuntimeError('회차 ID·중복 오류')
     inputs = {'items': items, 'raw_articles': raw, 'history_hash': file_hash('seen_news.json'),
               'exposure_hash': file_hash('exposure_data.csv'), 'snapshot_mode': 'review_replay' if reviews_only else 'natural_collection'}
-    rules = policy()
     job = {'schema_version': 1, 'bot_id': 'risk_monitor', 'job_id': jid,
            'mode': 'verification' if verification else 'production', 'status': 'pending',
            'created_at': created.isoformat(), 'expires_at': (created+timedelta(minutes=config['job_ttl_minutes'])).isoformat(),
@@ -552,6 +553,8 @@ def collect(config, queue, verification=False, reviews_only=False, review_ids=No
             job['delivery_focus_version'] = rules['delivery_focus_version']
         if rules.get('review_evidence_version') == 1:
             job['review_evidence_version'] = 1
+        if rules.get('reference_watch_version') == 1:
+            job['reference_watch_version'] = 1
         if rules.get('broker_security_version') == 1:
             job['broker_security_version'] = 1
         if rules.get('caution_care_version') == 1:
