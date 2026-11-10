@@ -324,6 +324,11 @@ awk -F',' 'NR>1 && $20!="" && $20+0<140' exposure_data.csv | wc -l   # 영
 - 비공개 큐의 index·job metadata, 해당 Actions·analysis-attempt·수신자 영수증을 확인한다. queue_status/status_view를 쓰되 색인만으로 완료·0건을 확정하지 않는다. 입력 준비된 유효 production pending을 선택한다. 실행 중 Actions·분석 소유자가 있으면 중복 시작하지 않는다. 오래된 heartbeat만으로 탈취하지 말고 이전 실행 종료와 잠금 해제를 확인한다.
 - `review_evidence_version=1` 회차는 `risk_review_session.py`의 begin→checkpoint→finalize를 사용한다. 이 helper는 소유권·불변 체크포인트·최종 결과를 SHA 조건부 transaction으로 만든다. CLI는 로컬 계획만 생성하므로 비공개 큐의 고정 head에 게시한 뒤 새 head에서 재조회해야 저장 완료다. 사용법은 `docs/subscription-review-session.md`의 단일 계약을 따른다. 같은 owner는 재개하고 다른 running owner는 탈취하지 않는다. 이전 소유자가 실제 종료를 기록한 blocked만 이력을 보존하고 인계한다. heartbeat 경과만으로 종료를 만들어내지 않는다. 이 필드가 없는 구형 회차는 기존 계약의 attempt/체크포인트를 유지하며 새 필드를 임의 추가하지 않는다.
 
+### 검색 범위와 새 참고 알림
+- 고정 검색은 risk_search_keywords.py에서 관리한다. 검색어 추가는 자동 위험 판정이 아니다. 기존 검색·본문·제외·전수처리·점수·수신범위·TTL·SMTP 보호를 유지한다.
+- 해외 검색은 실제 보유 해외주식/해외대출/해외담보의 채널별 잔고를 합산해 상위 10개 종목을 우선한다. 기존 로컬 이름 매핑만 사용하며 외부 이름 조회는 하지 않는다. 종목당 급락·실적 쇼크·가이던스 하향, ETF는 급락만 검색해 추가 쿼리는 최대 30개다. 포괄 검색도 유지하며 추가 검색이 없는 종목을 정상으로 판정하지 않는다.
+- reference_watch_version=1의 당사 접수 차질·증권업계 공식 감독/개선 발표는 새 정책의 참고 예외다. 실제 본문 인용·귀속을 확인하고 고객 주장/공식 확인, 계획/확정 처분을 구분한다. 미확보는 보류하며 이 유형으로 긴급/주의나 전체 발송을 열지 않는다. 과거 회차는 고정 계약으로 복구한다.
+
 ### 입력 전체 1차 처리
 - 미시도는 아직 판단하지 않은 기사, 보류는 실제 시도 후 본문·근거 부족/분석 실패인 기사다. 새 입력 전체를 한 번씩 판단하되 보류 해소는 기다리지 않는다. 미열람·시간 부족을 null/false로 가장하지 않는다. 개별 실패는 짧은 사유와 null로 기록하고 다음 기사로 진행한다. 명확한 비대상은 기존 제외 기준으로 먼저 거른다. URL 중복 제거는 수집기의 기존 처리를 유지한다. 이미 입력에 포함된 서로 다른 기사 ID는 같은 사건이라는 이유로 먼저 false 처리하지 않고 최소 분석·점수 산출 뒤 최고점 대표를 선정한다.
 - 원본은 비공개 로컬에서 해시 검사한다. `python risk_review_context.py private-snapshot.json --analysis --output private-plan.json`은 완료 ID를 재사용하고 미시도 제목·설명을 triage_pages에 나눠 담는다. 명확한 비대상은 기존 제외 기준으로 판정해 체크포인트에 저장한다. 모호하거나 위험 후보인 기사는 `python risk_review_context.py private-snapshot.json --analysis --body-id ID --output private-body-plan-001.json`처럼 별도 출력 파일로 해당 본문만 읽는다. 여러 후보는 `--body-id ID`를 반복 지정하고 다음 묶음은 새 파일명을 사용한다. 기존 출력은 덮어쓰지 않으므로 재개 시 같은 입력·체크포인트의 저장본을 재사용하고 변경된 묶음만 새 파일로 만든다. 함수 호출은 `analysis_plan(job, checkpoints, body_ids=[])`로 시작한다. 색인 확인·본문 선택만으로 pending_ids가 완료되지는 않는다. 선택한 본문은 offset/end/complete로 확인하고 출력이 잘리면 해당 구간만 다시 읽는다.

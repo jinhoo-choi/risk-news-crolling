@@ -239,24 +239,9 @@ ANTHROPIC_KEY     = os.environ["ANTHROPIC_API_KEY"]
 NAVER_CLIENT_ID   = os.environ["NAVER_CLIENT_ID"]
 NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
-# 해외주식 포괄 리스크 키워드 — 종목명 불필요, AI가 entity 추출
-OVERSEAS_KEYWORDS = [
-    "반도체주 급락",      # 브로드컴·마이크론 등 섹터 기사
-    "해외주식 실적쇼크",  # 실적 쇼크 포괄
-    "나스닥 급락",        # 나스닥 전반 급락
-    "미국주식 상장폐지",  # 해외 상폐
-    "미국주식 파산",      # 해외 파산
-    "해외주식 급락",      # 해외 전반
-]
-
-KEYWORDS = ["부실 리스크", "신용 리스크", "유동성 리스크", "디폴트 리스크", "기업회생", "상장폐지", "파산", "워크아웃", "부도", "거래정지", "반대매매 급증", "신용등급 강등", "PF 부실", "미매각", "발행어음", "감사의견", "관리종목", "횡령 배임", "한국투자증권오류", "한국투자증권 장애", "한국투자증권 접속불가", "한국투자증권 지연", "한국투자증권 미지급", "한국투자증권 이슈",
-            # ── 신용공여 리스크 중간단계 (2026-07-28 추가) ──
-            # 리스크 심사역 관점 점검에서 확인된 사각지대.
-            # 실무 발생 순서: 주가하락 → 담보비율 하락 → [마진콜·담보부족] →
-            # [추가담보 미납] → 반대매매 → 손실확정.
-            # 기존엔 양 끝단(가격경보·반대매매)만 있고 중간이 통째로 비어 있어,
-            # 이 표현만 쓰인 기사는 AI가 볼 기회조차 없었다.
-            "마진콜", "담보부족", "추가담보", "담보비율 하회", "깡통계좌"]
+# Search coverage is separate from the existing relevance/grade/delivery rules.
+from risk_search_keywords import COMMON_KEYWORDS, OVERSEAS_KEYWORDS, portfolio_keywords
+KEYWORDS = list(COMMON_KEYWORDS)
 MAX_NEWS_PER_KEYWORD = 300   # 네이버 API 페이지 제한 (100건×3페이지)
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -973,12 +958,11 @@ def load_exposure_data() -> dict:
         print(f"  [오류] {EXPOSURE_FILE} 파싱 완전 실패: {e} — 익스포저 매칭 비활성화")
         return {}
 
-def get_overseas_keywords(exposure_data: dict = None, top_n: int = 30) -> list:
-    """해외주식 포괄 리스크 키워드 반환
-    종목명 기반 동적 키워드 대신 포괄 키워드 사용
-    → ticker_mapper 선행 불필요, AI가 기사에서 entity 직접 추출
-    """
-    return list(OVERSEAS_KEYWORDS)
+def get_overseas_keywords(exposure_data: dict = None, top_n: int = 10) -> list:
+    """General searches plus held overseas names; no external name lookup."""
+    return list(dict.fromkeys(OVERSEAS_KEYWORDS +
+                             portfolio_keywords(exposure_data, TICKER_MAP_RUNTIME, top_n)))
+
 
 def sanitize_action_numbers(action: str, exp_rows: list, src_text: str = "") -> tuple:
     """
@@ -2531,7 +2515,7 @@ _CONFIRMED_EVT_RE = re.compile(
     r'반대매매|강제\s*청산|쇼크|적발|기소|구속|제재|과징금|장애|의견\s*거절|'
     r'중처법|중대재해|사고|사망|수사|압수수색|고발|리콜')
 
-def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
+def is_hard_excluded(title: str, desc: str = "", url: str = "", reference_watch=False) -> tuple:
     """하드 제외 패턴 매칭 — (excluded: bool, reason: str) 반환
 
     ┌─ 판정 순서 (이 순서가 곧 우선순위이며, 바꾸면 규칙이 무력화된다) ─┐
@@ -2917,6 +2901,13 @@ def is_hard_excluded(title: str, desc: str = "", url: str = "") -> tuple:
             and _kw_hit(title, _EVENT_COMPLAINT_KW)):
         return False, None
 
+
+    # New frozen subscription rounds review official securities supervision in
+    # the body; metadata alone neither confirms a sanction nor raises a grade.
+    if reference_watch:
+        from risk_reference_watch import reference_search_candidate
+        if reference_search_candidate(title, desc):
+            return False, None
 
     # ═══ [4단] 일반 패턴 매칭 — CRITICAL_KW 없는 기사만 도달 ═══
     # ── 공백 무시 매칭 ──────────────────────────────────────────────
@@ -3483,8 +3474,13 @@ def is_market_news(article: dict) -> bool:
 def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> list:
     """등급별 상한 초과 시 리스크 점수 기반으로 하위 등급 강등"""
     from risk_broker_security import verified_broker_security
+    from risk_reference_watch import verified_reference_watch
     for article in articles:
-        apply_verified_direct_incident(article, now)
+        if verified_reference_watch(article):
+            article.update(grade='참고', _grade_locked=True, _force_urgent=False, customer_notice=None)
+            article.pop('_verified_direct_incident', None)
+        else:
+            apply_verified_direct_incident(article, now)
         if article.get('entity') in _BROKER_ENTITIES and verified_broker_security(article):
             article.update(grade='참고', _grade_locked=True, _force_urgent=False,
                            customer_notice=None)
@@ -3506,7 +3502,8 @@ def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> li
     for a in articles:
         _ent = (a.get("entity") or "")
         _title = a.get("title", "")
-        if ("한국투자증권" in _ent or "한국금융지주" in _ent) and "한국투자증권" not in _title:
+        if (("한국투자증권" in _ent or "한국금융지주" in _ent)
+                and "한국투자증권" not in _title and not verified_reference_watch(a)):
             if _kw_hit(_title, _OTHER_BROKERS):
                 print(f"  [당사 오추출 방어] entity 무효화·참고강등: {_title[:40]}")
                 a["entity"] = ""
@@ -3762,7 +3759,7 @@ def regrade_by_score(articles: list, exposure_data: dict = None, now=None) -> li
             and not _has_other_broker
             and _kw_hit(title, (DIRECT_NEGATIVE_KW | DIRECT_INCIDENT_KW))
         )
-        if _is_direct or a.get("_verified_direct_incident"):
+        if (_is_direct or a.get("_verified_direct_incident")) and not verified_reference_watch(a):
             if a.get("grade") != "긴급":
                 print(f"  [직접이슈 강제긴급] {title[:40]}")
             a["grade"] = "긴급"
@@ -5074,7 +5071,7 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
             if grade == "참고":
                 reference_summary = (a.get('fact_summary') if
                     a.get('_subscription_market_event') or a.get('_subscription_credit_policy')
-                    or a.get('_subscription_broker_security') else '')
+                    or a.get('_subscription_broker_security') or a.get('_subscription_reference_watch') else '')
                 r_risk = display_risk_score(a)
                 if r_risk:
                     r_filled = min(int(r_risk), 10)
@@ -5811,8 +5808,8 @@ def main():
 
     # 익스포저 데이터 선로드 — 해외 동적 키워드 생성 + AI 필터링에 공통 사용
     exposure_data = load_exposure_data()
-    # 해외주식 동적 키워드 생성 — 익스포저 CSV 상위 30개 종목
-    overseas_kws = get_overseas_keywords(exposure_data, top_n=30)
+    # 해외주식 동적 키워드 생성 — 익스포저 CSV 상위 10개 종목
+    overseas_kws = get_overseas_keywords(exposure_data, top_n=10)
     all_keywords = KEYWORDS + overseas_kws
     if overseas_kws:
         print(f"  해외주식 동적 키워드 {len(overseas_kws)}개 추가: {overseas_kws[:6]}...")
@@ -5849,7 +5846,8 @@ def main():
     hard_excluded_articles = []
     raw_articles_kept      = []
     for _a in raw_articles:
-        _excl, _reason = is_hard_excluded(_a.get("title",""), _a.get("desc",""), _a.get("url",""))
+        _excl, _reason = is_hard_excluded(_a.get("title",""), _a.get("desc",""), _a.get("url",""),
+                                        RISK_PROVIDER is not None and RISK_PROVIDER.job.get('reference_watch_version') == 1)
         if _excl:
             _a["_excl_reason"] = _reason
             hard_excluded_articles.append(_a)

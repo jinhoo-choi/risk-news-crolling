@@ -197,7 +197,11 @@ def _validate_analysis(analysis, article, body, job):
         if not (market or policy_event) or analysis['entities']:
             raise ValueError('빈 주체를 허용한 시장 사건 아님')
     if analysis['entity'] == '한국투자증권':
-        if not re.search(r'한국투자증권|(?<![가-힣])한투증권', '\n'.join(segments.values())):
+        owner_pattern = r'한국투자증권|(?<![가-힣])한투증권'
+        if job.get('reference_watch_version') == 1:
+            from risk_reference_watch import OWNER_ALIASES
+            owner_pattern = OWNER_ALIASES
+        if not re.search(owner_pattern, '\n'.join(segments.values())):
             raise ValueError('당사 이름 근거 없음')
     if analysis['judgment']['당사연관'] == '당사이슈' and analysis['entity'] != '한국투자증권':
         raise ValueError('당사 사건의 행위 주체 불일치')
@@ -214,6 +218,12 @@ def _validate_analysis(analysis, article, body, job):
         if not any(e['source_segment'] == 'body' and entity in e['quote']
                    for e in analysis['evidence']):
             raise ValueError('직접 사건 주체의 본문 인용 누락')
+    if job.get('reference_watch_version') == 1:
+        from risk_reference_watch import reference_kind
+        quotes = [e['quote'] for e in analysis['evidence'] if e['source_segment'] == 'body']
+        watch = reference_kind(analysis['entity'], analysis['event_type'], analysis['judgment'], quotes)
+        if watch and (analysis['base_grade'] != '참고' or analysis['customer_notice']):
+            raise ValueError('접수 차질·감독 예고/개선은 참고·고객 안내 없음')
     allowed_numbers = numbers('\n'.join(segments.values()))
     for field in ('fact_summary', 'action', 'customer_notice'):
         text = analysis[field] or ''
@@ -292,7 +302,8 @@ def _validate(result, job, inputs, manifest, checkpoint_only=False):
         for row in result['classifications']:
             # Missing proof is unattempted work, not an individual factual hold.
             validate_decision(row, source[row['article_id']], bodies[row['article_id']],
-                              result['analyses'].get(row['article_id']))
+                              result['analyses'].get(row['article_id']),
+                              job.get('reference_watch_version') == 1)
     elif any('decision_basis' in row for row in result['classifications']):
         raise ValueError('구형 회차에 새 판단 계약 추가 금지')
     verdicts = {item['article_id']: item['relevant'] for item in result['classifications']}
