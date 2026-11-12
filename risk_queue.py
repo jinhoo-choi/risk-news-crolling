@@ -186,6 +186,27 @@ class Queue:
         head = self.request('/git/ref/heads/main?read_after_write='+str(time.time_ns()))['object']['sha']
         return self.get(path, ref=head)
 
+    def get_after(self, path, written_commit):
+        """Read current main only after a confirmed write is visible there.
+
+        GitHub can briefly serve an older branch ref after a successful PUT.
+        Never use the old value or fall back to the write snapshot: a later
+        worker may have changed the receipt. Only bounded GETs are retried.
+        """
+        if not re.fullmatch(r'[0-9a-f]{40}', written_commit):
+            raise ValueError('전송 선기록 커밋 형식 오류')
+        for attempt in range(3):
+            head = self.request('/git/ref/heads/main?read_after_write='+str(time.time_ns()))['object']['sha']
+            status = ('identical' if head == written_commit else
+                      self.request('/compare/'+written_commit+'...'+head).get('status'))
+            if status in {'identical', 'ahead'}:
+                return self.get(path, ref=head)
+            if status != 'behind':
+                raise RuntimeError('전송 선기록 이후 main 이력 분기 — SMTP 금지')
+            if attempt < 2:
+                time.sleep(attempt+1)
+        raise RuntimeError('전송 선기록 main 반영 미확인 — SMTP 금지')
+
     def get_many_fresh(self, paths):
         """Read immutable checkpoints at one commit, under the shared pacing budget."""
         from concurrent.futures import ThreadPoolExecutor
