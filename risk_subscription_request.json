@@ -1,7 +1,7 @@
 {
-  "operation": "isolate-interrupted",
-  "job_id": "risk-production-42962856468",
+  "operation": "consume",
+  "job_id": "risk-production-43135253637",
   "self_test": false,
   "dry_run": false,
-  "request_id": "risk-isolate-42962856468-20261112-runtime-fix"
+  "request_id": "risk-manual07-43135253637-20261112-1124"
 }
