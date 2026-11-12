@@ -27,7 +27,7 @@ def main():
     value = json.loads(Path('risk_subscription_request.json').read_text())
     if set(value) != {'operation','job_id','self_test','dry_run','request_id'}:
         raise RuntimeError('소비 메타데이터 필드 오류')
-    if value['operation'] not in {'consume', 'recover', 'collect-review', 'close-partial', 'prune-articles'} or not JOB_ID.fullmatch(value['job_id']) or type(value['self_test']) is not bool or value['dry_run'] is not False:
+    if value['operation'] not in {'consume', 'recover', 'collect-review', 'close-partial', 'prune-articles', 'isolate-interrupted'} or not JOB_ID.fullmatch(value['job_id']) or type(value['self_test']) is not bool or value['dry_run'] is not False:
         raise RuntimeError('허용되지 않은 소비 요청')
     if value['operation'] == 'collect-review' and (value['job_id'] != 'pending-review' or value['self_test']):
         raise RuntimeError('보류 재수집 요청 범위 오류')
@@ -35,6 +35,18 @@ def main():
         raise RuntimeError('복구는 운영 회차만 허용')
     if not JOB_ID.fullmatch(value['request_id']):
         raise RuntimeError('요청 ID 오류')
+    if value['operation'] == 'isolate-interrupted':
+        from risk_queue import Queue
+        from risk_interrupted import isolate_job
+        if value['self_test']:
+            raise RuntimeError('중단 회차 격리는 운영 회차만 허용')
+        queue = Queue()
+        queue.preflight()
+        print(json.dumps(isolate_job(queue, value['job_id'])))
+        if output := os.environ.get('GITHUB_OUTPUT'):
+            with open(output, 'a') as stream:
+                stream.write('job_id='+value['job_id']+'\nneeds_ack=false\n')
+        return
     if value['operation'] == 'prune-articles':
         from risk_queue import Queue
         from risk_subscription import prune_articles

@@ -1,5 +1,6 @@
 """Durable per-recipient SMTP reservations; no retry after uncertain DATA."""
 import hashlib
+import re
 import smtplib
 import sys
 import uuid
@@ -122,8 +123,11 @@ class Delivery:
         self.targets = []
         self.resume = resume
         self.smtp_calls = 0
+        self.written_commit = None
 
     def read(self):
+        if self.written_commit and hasattr(self.queue, 'get_after'):
+            return self.queue.get_after(self.path, self.written_commit)
         return getattr(self.queue, 'get_fresh', self.queue.get)(self.path)
 
     def change(self, fn):
@@ -133,7 +137,12 @@ class Delivery:
         fn(job)
         # Makes a confirmed write distinguishable from another worker's reserve.
         job['delivery_revision'] = uuid.uuid4().hex
-        self.queue.put(self.path, job, sha)
+        written = self.queue.put(self.path, job, sha)
+        commit = written.get('commit', {}).get('sha') if isinstance(written, dict) else None
+        if commit is not None:
+            if not isinstance(commit, str) or not re.fullmatch(r'[0-9a-f]{40}', commit):
+                raise RuntimeError('전송 선기록 PUT 커밋 형식 오류 — SMTP 금지')
+            self.written_commit = commit
         self.revision = job['delivery_revision']
         return job
 
@@ -237,9 +246,12 @@ class Delivery:
                     if ready:
                         self.check_config()
                         current, _ = self.read()
-                        if (current.get('delivery_revision') != self.revision
-                                or current.get('status') != 'sending'
-                                or datetime.fromisoformat(current['expires_at'].replace('Z', '+00:00')) <= now()):
+                        checks = {'revision_matches': current.get('delivery_revision') == self.revision,
+                                  'status_sending': current.get('status') == 'sending',
+                                  'ttl_valid': datetime.fromisoformat(current['expires_at'].replace('Z', '+00:00')) > now()}
+                        if not all(checks.values()):
+                            record_error('smtp_connect', RuntimeError('SMTP DATA 직전 보호조건 불일치'),
+                                         'smtp_pre_data_guard', **checks)
                             raise RuntimeError('SMTP DATA 직전 소유권·유효시간 변경')
                         checkpoint('smtp_data')
                         stage, data_started = 'data', True

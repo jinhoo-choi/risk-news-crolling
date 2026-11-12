@@ -19,6 +19,8 @@ from datetime import timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from bs4 import BeautifulSoup
+
 from risk_queue import Queue, JOB_ID, now, digest
 from risk_result_validator import validate, utc_time
 from risk_body_quality import body_quality
@@ -86,13 +88,16 @@ def current_config(queue, verification=False, articles=(), document=''):
     return config
 
 
-def expire_and_check(queue, suppressed_versions=None):
+def expire_and_check(queue, suppressed_versions=None, isolate_interrupted=False):
     index, sha = queue.get('index.json')
     index = index or {'jobs': []}
     closures = index.get('partial_closures', {})
     if not isinstance(closures, dict):
         raise RuntimeError('부분 종결 색인 형식 오류')
-    for jid in dict.fromkeys([*index['jobs'], *closures]):
+    interruptions = index.get('interrupted_jobs', {})
+    if not isinstance(interruptions, dict):
+        raise RuntimeError('중단 회차 색인 형식 오류')
+    for jid in dict.fromkeys([*index['jobs'], *closures, *interruptions]):
         job, old_sha = queue.get('jobs/'+jid+'.json')
         if not job:
             raise RuntimeError('색인 회차 읽기 실패')
@@ -112,6 +117,14 @@ def expire_and_check(queue, suppressed_versions=None):
         observe_pending(queue, job)
         if job.get('status') in TERMINAL:
             continue
+        if isolate_interrupted or jid in interruptions:
+            from risk_interrupted import STATES, isolate_expired
+            if (job.get('mode') == 'production' and job.get('status') in STATES
+                    and utc_time(job['expires_at']) <= now()):
+                index, sha, versions = isolate_expired(queue, job, old_sha, index, sha)
+                if suppressed_versions is not None:
+                    suppressed_versions.update(versions)
+                continue
         if job.get('status') == 'pending' and not job.get('receipts') and not job.get('attempted_count', 0) and utc_time(job['expires_at']) <= now():
             values, expected = {}, {}
             if job.get('mode') == 'production':
@@ -326,7 +339,8 @@ def collect(config, queue, verification=False, reviews_only=False, review_ids=No
     if not verification:
         current_config(queue)
     suppressed_versions = set()
-    index, sha = expire_and_check(queue, suppressed_versions)
+    index, sha = expire_and_check(queue, suppressed_versions,
+                                 isolate_interrupted=not verification and not reviews_only)
     after_job_id = None
     if reviews_only:
         later_reviews = False
@@ -712,6 +726,8 @@ def consume(queue, jid, self_test=False):
                         for aid in deferred_ids if 'review/'+aid+'.json' in values)
     alert_overdue_count = sum(utc_time(values['review/'+aid+'.json']['first_seen_at']) <= now()-timedelta(hours=24)
                               for aid in alert_deferred_ids if 'review/'+aid+'.json' in values)
+    from risk_interrupted import delivery_reservations
+    reservations = {'self': set(), 'full': set()} if self_test else delivery_reservations(queue)
     metadata.update(status='sending', self_test=self_test, sending_at=now().isoformat())
     metadata.update(deferred_ids=deferred_ids, review_resolutions=resolutions,
                     analysis_complete=not deferred_ids, overdue_review_count=overdue_count)
@@ -738,6 +754,14 @@ def consume(queue, jid, self_test=False):
                      lambda: current_config(queue, self_test))
     staged = {}
     diagnostics = {}
+    body_versions = {b['article_id']: source_version(b) for b in job['body_manifest']}
+    reserved_urls = {a['url'] for a in job['input']['items']
+                     if body_versions.get(a['article_id']) in reservations['self'] | reservations['full']}
+    native_scope_filter = bot.filter_articles_for_scope
+    def scope_filter(articles, exposure, self_only, market_crash=False):
+        blocked = reservations['full'] | (reservations['self'] if self_only or bot.FORCE_SELF_ONLY else set())
+        return [a for a in native_scope_filter(articles, exposure, self_only, market_crash)
+                if body_versions.get(a.get('article_id')) not in blocked]
     native_send, native_empty, native_save = bot.send_email, bot.send_email_no_result, bot.save_seen_urls
     def artifact(path, value):
         if not self_test and job.get('delivery_focus_version') == 2:
@@ -802,7 +826,11 @@ def consume(queue, jid, self_test=False):
     def save(*args, **kwargs):
         if args:
             held_urls = {a['url'] for a in job['input']['items'] if a['article_id'] in deferred_ids}
-            args = (set(args[0])-held_urls,)+args[1:]
+            # Suppressed uncertain cards are not confirmed history. A new full
+            # report may legitimately deliver a previously self-only article.
+            mailed = {a.get('href') for a in BeautifulSoup(
+                staged.get('html', ''), 'html.parser').find_all('a')}
+            args = (set(args[0])-held_urls-(reserved_urls-mailed),)+args[1:]
         return native_save(*args, **kwargs)
     def private_stats(*args, **kwargs):
         artifact('metrics/'+jid+'.json', {'stats': copy.deepcopy(bot._RUN_STATS), 'paid_ai_calls': 0,
@@ -822,6 +850,7 @@ def consume(queue, jid, self_test=False):
         checkpoint('render')
         provider.install(bot)
         with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(bot, 'filter_articles_for_scope', scope_filter))
             if job['input'].get('snapshot_mode') == 'review_replay':
                 # Review only the saved articles; market/notice digests belong to natural runs.
                 stack.enter_context(patch.object(bot, 'build_price_alert_section', lambda *a, **k: ''))
