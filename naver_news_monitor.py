@@ -5069,9 +5069,6 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
                               f"{[e for e in a_entities if e not in _kept]}")
                         a_entities = _kept
             if grade == "참고":
-                reference_summary = (a.get('fact_summary') if
-                    a.get('_subscription_market_event') or a.get('_subscription_credit_policy')
-                    or a.get('_subscription_broker_security') or a.get('_subscription_reference_watch') else '')
                 r_risk = display_risk_score(a)
                 if r_risk:
                     r_filled = min(int(r_risk), 10)
@@ -5085,7 +5082,6 @@ def build_email_html(articles: list, total_count: int = 0, ai_summary: str = '',
             <td style="padding:6px 16px;font-size:13px;word-break:keep-all;color:#7a9abf;">
               · <a href="{_esc(a['url'])}" style="color:#7a9abf;text-decoration:none;">{_esc(a['title'][:45])}{"..." if len(a['title'])>45 else ""}</a>
               <span style="font-size:10px;color:#94a3b8;margin-left:4px;">{a.get("pub_str","").split("(")[0].strip() if a.get("pub_str") else ""}</span>
-              {f'<p style="margin:6px 0 2px;font-size:12px;line-height:1.6;color:#475569;">{_esc(reference_summary)}</p>' if reference_summary else ""}
             </td>
             <td align="right" valign="middle" style="padding:6px 16px 6px 4px;white-space:nowrap;">{r_score_html}</td>
           </tr>

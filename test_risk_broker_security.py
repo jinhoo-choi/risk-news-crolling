@@ -68,7 +68,7 @@ class BrokerSecurity(unittest.TestCase):
         with patch.object(bot, 'build_price_alert_section', lambda *args: ''):
             self.assertTrue(bot.decide_send_scope(rows, {})['self_only'])
 
-    def test_mixed_topic_reference_displays_verified_incident_below_original_title(self):
+    def test_reference_displays_original_title_without_article_summary(self):
         bot = import_bot()
         a = self.article()
         a.update(title='해킹 땐 배상, 파산 땐 코인 반환?… 디지털자산법',
@@ -78,7 +78,7 @@ class BrokerSecurity(unittest.TestCase):
             document = bot.build_email_html([a], total_count=1, ai_summary='',
                                            exposure_data={}, ref_date='', today_str='')
         self.assertIn(html.escape(a['title'], quote=True), document)
-        self.assertIn(html.escape(a['fact_summary'], quote=True), document)
+        self.assertNotIn(html.escape(a['fact_summary'], quote=True), document)
         self.assertNotIn(a['desc'], document)
         self.assertNotIn('고객케어 안내 추천 문구', document)
 

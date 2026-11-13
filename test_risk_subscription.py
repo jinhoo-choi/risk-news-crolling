@@ -10,6 +10,7 @@ import unittest
 from datetime import timedelta, timezone
 from email import message_from_bytes
 from email.utils import format_datetime, getaddresses
+from html import escape
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -192,13 +193,13 @@ class Integration(unittest.TestCase):
         self.assertTrue(packet['self_only'])
         self.assertEqual(len(smtp.calls), 1)
         self.assertIn(item['title'], packet['html'])
-        self.assertIn(body, packet['html'])
+        self.assertNotIn(body, packet['html'])
         self.assertNotIn(item['desc'], packet['html'])
         self.assertIn('참고', packet['html'])
         self.assertNotIn('고객케어', packet['html'])
         self.assertEqual(queue.data['jobs/test.json']['paid_ai_calls'], 0)
 
-    def test_new_reference_alerts_keep_body_summary_and_existing_owner_delivery(self):
+    def test_new_reference_alerts_keep_titles_and_existing_owner_delivery(self):
         cases = [
             ("증권사 주식정보 서비스 이용료 '깜깜이'…금감원, 제도 개선 나선다",
              '금융감독원은 증권사의 주식정보 제공서비스 운영 실태를 점검하고 개선방안을 마련했다고 밝혔다.',
@@ -251,7 +252,8 @@ class Integration(unittest.TestCase):
                 packet = queue.data['outbox/test.json']
                 self.assertTrue(packet['self_only'])
                 self.assertEqual([c[0] for c in smtp.calls], [['owner@example.invalid']])
-                self.assertIn(body, packet['html'])
+                self.assertIn(escape(item['title'][:45]), packet['html'])
+                self.assertNotIn(body, packet['html'])
                 self.assertNotIn('고객케어', packet['html'])
                 self.assertEqual(queue.data['jobs/test.json']['paid_ai_calls'], 0)
 
@@ -635,7 +637,7 @@ class Integration(unittest.TestCase):
         self.assertTrue(all(a['grade'] == '참고' and a['entity'] == '' for a in final))
         document = queue.data['previews/test.json']['html']
         for a in queue.data['results/test.json']['analyses'].values():
-            self.assertIn(a['fact_summary'], document)
+            self.assertNotIn(a['fact_summary'], document)
         self.assertEqual(document.count('https://example.invalid/test/one'), 1)
         self.assertEqual(document.count('https://example.invalid/test/two'), 1)
         self.assertEqual(len(smtp.calls), 3)
