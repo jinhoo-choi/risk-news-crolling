@@ -530,6 +530,51 @@ class Integration(unittest.TestCase):
         self.assertIn('https://example.invalid/test/one', document)
         self.assertEqual(len(smtp.calls), 3)
 
+    def test_summary_recovers_complete_fact_in_native_mail_from_truncated_core(self):
+        queue, smtp = self.fixture(), SMTP()
+        analysis = queue.data['results/test.json']['analyses']['one']
+        fact = ('한국투자증권 일부 고객의 MTS 잔고 조회에서 장애가 발생했으며 '
+                '현재 복구 진행 상황을 확인하고 있다. 실제 금전 피해는 확인되지 않았다.')
+        analysis['fact_summary'] = fact
+        analysis['judgment']['핵심사건'] = fact[:30]
+        self.run_consume(queue, smtp)
+        document = queue.data['previews/test.json']['html']
+        complete = fact.split('. ')[0]+'.'
+        self.assertIn('💡 '+complete, document)
+        self.assertNotIn('💡 한국투자증권 한국투자증권', document)
+        self.assertEqual(queue.data['metrics/test.json']['summary_source_ids'], ['one'])
+
+    def test_summary_prioritizes_delivered_grade_then_score_without_mutating_cards(self):
+        from risk_provider import Provider
+        queue = self.independent_same_company_fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        provider = Provider(job, result)
+        first, second = job['input']['items']
+        rows = [dict(first, entity='한국투자증권', grade='참고', _risk_score=3.0),
+                dict(second, entity='한국투자증권', grade='주의', _risk_score=6.0)]
+        before = copy.deepcopy(rows)
+        self.assertEqual(provider.response('summary', articles=rows).text.split('·')[0],
+                         '한국투자증권 과태료 부과')
+        self.assertEqual(provider.summary_source_ids, ['two', 'one'])
+        rows[0].update(grade='주의', _risk_score=6.5)
+        self.assertIn('일부 잔고 조회 장애', provider.response('summary', articles=rows).text)
+        self.assertEqual(provider.summary_source_ids, ['one', 'two'])
+        rows[0].update(grade=before[0]['grade'], _risk_score=before[0]['_risk_score'])
+        self.assertEqual(rows, before)
+
+    def test_summary_keeps_decimal_and_whole_fact_when_no_sentence_break(self):
+        from risk_provider import Provider
+        queue = self.fixture()
+        job, result = queue.data['jobs/test.json'], queue.data['results/test.json']
+        analysis = result['analyses']['one']
+        fact = '검증대상기업 주가는 전 거래일보다 14.01% 하락했고 회계처리 조사 착수 보도와 위법 확정은 구분해야 한다'
+        analysis['fact_summary'] = fact
+        analysis['judgment']['핵심사건'] = fact[:30]
+        provider = Provider(job, result)
+        rows = [dict(job['input']['items'][0], entity='검증대상기업')]
+        self.assertEqual(provider.response('summary', articles=rows).text, fact)
+        self.assertEqual(provider.summary_source_ids, ['one'])
+
     def test_invalid_or_missing_event_comparison_blocks_before_smtp(self):
         cases = ['missing','unknown','overlap','mixed','unverified']
         for case in cases:

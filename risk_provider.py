@@ -274,16 +274,30 @@ class Provider:
             a = self.analysis(article)
             return Response({'action': a['action'], 'customer_notice': a['customer_notice']})
         if route == 'summary':
-            # Native format is a short upper summary. Use only delivered cards.
+            # Use delivered cards in their existing grade/score priority. The
+            # 40-character target packs whole labels; it must not cut a fact.
             self.summary_source_ids = []
             labels = {}
-            for a in articles:
-                label = (a.get('entity') or '시장')+' '+self.analysis(a)['judgment']['핵심사건']
+            ranks = {'긴급': 0, '주의': 1, '참고': 2}
+            ordered = sorted(articles, key=lambda a: (
+                ranks.get(a.get('grade'), 3),
+                -(a.get('_risk_score') or 0)))
+            for a in ordered:
+                analysis = self.analysis(a)
+                core = analysis['judgment']['핵심사건'].strip()
+                fact = analysis['fact_summary'].strip()
+                # Some saved results contain only a leading slice of the fact
+                # in 핵심사건. Recover a complete source sentence, never infer
+                # missing words or split a decimal such as 14.01%.
+                if fact.startswith(core) and len(core) < len(fact):
+                    core = re.split(r'(?<=[.!?。])\s+', fact, maxsplit=1)[0]
+                entity = a.get('entity') or '시장'
+                label = core if entity in core else entity+' '+core
                 labels.setdefault(label, a['article_id'])
             text = ''
             for label, article_id in labels.items():
                 proposed = text+('·' if text else '')+label
-                if len(proposed) > 40:
+                if text and len(proposed) > 40:
                     break
                 text = proposed
                 self.summary_source_ids.append(article_id)
